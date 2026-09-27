@@ -67,29 +67,20 @@ const int kJawakaFontSizeValues[JW_APPEARANCE_FONT_SIZE_COUNT] = {
     5,
 };
 
-static int jw__read_index(const char *db_path, const char *key, int count, int fallback) {
-    if (!db_path || !db_path[0] || !key || count <= 0) return fallback;
-
-    char val[32];
-    if (jw_db_get_setting(db_path, key, val, sizeof(val)) != 0 || !val[0])
-        return fallback;
+static int jw__index_or(const char *val, int count, int fallback) {
+    if (!val || !val[0] || count <= 0) return fallback;
 
     int idx = atoi(val);
     return (idx >= 0 && idx < count) ? idx : fallback;
 }
 
-static void jw__read_setting_or_default(const char *db_path, const char *key,
-                                        const char *fallback,
-                                        char *out, size_t out_size) {
-    if (!out || out_size == 0) return;
-    out[0] = '\0';
+static int jw__read_index(const char *db_path, const char *key, int count, int fallback) {
+    if (!db_path || !db_path[0] || !key) return fallback;
 
-    if (db_path && db_path[0] && key &&
-        jw_db_get_setting(db_path, key, out, out_size) == 0 && out[0]) {
-        return;
-    }
-
-    snprintf(out, out_size, "%s", fallback ? fallback : "");
+    char val[32];
+    if (jw_db_get_setting(db_path, key, val, sizeof(val)) != 0)
+        return fallback;
+    return jw__index_or(val, count, fallback);
 }
 
 static const char *jw__clock_token_for_index(int idx) {
@@ -152,22 +143,77 @@ const char *jw_appearance_cjk_font_label(const char *lang) {
     return jw__language_is_japanese(lang) ? "Leaf Han Sans JP" : "Source Han Sans";
 }
 
-void jw_appearance_resolve(const char *db_path, jw_appearance_env *out) {
+/* A persisted key, where its value lands, and what stands in when it is
+   missing or empty. */
+typedef struct {
+    const char *key;
+    char       *out;
+    size_t      out_size;
+    const char *fallback;
+} jw__appearance_key;
+
+void jw_appearance_resolve_settings(const char *db_path, jw_appearance_env *out) {
     if (!out) return;
 
-    int font_idx = jw_appearance_font_family_index_from_db(db_path);
-    int font_size_idx = jw__read_index(db_path, "font_size_index", JW_APPEARANCE_FONT_SIZE_COUNT, 1);
-    int pill_idx = jw__read_index(db_path, "pill_shape_index", JW_APPEARANCE_PILL_SHAPE_COUNT,
-                                  JW_APPEARANCE_PILL_SHAPE_DEFAULT);
+    char font_family[16], font_size[16], pill_shape[16], clock_style[16];
+    char theme[sizeof(out->theme_name)];
+    const jw__appearance_key keys[] = {
+        { "font_family_index", font_family, sizeof(font_family), "" },
+        { "font_size_index",   font_size,   sizeof(font_size),   "" },
+        { "pill_shape_index",  pill_shape,  sizeof(pill_shape),  "" },
+        { "clock_style_index", clock_style, sizeof(clock_style), "" },
+        { "theme_name",        theme,       sizeof(theme),       "" },
+        /* Resolved here, in the parent, because jw__spawn_child re-runs this on
+           every launcher spawn -- so a language change applies by simply
+           respawning the launcher, with no separate plumbing to push a font
+           down to the child. */
+        { "language", out->language, sizeof(out->language), "en" },
+        /* Defaults mirror Settings' Leaf scheme so apps inherit the identity
+           theme even before the first settings session persists color rows. */
+        { "accent_color",          out->accent,          sizeof(out->accent),          "#1E331E" },
+        { "bg_color",              out->bg,              sizeof(out->bg),              "#0F160E" },
+        { "text_color",            out->text,            sizeof(out->text),            "#E8F1E3" },
+        { "hint_color",            out->hint,            sizeof(out->hint),            "#7E9579" },
+        { "highlight_color",       out->highlight,       sizeof(out->highlight),       "#7FB069" },
+        { "button_label_color",    out->button_label,    sizeof(out->button_label),    "#0F160E" },
+        { "button_glyph_bg_color", out->button_glyph_bg, sizeof(out->button_glyph_bg), "#7FB069" },
+        /* Button-hints visibility ("0"/"1"), so apps hide their footers when
+           the user turned hints off in the launcher. Default on. */
+        { "show_hints", out->show_hints, sizeof(out->show_hints), "1" },
+        /* Status-bar visibility mirrors the launcher so native apps wear the
+           same chrome without opening the settings DB themselves. */
+        { "show_wifi",          out->status_show_wifi,          sizeof(out->status_show_wifi),          "1" },
+        { "show_battery",       out->status_show_battery,       sizeof(out->status_show_battery),       "1" },
+        { "show_battery_level", out->status_show_battery_level, sizeof(out->status_show_battery_level), "0" },
+        { "show_bluetooth",     out->status_show_bluetooth,     sizeof(out->status_show_bluetooth),     "1" },
+        { "timezone",           out->timezone,                  sizeof(out->timezone),                  "" },
+    };
+    const size_t key_count = sizeof(keys) / sizeof(keys[0]);
 
-    if (jw_resolve_theme_name(db_path, out->theme_name, sizeof(out->theme_name)) != 0)
-        snprintf(out->theme_name, sizeof(out->theme_name), "%s", "Jawaka-Tabs");
+    /* One DB open for every key. jawakad resolves on its main loop, which is
+       also the loop that forwards the D-pad, and each separate read reopened
+       the database and re-checked its schema: twenty of them per resolve held
+       input back long enough for a tap to turn into a hold. A read that fails
+       partway keeps what it got; the rest fall back below. */
+    jw_db_setting_query queries[sizeof(keys) / sizeof(keys[0])];
+    for (size_t i = 0; i < key_count; i++) {
+        keys[i].out[0] = '\0';
+        queries[i] = (jw_db_setting_query){ keys[i].key, keys[i].out, keys[i].out_size, 0 };
+    }
+    if (db_path && db_path[0])
+        (void)jw_db_get_settings(db_path, queries, (int)key_count);
+    for (size_t i = 0; i < key_count; i++) {
+        if (!keys[i].out[0])
+            snprintf(keys[i].out, keys[i].out_size, "%s", keys[i].fallback);
+    }
 
-    /* Resolved here, in the parent, because jw__spawn_child re-runs this on every
-       launcher spawn -- so a language change applies by simply respawning the
-       launcher, with no separate plumbing to push a font down to the child. */
-    jw__read_setting_or_default(db_path, "language", "en",
-                                out->language, sizeof(out->language));
+    int font_idx = jw__index_or(font_family, JW_APPEARANCE_FONT_FAMILY_COUNT,
+                                JW_APPEARANCE_FONT_FAMILY_DEFAULT);
+    int font_size_idx = jw__index_or(font_size, JW_APPEARANCE_FONT_SIZE_COUNT, 1);
+    int pill_idx = jw__index_or(pill_shape, JW_APPEARANCE_PILL_SHAPE_COUNT,
+                                JW_APPEARANCE_PILL_SHAPE_DEFAULT);
+
+    jw_resolve_theme_name_value(theme, out->theme_name, sizeof(out->theme_name));
 
     /* The font path tables are static const, so the pointer stays valid across a
        later fork()/execv() in the child. A CJK language ignores the chosen
@@ -180,38 +226,17 @@ void jw_appearance_resolve(const char *db_path, jw_appearance_env *out) {
     snprintf(out->pill_radius_ratio, sizeof(out->pill_radius_ratio), "%.2f", kJawakaPillRadiusValues[pill_idx]);
     snprintf(out->pill_corner_mask, sizeof(out->pill_corner_mask), "%d", kJawakaPillCornerMasks[pill_idx]);
 
-    /* Defaults mirror Settings' Leaf scheme so apps inherit the identity theme
-       even before the first settings session persists color rows. */
-    jw__read_setting_or_default(db_path, "accent_color", "#1E331E", out->accent, sizeof(out->accent));
-    jw__read_setting_or_default(db_path, "bg_color", "#0F160E", out->bg, sizeof(out->bg));
-    jw__read_setting_or_default(db_path, "text_color", "#E8F1E3", out->text, sizeof(out->text));
-    jw__read_setting_or_default(db_path, "hint_color", "#7E9579", out->hint, sizeof(out->hint));
-    jw__read_setting_or_default(db_path, "highlight_color", "#7FB069", out->highlight, sizeof(out->highlight));
-    jw__read_setting_or_default(db_path, "button_label_color", "#0F160E", out->button_label, sizeof(out->button_label));
-    jw__read_setting_or_default(db_path, "button_glyph_bg_color", "#7FB069", out->button_glyph_bg, sizeof(out->button_glyph_bg));
-
-    /* Button-hints visibility ("0"/"1"), so apps hide their footers when the
-       user turned hints off in the launcher. Default on. */
-    jw__read_setting_or_default(db_path, "show_hints", "1", out->show_hints, sizeof(out->show_hints));
-
-    /* Status-bar visibility mirrors the launcher so native apps wear the same
-       chrome without opening the settings DB themselves. */
-    jw__read_setting_or_default(db_path, "show_wifi", "1",
-                                out->status_show_wifi, sizeof(out->status_show_wifi));
-    jw__read_setting_or_default(db_path, "show_battery", "1",
-                                out->status_show_battery, sizeof(out->status_show_battery));
-    jw__read_setting_or_default(db_path, "show_battery_level", "0",
-                                out->status_show_battery_level,
-                                sizeof(out->status_show_battery_level));
-    jw__read_setting_or_default(db_path, "show_bluetooth", "1",
-                                out->status_show_bluetooth,
-                                sizeof(out->status_show_bluetooth));
     snprintf(out->status_clock, sizeof(out->status_clock), "%s",
-             jw__clock_token_for_index(jw__read_index(db_path, "clock_style_index", 4, 1)));
+             jw__clock_token_for_index(jw__index_or(clock_style, 4, 1)));
+    snprintf(out->status_bt_state, sizeof(out->status_bt_state), "%s", "0");
+}
+
+void jw_appearance_resolve(const char *db_path, jw_appearance_env *out) {
+    if (!out) return;
+
+    jw_appearance_resolve_settings(db_path, out);
     snprintf(out->status_bt_state, sizeof(out->status_bt_state), "%d",
              jw__bt_state_now());
-    jw__read_setting_or_default(db_path, "timezone", "",
-                                out->timezone, sizeof(out->timezone));
 }
 
 int jw_appearance_apply_env(const jw_appearance_env *env) {

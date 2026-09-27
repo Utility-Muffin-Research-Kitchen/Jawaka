@@ -7508,9 +7508,11 @@ static int jw__spawn_osd(jw_daemon_state *state) {
     }
 
     /* Resolve appearance from the DB here in the parent — opening SQLite between
-       fork() and execv() is not fork-safe on macOS (os_log landmine). */
+       fork() and execv() is not fork-safe on macOS (os_log landmine). The OSD
+       draws no status bar, so skip the Bluetooth snapshot: it shells out to
+       bluetoothctl on this loop, the one that forwards the D-pad. */
     jw_appearance_env appearance;
-    jw_appearance_resolve(state->db_path, &appearance);
+    jw_appearance_resolve_settings(state->db_path, &appearance);
 
     /* Close-on-exec on both ends so no other child inherits them; the OSD
        child clears it on the write end just before its own exec. */
@@ -7713,7 +7715,7 @@ static void jw__osd_refresh_appearance(jw_daemon_state *state, const char *why) 
         return;
     }
     jw_appearance_env appearance;
-    jw_appearance_resolve(state->db_path, &appearance);
+    jw_appearance_resolve_settings(state->db_path, &appearance);
     const char *font_path = appearance.font_path ? appearance.font_path : "";
     if (strcmp(appearance.language, state->osd_language) == 0 &&
         strcmp(font_path, state->osd_font_path) == 0 &&

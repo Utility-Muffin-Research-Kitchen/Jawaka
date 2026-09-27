@@ -23,10 +23,12 @@
 
 #include "internal/settings/appearance.h"
 #include "internal/settings/timezones.h"
+#include "internal/db/db.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int fail(const char *message) {
     fprintf(stderr, "appearance-env-test: %s\n", message);
@@ -128,6 +130,58 @@ int main(void) {
     jw_appearance_apply_env(&resolved);
     if (!env_is("UMRK_LANGUAGE", "en") || !env_is("JAWAKA_LANGUAGE", "en"))
         return fail("missing settings did not export en");
+
+    /* Persisted settings come back from the single batched read, and a key
+       that is missing, empty or out of range falls back per key. */
+    char db_path[] = "/tmp/appearance-env-test-XXXXXX";
+    int db_fd = mkstemp(db_path);
+    if (db_fd < 0)
+        return fail("could not create a temp database");
+    close(db_fd);
+    unlink(db_path);   /* let jw_db create it with the schema */
+    if (jw_db_set_setting(db_path, "font_family_index", "7") != 0 ||
+        jw_db_set_setting(db_path, "font_size_index", "2") != 0 ||
+        jw_db_set_setting(db_path, "pill_shape_index", "99") != 0 ||
+        jw_db_set_setting(db_path, "theme_name", "Jawaka-Grid") != 0 ||
+        jw_db_set_setting(db_path, "accent_color", "#123456") != 0 ||
+        jw_db_set_setting(db_path, "bg_color", "") != 0 ||
+        jw_db_set_setting(db_path, "clock_style_index", "2") != 0 ||
+        jw_db_set_setting(db_path, "show_wifi", "0") != 0 ||
+        jw_db_set_setting(db_path, "timezone", "Europe/Paris") != 0)
+        return fail("could not seed the temp database");
+    unsetenv("JAWAKA_THEME");
+    jw_appearance_resolve_settings(db_path, &resolved);
+    if (strcmp(resolved.font_path, kJawakaFontFamilyPaths[7]) != 0)
+        return fail("resolve did not read font_family_index");
+    if (strcmp(resolved.font_bump, "4") != 0)
+        return fail("resolve did not read font_size_index");
+    if (strcmp(resolved.pill_corner_mask, "9") != 0)
+        return fail("an out-of-range pill_shape_index did not fall back to Leaf");
+    if (strcmp(resolved.theme_name, "Jawaka-Grid") != 0)
+        return fail("resolve did not read theme_name");
+    if (strcmp(resolved.accent, "#123456") != 0)
+        return fail("resolve did not read accent_color");
+    if (strcmp(resolved.bg, "#0F160E") != 0)
+        return fail("an empty bg_color did not fall back to the Leaf default");
+    if (strcmp(resolved.text, "#E8F1E3") != 0)
+        return fail("a missing text_color did not fall back to the Leaf default");
+    if (strcmp(resolved.language, "en") != 0)
+        return fail("a missing language did not fall back to en");
+    if (strcmp(resolved.status_clock, "12") != 0)
+        return fail("resolve did not read clock_style_index");
+    if (strcmp(resolved.status_show_wifi, "0") != 0 ||
+        strcmp(resolved.status_show_battery, "1") != 0)
+        return fail("status-bar visibility did not read or fall back per key");
+    if (strcmp(resolved.timezone, "Europe/Paris") != 0)
+        return fail("resolve did not read timezone");
+    if (strcmp(resolved.status_bt_state, "0") != 0)
+        return fail("resolve_settings did not leave the Bluetooth state at 0");
+    setenv("JAWAKA_THEME", "Jawaka-Vertical", 1);
+    jw_appearance_resolve_settings(db_path, &resolved);
+    unsetenv("JAWAKA_THEME");
+    if (strcmp(resolved.theme_name, "Jawaka-Vertical") != 0)
+        return fail("JAWAKA_THEME did not override the persisted theme");
+    unlink(db_path);
 
     /* Empty resolved language exports "en" (absence means English). */
     fill_minimal(&env, "");
