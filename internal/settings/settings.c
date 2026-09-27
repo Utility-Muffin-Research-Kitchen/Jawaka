@@ -3089,6 +3089,7 @@ static void jw__wifi_msg(jw_settings_ui *ui, const char *fmt, ...) {
 static void jw__wifi_attempt_begin(jw_settings_ui *ui, const char *ssid) {
     snprintf(ui->wifi_attempt_ssid, sizeof(ui->wifi_attempt_ssid), "%s", ssid);
     ui->wifi_attempt_ms = SDL_GetTicks();
+    ui->wifi_attempt_auth_fails = 0;
     if (ui->wifi_monitor_fd >= 0) {
         jw_wifi_monitor_close(ui->wifi_monitor_fd);
     }
@@ -3152,7 +3153,9 @@ void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
     /* Resolve a pending connect attempt:
        - success: associated (COMPLETED) on the target SSID;
        - WRONG_KEY event: definitive wrong password;
-       - auth-fail event (SAE/WPA3 bad key, assoc reject): likely wrong password;
+       - a second auth-fail event (SAE/WPA3 bad key, assoc reject): likely wrong
+         password. A single one is often one access point refusing while
+         wpa_supplicant gets in through another (jw_wifi_attempt_resolve);
        - timeout (12s): neither.
        On any failure, forget the bad profile and recover the prior network — a
        connect uses select_network, which disabled it. The monitor is closed on
@@ -3160,14 +3163,15 @@ void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
     if (ui->wifi_attempt_ssid[0]) {
         bool connected = ui->wifi.connected &&
                          strcmp(ui->wifi.ssid, ui->wifi_attempt_ssid) == 0;
-        bool failed = (evt != JW_WIFI_EVT_NONE) ||
-                      (int)(now - ui->wifi_attempt_ms) > 12000;
-        if (connected) {
+        jw_wifi_attempt_result result =
+            jw_wifi_attempt_resolve(connected, evt, &ui->wifi_attempt_auth_fails,
+                                    now - ui->wifi_attempt_ms);
+        if (result == JW_WIFI_ATTEMPT_CONNECTED) {
             jw__wifi_msg(ui, "Connected to %s",
                      ui->wifi_attempt_ssid);
             jw__wifi_attempt_clear(ui);
-        } else if (failed) {
-            if (evt == JW_WIFI_EVT_WRONG_KEY) {
+        } else if (result != JW_WIFI_ATTEMPT_PENDING) {
+            if (result == JW_WIFI_ATTEMPT_WRONG_KEY) {
                 /* Only a DEFINITIVE wrong key forgets the profile — never a
                    generic/timeout failure, which on this flaky radio can hit a
                    perfectly-good saved network and would otherwise destroy a
