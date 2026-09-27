@@ -120,6 +120,12 @@ typedef struct {
     time_t checked_at;
     int option_count;
     int selected_option;
+    /* A routine check stops at the newest compatible release, so options hold
+       just that one until the release picker loads the rest. options_complete
+       says every release in the list has been looked at; options_loading says a
+       release-list load is under way. */
+    bool options_complete;
+    bool options_loading;
     jw_update_option options[JW_UPDATE_MAX_OPTIONS];
 } jw_update_status;
 
@@ -147,6 +153,14 @@ typedef enum {
     JW_UPDATE_CHANNEL_BETA          /* the Leaf-beta repo (tester builds) */
 } jw_update_channel;
 
+/* How far a GitHub check reads. LATEST fetches manifests newest first and stops
+   at the first compatible release: what the System Update page needs. ALL
+   fetches every manifest in the release list at once, for the release picker. */
+typedef enum {
+    JW_UPDATE_SCOPE_LATEST = 0,
+    JW_UPDATE_SCOPE_ALL
+} jw_update_check_scope;
+
 /* Async release check. The GitHub fetch is a blocking libcurl call (up to 15s on
    bad Wi-Fi); running it on the daemon's request path froze the launcher render
    loop, so we thread it. The worker fills `scratch`; the main loop's poll copies
@@ -160,6 +174,8 @@ typedef struct {
     char state_dir[JW_UPDATE_PATH_MAX];
     char platform_id[JW_UPDATE_PLATFORM_ID_MAX];
     jw_update_channel channel;
+    jw_update_check_scope scope;
+    bool queued_all;   /* run an ALL load once the running LATEST check lands */
 } jw_update_check_job;
 
 const char *jw_update_status_name(jw_update_status_code status);
@@ -183,15 +199,26 @@ int jw_update_check_local_manifest(jw_update_status *status,
 int jw_update_check_github(jw_update_status *status,
                            const char *state_dir,
                            const char *platform_id,
-                           jw_update_channel channel);
+                           jw_update_channel channel,
+                           jw_update_check_scope scope);
+/* jw_update_check_github against an explicit GitHub-shaped releases URL. */
+int jw_update_check_releases(jw_update_status *status,
+                             const char *state_dir,
+                             const char *platform_id,
+                             const char *releases_url,
+                             jw_update_check_scope scope);
 void jw_update_check_job_init(jw_update_check_job *job);
-/* Kick off an async GitHub release check. Sets status to CHECKING and returns
-   immediately; the result lands via jw_update_check_poll(). No-op (returns 0) if
-   a check is already in flight. */
+/* Kick off an async GitHub release check and return immediately; the result
+   lands via jw_update_check_poll(). LATEST sets status to CHECKING and replaces
+   the candidate when it lands. ALL sets options_loading and only replaces the
+   options, keeping the selected candidate and any download. If a job is already
+   in flight this is a no-op (returns 0), except that an ALL request during a
+   LATEST check is queued to run after it. */
 int jw_update_check_start(jw_update_status *status,
                           jw_update_check_job *job,
                           const char *state_dir,
-                          jw_update_channel channel);
+                          jw_update_channel channel,
+                          jw_update_check_scope scope);
 void jw_update_check_poll(jw_update_status *status,
                           jw_update_check_job *job);
 void jw_update_check_job_wait(jw_update_check_job *job);
