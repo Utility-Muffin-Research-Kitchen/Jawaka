@@ -9044,6 +9044,11 @@ static void jw__start_input_proxy(jw_daemon_state *state) {
             jw_input_proxy_configure_menu(&state->input_proxy, state->session_menu_config);
         state->input_proxy.shortcut = jw__on_shortcut_chord;
         state->input_proxy.rumble = jw__rumble_ff;
+        /* Forward from a thread of its own, now that every callback is in
+           place: this loop can block for hundreds of ms (IPC, spawns), and a
+           release it held back turned taps into holds. The watch-only proxy
+           forwards nothing, so it stays on this loop. */
+        (void)jw_input_proxy_start(&state->input_proxy);
         jw__publish_retroarch_input_env(state);
     }
 }
