@@ -32,6 +32,11 @@ int jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy) {
     return -1;
 }
 
+int jw_input_proxy_start(jw_input_proxy *proxy) {
+    (void)proxy;
+    return -1;
+}
+
 int jw_input_proxy_poll_fd(const jw_input_proxy *proxy) {
     (void)proxy;
     return -1;
