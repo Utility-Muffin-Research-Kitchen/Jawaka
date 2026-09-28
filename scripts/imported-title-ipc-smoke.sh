@@ -36,7 +36,7 @@ printf 'bin\n' >"$PRIMARY/Roms/PS/track.bin"
 printf 'p8\n' >"$SECONDARY/Roms/PICO8/cart-a.p8"
 printf 'p8\n' >"$SECONDARY/Roms/PICO8/cart-b.p8"
 printf 'outside\n' >"$OUTSIDE"
-printf '%s\n' '{"platform":"mac","cores":[{"id":"pcsx_rearmed","display_name":"PCSX ReARMed","type":"retroarch","file_name":"pcsx_rearmed_libretro.dylib","status":"packaged"},{"id":"fake08","display_name":"FAKE-08","type":"retroarch","file_name":"fake08_libretro.dylib","status":"packaged"}]}' >"$PLATFORM/defaults/cores.json"
+printf '%s\n' '{"platform":"mac","cores":[{"id":"pcsx_rearmed","display_name":"PCSX ReARMed","type":"retroarch","file_name":"pcsx_rearmed_libretro.dylib","config_folder":"PCSX-ReARMed","status":"packaged"},{"id":"fake08","display_name":"FAKE-08","type":"retroarch","file_name":"fake08_libretro.dylib","config_folder":"fake-08","status":"packaged"}]}' >"$PLATFORM/defaults/cores.json"
 printf '%s\n' '{"platform":"mac","systems":[{"id":"PS","name":"Sony PlayStation","patterns":["PS"],"extensions":["cue"],"archive_extensions":[],"archive_inner_extensions":["cue"],"archive_mode":"pass_through","file_names":[],"ignore_file_names":[],"playlist_extensions":[],"m3u_generation":"none","default_core":"pcsx_rearmed","alternate_cores":[],"rom_root":"Roms/PS","image_root":"Images/PS"},{"id":"PICO8","name":"Pico-8","patterns":["PICO8"],"extensions":["p8"],"archive_extensions":[],"archive_inner_extensions":["p8"],"archive_mode":"pass_through","file_names":[],"ignore_file_names":[],"playlist_extensions":[],"m3u_generation":"none","default_core":"fake08","alternate_cores":[],"rom_root":"Roms/PICO8","image_root":"Images/PICO8"}]}' >"$PLATFORM/defaults/systems.json"
 
 # Keep the first scan active long enough that the second request exercises the
@@ -64,6 +64,18 @@ for _ in $(seq 1 500); do
     sleep 0.02
 done
 [ -S "$SOCKET" ] || { echo "jawakad socket did not appear" >&2; cat "$LOG" >&2; exit 1; }
+
+# The assertions only hold for the metadata scanner. If the catalog loader
+# rejects the fixture above, the compatibility scanner indexes every file
+# (track.bin included) and the failure surfaces as a misleading title mismatch.
+for _ in $(seq 1 500); do
+    grep -q "RetroArch discovery: scanning with" "$LOG" && break
+    sleep 0.02
+done
+if grep -F "using compatibility scanner" "$LOG" >&2; then
+    echo "fixture catalog was rejected; update it to the current catalog schema" >&2
+    exit 1
+fi
 
 python3 "$ROOT_DIR/scripts/imported-title-ipc-smoke.py" \
     "$SOCKET" "$DB" "$PRIMARY" "$SECONDARY" "$OUTSIDE"
