@@ -14,6 +14,7 @@
 #include <drm/drm_mode.h>
 #include <linux/netlink.h>
 #include <linux/input.h>
+#include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <sys/prctl.h>
 #include <dlfcn.h>
@@ -113,12 +114,12 @@
    in Leaf mode jawakad does (see jw__mlp1_speaker_gate_sync). */
 #define JW_MLP1_SPK_CTL "/sys/kernel/powerCtrl/spk_ctl"
 #define JW_MLP1_RK817_PCM_STATUS "/proc/asound/card1/pcm0p/sub0/status"
-/* While playback is possible: under the daemon's 50 ms busy cadence, so every
-   pass checks. SETUP to the first samples at the DAC is ~150 ms, and the gate
-   has to be up inside that. Otherwise once a second is enough to notice the
-   device closing. */
-#define JW_MLP1_SPK_GATE_POLL_MS 40
-#define JW_MLP1_SPK_GATE_IDLE_POLL_MS 1000
+/* Every rk817 player opens this node, and inotify reports each open and close
+   (devtmpfs delivers the events). The speaker gate follows them. */
+#define JW_MLP1_RK817_PCM_DEV "/dev/snd/pcmC1D0p"
+/* Without a watch (the node missing), poll the PCM state this often instead
+   and try to arm the watch again. */
+#define JW_MLP1_SPK_GATE_FALLBACK_POLL_MS 1000
 
 /* The rk817 DAC (ALSA numid=16) is the dominant hardware loudness control and is
    pinned to a fixed level at boot (platform.d/00-audio-init.sh). The user-facing
@@ -255,6 +256,8 @@ static int jw__mlp1_jack_input_state(void);
 static bool jw__mlp1_bt_audio_present(void);
 static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi);
 static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx);
+static void jw__mlp1_pcm_watch_arm(void);
+static void jw__mlp1_speaker_gate_sync(bool force);
 static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reason);
 
 /* The user's Refresh Rate setting (60/100/120), cached when set so the HDMI apply
@@ -2995,8 +2998,11 @@ static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi) {
 static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reason) {
     (void)ctx;
     const char *why = (reason && reason[0]) ? reason : "unknown";
-    /* Switch events can be lost across a suspend; take the kernel's word. */
+    /* Switch events can be lost across a suspend; take the kernel's word. Arm
+       the playback-node watch again too, and settle the gate from scratch. */
     jw__mlp1_jack_resync();
+    jw__mlp1_pcm_watch_arm();
+    jw__mlp1_speaker_gate_sync(true);
     jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
     jw_platform_audio_output current = jw__mlp1_get_audio_output();
 
@@ -3026,9 +3032,11 @@ static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reaso
                 why, jw_platform_audio_output_label(target));
 }
 
-/* rk817 playback substream state: 1 = a stream is set up or running (SETUP,
-   PREPARED, RUNNING), 0 = closed, -1 = anything else (OPEN, XRUN, DRAINING,
-   PAUSED, SUSPENDED) or unreadable. */
+/* rk817 playback substream state: 1 = a stream is being opened, set up or
+   running (OPEN, SETUP, PREPARED, RUNNING), 0 = closed, -1 = anything else
+   (XRUN, DRAINING, PAUSED, SUSPENDED) or unreadable. OPEN counts because the
+   inotify IN_OPEN that triggers a sync arrives while the stream is in it, ~5 ms
+   before SETUP. */
 static int jw__mlp1_rk817_playback_state(void) {
     int fd = open(JW_MLP1_RK817_PCM_STATUS, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
@@ -3043,7 +3051,8 @@ static int jw__mlp1_rk817_playback_state(void) {
     buf[n] = '\0';
     if (strncmp(buf, "state: RUNNING", 14) == 0 ||
         strncmp(buf, "state: PREPARED", 15) == 0 ||
-        strncmp(buf, "state: SETUP", 12) == 0) {
+        strncmp(buf, "state: SETUP", 12) == 0 ||
+        strncmp(buf, "state: OPEN", 11) == 0) {
         return 1;
     }
     if (strncmp(buf, "closed", 6) == 0) {
@@ -3066,45 +3075,79 @@ static int jw__mlp1_speaker_gate_for_playback(void) {
    spk_ctl is both "speaker on" during playback and the only way to mute the
    speaker for wired headphones.
 
-   Raise it (jack empty) as soon as a stream is set up: SETUP and PREPARED come
-   ~150 ms before the first samples reach the DAC, so the amp is on and settled
-   before the sound starts. Waiting for RUNNING clipped the start of every sound
-   after an idle gap (PulseAudio's suspend-on-idle closes the device after 1 s)
-   and switched the amp on under a live DAC. Drop it for headphones, and once the
-   device is closed, when DAPM has already powered the output stage down and the
-   drop cannot pop. XRUN, DRAINING and PAUSED leave the gate alone so a hiccup
-   never toggles the amp. HDMI, USB-C and Bluetooth never open this substream,
-   so they need no case of their own.
+   Raise it (jack empty) as soon as a stream opens: OPEN and SETUP come ~150 ms
+   before the first samples reach the DAC, so the amp is on and settled before
+   the sound starts. Waiting for RUNNING clipped the start of every sound after
+   an idle gap (PulseAudio's suspend-on-idle closes the device after 1 s) and
+   switched the amp on under a live DAC. Drop it for headphones, and once the
+   device is closed, when DAPM has already powered the output stage down and
+   the drop cannot pop. XRUN, DRAINING and PAUSED leave the gate alone so a
+   hiccup never toggles the amp. HDMI, USB-C and Bluetooth never open this
+   substream, so they need no case of their own.
 
-   This replaced a platform.d shell loop that forked grep/sleep five times a
-   second, about 10 points of one core at idle. Here it is one /proc read per
-   poll and a sysfs write only when the gate has to move. The current value is
-   read back rather than cached, so a resume or another writer is corrected on
-   the next poll. */
+   The sync runs when something happens: an open or close of the playback
+   node (inotify), a jack edge, a wake. Any player counts, PulseAudio or
+   straight ALSA, launched by jawakad or not, and an idle launcher costs
+   nothing. It replaced a platform.d shell loop that forked grep/sleep five
+   times a second, about 10 points of one core at idle. */
 static long long s_mlp1_gate_polled_ms = -1;
-static int s_mlp1_gate_last_playback = 0;   /* last state read; 0 = closed */
+static int s_mlp1_pcm_watch_fd = -1;
+static int s_mlp1_pcm_watch_wd = -1;
 
-/* A stream can start at any moment while a game or app runs, while the test
-   clip plays, or while the device is still open. Only then does the gate need
-   the fast poll; at an idle launcher the PCM stays closed. */
-static bool jw__mlp1_speaker_gate_fast(const jw_platform_context *ctx) {
-    return (ctx && ctx->content_active) || jw__mlp1_test_sound_active() ||
-           s_mlp1_gate_last_playback != 0;
+/* (Re-)arm the watch. Adding it again for the same inode keeps the same watch;
+   a node recreated by a driver rebind gets a new one. */
+static void jw__mlp1_pcm_watch_arm(void) {
+    if (s_mlp1_pcm_watch_fd < 0) {
+        s_mlp1_pcm_watch_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+        if (s_mlp1_pcm_watch_fd < 0) {
+            return;
+        }
+    }
+    s_mlp1_pcm_watch_wd = inotify_add_watch(s_mlp1_pcm_watch_fd,
+                                            JW_MLP1_RK817_PCM_DEV,
+                                            IN_OPEN | IN_CLOSE);
 }
 
-static void jw__mlp1_speaker_gate_sync(const jw_platform_context *ctx, bool force) {
+/* True when the playback node was opened or closed since the last call, or
+   its watch went away (then it is re-armed on the fallback poll). */
+static bool jw__mlp1_pcm_watch_drain(void) {
+    if (s_mlp1_pcm_watch_fd < 0) {
+        return false;
+    }
+    char buf[1024] __attribute__((aligned(__alignof__(struct inotify_event))));
+    bool any = false;
+    for (;;) {
+        ssize_t n = read(s_mlp1_pcm_watch_fd, buf, sizeof(buf));
+        if (n <= 0) {
+            break;   /* EAGAIN: drained */
+        }
+        for (char *p = buf; p < buf + n;) {
+            const struct inotify_event *ev = (const struct inotify_event *)p;
+            if ((ev->mask & IN_IGNORED) && ev->wd == s_mlp1_pcm_watch_wd) {
+                s_mlp1_pcm_watch_wd = -1;
+            }
+            any = true;
+            p += sizeof(*ev) + ev->len;
+        }
+    }
+    return any;
+}
+
+static void jw__mlp1_speaker_gate_sync(bool force) {
     long long now = jw__monotonic_ms();
-    long long interval = jw__mlp1_speaker_gate_fast(ctx)
-                             ? JW_MLP1_SPK_GATE_POLL_MS
-                             : JW_MLP1_SPK_GATE_IDLE_POLL_MS;
-    if (!force && s_mlp1_gate_polled_ms >= 0 &&
-        now - s_mlp1_gate_polled_ms < interval) {
+    bool changed = jw__mlp1_pcm_watch_drain();
+    if (s_mlp1_pcm_watch_wd < 0 &&
+        (s_mlp1_gate_polled_ms < 0 ||
+         now - s_mlp1_gate_polled_ms >= JW_MLP1_SPK_GATE_FALLBACK_POLL_MS)) {
+        jw__mlp1_pcm_watch_arm();
+        force = true;
+    }
+    if (!force && !changed) {
         return;
     }
     s_mlp1_gate_polled_ms = now;
 
     int playback = jw__mlp1_rk817_playback_state();
-    s_mlp1_gate_last_playback = playback;
     if (playback < 0) {
         return;
     }
@@ -3133,6 +3176,8 @@ static bool s_mlp1_sink_resume_pending = false;
 
 static void jw__mlp1_wake_audio(jw_platform_context *ctx) {
     (void)ctx;
+    /* Before the sink reopens the device, so its IN_OPEN cannot be missed. */
+    jw__mlp1_pcm_watch_arm();
     if (!s_mlp1_sink_resume_pending) {
         return;
     }
@@ -3155,7 +3200,7 @@ static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
        lingering as a zombie and keeps the play/stop state accurate). */
     (void)jw__mlp1_test_sound_active();
 
-    jw__mlp1_speaker_gate_sync(ctx, false);
+    jw__mlp1_speaker_gate_sync(false);
 
     /* ── Headphone-jack edge (cheap kernel switch, checked every loop). ──
        On unplug, fall back to Bluetooth if a headset is still connected, not
@@ -3172,7 +3217,7 @@ static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
         jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
         jw__mlp1_set_audio_output(target, &res);
         /* Mute or unmute the speaker now rather than on the next poll. */
-        jw__mlp1_speaker_gate_sync(ctx, true);
+        jw__mlp1_speaker_gate_sync(true);
         events |= JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
         jw_log_info("audio: headphone jack %s, routed to %s",
                     present ? "inserted" : "removed",
@@ -4000,8 +4045,8 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
     return changed;
 }
 
-/* The hotplug netlink socket, the headphone jack and the BlueALSA monitor.
-   Everything else the audio and storage ticks watch is either a timer
+/* The hotplug netlink socket, the headphone jack, the BlueALSA monitor and
+   the playback-node watch. Everything else the audio and storage ticks watch is either a timer
    (next_deadline_ms) or a periodic check that runs on whatever pass comes
    next. */
 static int jw__mlp1_poll_fds(jw_platform_context *ctx, int *fds, int max) {
@@ -4017,6 +4062,9 @@ static int jw__mlp1_poll_fds(jw_platform_context *ctx, int *fds, int max) {
     if (s_mlp1_bt_monitor_fd >= 0 && count < max) {
         fds[count++] = s_mlp1_bt_monitor_fd;
     }
+    if (s_mlp1_pcm_watch_fd >= 0 && count < max) {
+        fds[count++] = s_mlp1_pcm_watch_fd;
+    }
     return count;
 }
 
@@ -4030,7 +4078,8 @@ static void jw__mlp1_deadline_min(long long *best, long long at) {
    second of lateness is harmless and the daemon wakes at least once a second:
    the 400 ms charger poll (charger uevents never arrive on this device, see
    the storage tick), the 1 s USB-audio and 1.5 s Bluetooth-audio probes, and
-   the idle speaker-gate poll. */
+   the speaker-gate fallback poll used only while the playback node cannot be
+   watched. */
 static long long jw__mlp1_next_deadline_ms(jw_platform_context *ctx, long long now_ms) {
     jw_mlp1_platform_data *data = ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
     long long best = -1;
@@ -4042,11 +4091,6 @@ static long long jw__mlp1_next_deadline_ms(jw_platform_context *ctx, long long n
     }
     if (data && data->pending_charge_event) {
         jw__mlp1_deadline_min(&best, data->charge_settle_until_ms);
-    }
-    if (jw__mlp1_speaker_gate_fast(ctx)) {
-        jw__mlp1_deadline_min(&best, s_mlp1_gate_polled_ms < 0
-                                         ? now_ms
-                                         : s_mlp1_gate_polled_ms + JW_MLP1_SPK_GATE_POLL_MS);
     }
     return best;
 }

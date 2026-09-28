@@ -16603,7 +16603,6 @@ int main(int argc, char *argv[]) {
             state.child_kind == JW_CHILD_LAUNCHER && state.child_pid > 0) {
             kill(state.child_pid, SIGUSR1);
         }
-        state.platform.content_active = jw__content_child_active(&state);
         unsigned audio_events = jw_platform_audio_tick(&state.platform);
         if (audio_events & JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED) {
             jw__schedule_retroarch_audio_reinit(&state, "bluetooth-connected");
