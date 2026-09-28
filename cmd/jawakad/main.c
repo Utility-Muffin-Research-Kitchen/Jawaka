@@ -515,6 +515,8 @@ typedef struct {
     bool storage_scan_deferred;      /* a scan waits for the DB to be writable */
     bool storage_repair_rescan_done; /* post-repair rescan considered this run */
     bool storage_log_redirected;
+    bool reap_by_signal;   /* the SIGCHLD pipe is installed */
+    bool sigchld_seen;     /* a SIGCHLD arrived since the last exit check */
 } jw_daemon_state;
 
 static void jw__scan_title_list_free(jw_scan_title_list *list) {
@@ -670,6 +672,10 @@ static void jw__scan_title_list_move(jw_scan_title_list *dest,
 }
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
+/* SIGCHLD self-pipe. The handler writes a byte; the read end sits in the
+   daemon's poll set, and the loop runs its child-exit handlers only after one
+   instead of calling waitpid on every tracked child on every pass. */
+static int g_sigchld_pipe[2] = {-1, -1};
 
 static bool jw__request_power_transition(jw_daemon_state *state,
                                          jw_platform_action action,
@@ -871,6 +877,54 @@ static long long jw__monotonic_ms(void) {
 static void jw__handle_signal(int signo) {
     (void)signo;
     g_shutdown_requested = 1;
+}
+
+static void jw__handle_sigchld(int signo) {
+    (void)signo;
+    int saved_errno = errno;
+    if (g_sigchld_pipe[1] >= 0) {
+        ssize_t ignored = write(g_sigchld_pipe[1], "c", 1);
+        (void)ignored;
+    }
+    errno = saved_errno;
+}
+
+/* Called before anything is spawned. On failure the loop falls back to
+   checking every child on every pass, as it did before the pipe. */
+static bool jw__install_sigchld_pipe(void) {
+    if (pipe(g_sigchld_pipe) != 0) {
+        g_sigchld_pipe[0] = g_sigchld_pipe[1] = -1;
+        return false;
+    }
+    for (int i = 0; i < 2; i++) {
+        (void)fcntl(g_sigchld_pipe[i], F_SETFD, FD_CLOEXEC);
+        int flags = fcntl(g_sigchld_pipe[i], F_GETFL);
+        if (flags >= 0) {
+            (void)fcntl(g_sigchld_pipe[i], F_SETFL, flags | O_NONBLOCK);
+        }
+    }
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = jw__handle_sigchld;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    if (sigaction(SIGCHLD, &sa, NULL) != 0) {
+        close(g_sigchld_pipe[0]);
+        close(g_sigchld_pipe[1]);
+        g_sigchld_pipe[0] = g_sigchld_pipe[1] = -1;
+        return false;
+    }
+    return true;
+}
+
+/* usleep that sleeps the whole time. With a SIGCHLD handler installed, a
+   child exiting mid-sleep ends a plain usleep early, which would shorten the
+   grace windows and "N tries" waits in this file. */
+static void jw__usleep(unsigned long usec) {
+    struct timespec left = { (time_t)(usec / 1000000UL),
+                             (long)(usec % 1000000UL) * 1000L };
+    while (nanosleep(&left, &left) != 0 && errno == EINTR) {
+    }
 }
 
 static int jw__path_exists(const char *path) {
@@ -1992,6 +2046,7 @@ static void jw__services_init(jw_daemon_state *state) {
         }
     }
     state->services = sup;
+    jw_svc_supervisor_set_exit_notify(sup, state->reap_by_signal);
     if (state->active_game.active) {
         jw_svc_supervisor_game_set_active(sup, true);
         jw_log_warn("services: game-sensitive starts suppressed by %s active-game record",
@@ -4349,7 +4404,7 @@ static void *jw__scan_job_main(void *arg) {
             char *end = NULL;
             long delay_ms = strtol(test_delay, &end, 10);
             if (end && *end == '\0' && delay_ms > 0 && delay_ms <= 5000)
-                usleep((useconds_t)delay_ms * 1000u);
+                jw__usleep((useconds_t)delay_ms * 1000u);
         }
         if (jw_scan_library(db, sdcard_root, &result) != 0) {
         snprintf(error, sizeof(error), "scan failed reason=%s",
@@ -4837,7 +4892,7 @@ static int jw__game_child_set_own_group(void) {
         if (setpgid(0, 0) == 0 || getpgrp() == getpid()) {
             return 0;
         }
-        usleep(1000);
+        jw__usleep(1000);
     }
     return -1;
 }
@@ -5878,7 +5933,7 @@ static int jw__wait_for_retroarch_content(const jw_ra_client *ra,
                         result == JW_RA_OK ? content : "");
             return -1;
         }
-        usleep(50000);
+        jw__usleep(50000);
     }
 }
 
@@ -7040,7 +7095,7 @@ static bool jw__wait_for_tracked_child_exit(jw_daemon_state *state, pid_t pid,
         if (now >= deadline) {
             return false;
         }
-        usleep(50000);
+        jw__usleep(50000);
     }
 }
 
@@ -7120,8 +7175,7 @@ static void jw__wait_for_savestate_write(const jw_daemon_state *state, int slot)
         return;
     }
     while (elapsed < timeout_ms) {
-        struct timespec ts = { poll_ms / 1000, (long)(poll_ms % 1000) * 1000000L };
-        nanosleep(&ts, NULL);
+        jw__usleep((unsigned long)poll_ms * 1000UL);
         elapsed += poll_ms;
 
         struct stat st;
@@ -7516,7 +7570,7 @@ static void jw__stop_osd_child(jw_daemon_state *state) {
             state->osd_pid = -1;
             return;
         }
-        usleep(50000);
+        jw__usleep(50000);
     }
 
     kill(pid, SIGKILL);
@@ -7708,7 +7762,7 @@ static long long jw__osd_now_ms(void *ctx) {
 
 static void jw__osd_sleep_ms(void *ctx, int ms) {
     (void)ctx;
-    usleep((useconds_t)ms * 1000u);
+    jw__usleep((useconds_t)ms * 1000u);
 }
 
 /* A PICO-8 prompt may be on screen and even its hide went unanswered. The OSD
@@ -8719,7 +8773,7 @@ static void *jw__screenshot_worker(void *arg) {
         char newest[PATH_MAX] = "";
         off_t prev_size = -1;
         for (int tries = 0; tries < 30; tries++) {   /* up to ~3s */
-            usleep(100000);   /* 100ms */
+            jw__usleep(100000);   /* 100ms */
             /* newest PNG that was NOT already present, with a non-zero size */
             time_t best_mt = 0;
             char  cand[PATH_MAX] = "";
@@ -10210,7 +10264,7 @@ static jw__rop_gate_result jw__raofflineproxy_route(
         if (jw__monotonic_ms() >= deadline_ms) {
             break;
         }
-        usleep(100 * 1000);
+        jw__usleep(100 * 1000);
     }
     jw_log_info("RAOfflineProxy: service not ready after %dms; blocking launch",
                 JW_ROP_ROUTING_BUDGET_MS);
@@ -12266,7 +12320,7 @@ static int jw__storage_run_repair_tool(char *const argv[], char *out, size_t out
         if (jw__monotonic_ms() >= deadline) {
             break;
         }
-        usleep(10000);
+        jw__usleep(10000);
     }
     (void)kill(pid, SIGKILL);
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
@@ -15132,12 +15186,95 @@ static void jw__ipc_accept_ready(jw_daemon_state *state) {
     }
 }
 
+/* A game or app is the foreground child: audio can start at any moment and
+   most of the in-game machinery below is live. The launcher and the Settings
+   menu are not content. */
+static bool jw__content_child_active(const jw_daemon_state *state) {
+    return state->child_pid > 0 &&
+           state->child_kind != JW_CHILD_NONE &&
+           state->child_kind != JW_CHILD_LAUNCHER &&
+           state->child_kind != JW_CHILD_MENU;
+}
+
+/* The daemon sleeps to its next deadline, at most JW_LOOP_IDLE_MAX_MS. Work
+   that is sub-second while it lasts keeps the old 50 ms cadence instead of
+   declaring a deadline; this is the complete list, so anything not named here
+   tolerates the idle heartbeat (the charger, HDMI, USB/Bluetooth audio and
+   storage-health polls, the auto-sleep setting and screen-off time, package
+   mutation recovery, the external-pad rescan, the IPC partial-frame timeout,
+   suspend-inhibitor liveness). Events wake the loop on their own: IPC, the
+   input proxy (power edges, callbacks, swallowed standby input), SIGCHLD, the
+   jack and storage/netlink fds, the OSD readiness pipe and external pads. */
+#define JW_LOOP_BUSY_MS 50
+#define JW_LOOP_IDLE_MAX_MS 1000
+
+static bool jw__loop_busy(const jw_daemon_state *state) {
+    /* Game or app: speaker-gate SETUP window (~150 ms), rumble reclaim
+       (250 ms), switcher resume and warning retries (100 ms), menu prewarm,
+       shader poll (25 ms), menu escape, writer-group absence waits, standalone
+       and PICO-8 quit confirmation and the import timeout. */
+    if (jw__content_child_active(state)) return true;
+    /* No foreground child yet: respawn and pending launch decisions. */
+    if (!state->daemon_only && state->child_pid <= 0) return true;
+    if (state->child_stop_deadline_ms > 0 || state->child_group_wait_started_ms > 0) return true;
+    if (state->pending_menu || state->pending_launch || state->pending_app ||
+        state->launch_status_pending) return true;
+    if (state->post_launch_resume_pending || state->in_game_menu_prewarm_pending ||
+        state->advanced_shader_pending || state->retroarch_session.warning_pending) return true;
+    if (state->retroarch_audio_reinit_pending || state->rumble_reclaim_ms > 0 ||
+        state->retroarch_quit_deadline_ms > 0) return true;
+    if (state->menu_pid > 0 || state->menu_escape.pending) return true;
+    if (state->game_coordination_pending) return true;
+    /* Power held: the 2 s long-press threshold has no event of its own. */
+    if (state->power_held) return true;
+    /* OSD start-up: readiness is also noticed per pass. */
+    if (state->osd_pid > 0 && !state->osd_ready) return true;
+    /* Update progress polling, and the update-check and scan threads, which
+       finish by setting a flag nothing wakes the loop for. */
+    if (state->update_download_job.active || state->update_install_job.active ||
+        state->update_check_job.active || state->update_package_quiesce_active) return true;
+    if (state->scan_job.thread_started) return true;
+    /* Start-up maintenance runs 500 ms after frontend-ready. */
+    if (state->startup_maintenance_pending) return true;
+    /* An inline input proxy reads the power key and runs its Menu-tap (80 ms)
+       and escape timers only from its tick. */
+    if (jw_input_proxy_needs_tick_cadence(&state->input_proxy)) return true;
+    return false;
+}
+
+static int jw__loop_timeout_ms(jw_daemon_state *state) {
+    if (jw__loop_busy(state)) {
+        return JW_LOOP_BUSY_MS;
+    }
+    long long now = jw__monotonic_ms();
+    long long due = now + JW_LOOP_IDLE_MAX_MS;
+    long long at = jw_platform_next_deadline_ms(&state->platform, now);
+    if (at >= 0 && at < due) {
+        due = at;
+    }
+    if (state->services) {
+        at = jw_svc_supervisor_next_deadline_ms(state->services, now);
+        if (at >= 0 && at < due) {
+            due = at;
+        }
+    }
+    /* A deadline that is already due gets the old cadence rather than 0: if
+       its tick cannot act on it yet, 0 would spin. */
+    if (due <= now) {
+        return JW_LOOP_BUSY_MS;
+    }
+    return (int)(due - now);
+}
+
 static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
-    struct pollfd poll_fds[JW_DAEMON_IPC_CONNECTION_MAX + 2];
-    int slot_for_poll[JW_DAEMON_IPC_CONNECTION_MAX + 2];
+    /* Listen socket, connections, then the wake-only fds below. */
+    enum { JW_POLL_EXTRA = 2 + 4 + JW_EXT_INPUT_MAX_PADS + 1 };
+    struct pollfd poll_fds[1 + JW_DAEMON_IPC_CONNECTION_MAX + JW_POLL_EXTRA];
+    int slot_for_poll[1 + JW_DAEMON_IPC_CONNECTION_MAX + JW_POLL_EXTRA];
+    const nfds_t poll_max = sizeof(poll_fds) / sizeof(poll_fds[0]);
     nfds_t count = 1;
     memset(poll_fds, 0, sizeof(poll_fds));
-    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX + 2; i++) {
+    for (nfds_t i = 0; i < poll_max; i++) {
         slot_for_poll[i] = -1;
     }
     poll_fds[0].fd = jw_ipc_server_fd(state->server);
@@ -15167,10 +15304,41 @@ static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
         count++;
     }
 
+    /* Wake-only fds: their ticks drain them on the next pass, so revents is
+       not looked at here (except the SIGCHLD pipe, drained below). */
+    int wake_fds[JW_POLL_EXTRA];
+    int wake_count = 0;
+    int sigchld_index = -1;
+    if (g_sigchld_pipe[0] >= 0) {
+        sigchld_index = (int)count + wake_count;
+        wake_fds[wake_count++] = g_sigchld_pipe[0];
+    }
+    wake_count += jw_platform_poll_fds(&state->platform, wake_fds + wake_count, 4);
+    for (int i = 0; i < JW_EXT_INPUT_MAX_PADS; i++) {
+        if (state->external_input.fds[i] >= 0) {
+            wake_fds[wake_count++] = state->external_input.fds[i];
+        }
+    }
+    if (!state->osd_ready && state->osd_ready_fd >= 0) {
+        wake_fds[wake_count++] = state->osd_ready_fd;
+    }
+    for (int i = 0; i < wake_count && count < poll_max; i++) {
+        poll_fds[count].fd = wake_fds[i];
+        poll_fds[count].events = POLLIN;
+        count++;
+    }
+
     int ready = poll(poll_fds, count, timeout_ms);
     if (ready < 0 && errno != EINTR) {
         jw_log_warn("ipc poll failed: %s", strerror(errno));
         return;
+    }
+    if (ready > 0 && sigchld_index >= 0 &&
+        (poll_fds[sigchld_index].revents & POLLIN)) {
+        char drain[64];
+        while (read(g_sigchld_pipe[0], drain, sizeof(drain)) > 0) {
+        }
+        state->sigchld_seen = true;
     }
     if (ready > 0 && (poll_fds[0].revents & POLLIN)) {
         jw__ipc_accept_ready(state);
@@ -15283,7 +15451,7 @@ static void jw__terminate_menu_child(jw_daemon_state *state, bool force) {
             jw__clear_menu_tracking(state);
             return;
         }
-        usleep(50000);
+        jw__usleep(50000);
     }
 
     if (force) {
@@ -15394,7 +15562,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
             for (int i = 0; i < 25 && !absent; i++) {
                 absent = jw_svc_group_absent(pgid);
                 if (!absent) {
-                    usleep(20000);
+                    jw__usleep(20000);
                 }
             }
             bool shutting_down =
@@ -15509,7 +15677,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
                    has since replaced keeps the card from closing at
                    shutdown. See weston_initd.h. */
                 (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
-                sleep(1);
+                jw__usleep(1000000UL);
                 state->direct_drm_weston_stopped = false;
             }
             if (!state->shutdown_requested && !g_shutdown_requested) {
@@ -15750,7 +15918,7 @@ static void jw__cleanup(jw_daemon_state *state) {
                    jw__monotonic_ms() < deadline) {
                 jw__handle_child_exit(state);
                 if (state->child_pid == child_pid) {
-                    usleep(20000);
+                    jw__usleep(20000);
                 }
             }
             if (state->child_pid == child_pid) {
@@ -15764,7 +15932,7 @@ static void jw__cleanup(jw_daemon_state *state) {
                        jw__monotonic_ms() < deadline) {
                     jw__handle_child_exit(state);
                     if (state->child_pid == child_pid) {
-                        usleep(20000);
+                        jw__usleep(20000);
                     }
                 }
             }
@@ -15787,7 +15955,7 @@ static void jw__cleanup(jw_daemon_state *state) {
                    jw__monotonic_ms() < deadline) {
                 jw__handle_child_exit(state);
                 if (state->child_pid == child_pid) {
-                    usleep(20000);
+                    jw__usleep(20000);
                 }
             }
             if (state->child_pid == child_pid) {
@@ -15797,7 +15965,7 @@ static void jw__cleanup(jw_daemon_state *state) {
                        jw__monotonic_ms() < deadline) {
                     jw__handle_child_exit(state);
                     if (state->child_pid == child_pid) {
-                        usleep(20000);
+                        jw__usleep(20000);
                     }
                 }
             }
@@ -15926,6 +16094,11 @@ int main(int argc, char *argv[]) {
 
     jw_daemon_state state;
     memset(&state, 0, sizeof(state));
+    state.reap_by_signal = jw__install_sigchld_pipe();
+    if (!state.reap_by_signal) {
+        jw_log_warn("SIGCHLD pipe unavailable (%s); checking children every pass",
+                    strerror(errno));
+    }
     /* A zeroed snapshot would read as "everything disabled"; the defaults are
        the fixed chords this replaces, so a daemon that never reaches the
        settings load still behaves as it always did. */
@@ -16308,15 +16481,25 @@ int main(int argc, char *argv[]) {
         jw_update_download_poll(&state.update_status, &state.update_download_job);
         jw__poll_update_install(&state);
         jw_update_check_poll(&state.update_status, &state.update_check_job);
-        jw__handle_child_exit(&state);
+        /* Child exits: only after a SIGCHLD, or on every pass while something
+           is busy (a writer group can outlive its leader's one SIGCHLD). */
+        bool check_exits = !state.reap_by_signal || state.sigchld_seen ||
+                           jw__loop_busy(&state);
+        if (state.sigchld_seen && state.services) {
+            jw_svc_supervisor_note_child_exit(state.services);
+        }
+        state.sigchld_seen = false;
+        if (check_exits) jw__handle_child_exit(&state);
         jw__tick_post_launch_resume(&state);
         jw__tick_retroarch_warning(&state);
         jw__tick_retroarch_stuck_quit(&state);
         jw__tick_in_game_menu_prewarm(&state);
-        jw__handle_menu_exit(&state);
+        if (check_exits) jw__handle_menu_exit(&state);
         jw__tick_advanced_shader(&state);
-        jw__handle_osd_exit(&state);
-        jw__handle_ledd_exit(&state);
+        if (check_exits || (!state.osd_ready && state.osd_ready_fd >= 0)) {
+            jw__handle_osd_exit(&state);
+        }
+        if (check_exits) jw__handle_ledd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
         jw__tick_menu_escape(&state);
         jw_external_input_monitor_tick(&state.external_input,
@@ -16328,6 +16511,7 @@ int main(int argc, char *argv[]) {
             state.child_kind == JW_CHILD_LAUNCHER && state.child_pid > 0) {
             kill(state.child_pid, SIGUSR1);
         }
+        state.platform.content_active = jw__content_child_active(&state);
         unsigned audio_events = jw_platform_audio_tick(&state.platform);
         if (audio_events & JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED) {
             jw__schedule_retroarch_audio_reinit(&state, "bluetooth-connected");
@@ -16438,7 +16622,7 @@ int main(int argc, char *argv[]) {
                 } else {
                     kill(state.child_pid, SIGTERM);
                 }
-                usleep(50000);
+                jw__usleep(50000);
                 if (kill(state.child_pid, 0) == 0) {
                     if (jw__child_kind_has_writer_barrier(state.child_kind)) {
                         (void)jw__signal_tracked_game_group(&state, SIGKILL);
@@ -16450,18 +16634,18 @@ int main(int argc, char *argv[]) {
         }
         if (state.shutdown_requested && state.menu_pid > 0) {
             kill(state.menu_pid, SIGTERM);
-            usleep(50000);
+            jw__usleep(50000);
             if (kill(state.menu_pid, 0) == 0) {
                 kill(state.menu_pid, SIGKILL);
             }
         }
 
         if (state.shutdown_requested) {
-            usleep(50000);
+            jw__usleep(50000);
             continue;
         }
 
-        jw__ipc_tick(&state, 50);
+        jw__ipc_tick(&state, jw__loop_timeout_ms(&state));
         jw__game_coordination_tick(&state);
         if (!state.daemon_only && state.child_pid <= 0 &&
             (state.game_check_decision || state.game_launch_blocked)) {

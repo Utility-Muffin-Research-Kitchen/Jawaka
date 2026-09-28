@@ -107,6 +107,11 @@ int  jw_input_proxy_start(jw_input_proxy *proxy);
  * physical pad, or once started, the forwarding thread's wake-up. -1 when no
  * input backend is active. */
 int  jw_input_proxy_poll_fd(const jw_input_proxy *proxy);
+/* True while the proxy runs inline (never started, or the thread could not
+ * start): it then reads the power key and runs its Menu-tap and escape timers
+ * only from jw_input_proxy_tick(), so the daemon has to keep calling it every
+ * 50 ms or so. False once started, or with no input backend. */
+bool jw_input_proxy_needs_tick_cadence(const jw_input_proxy *proxy);
 /* Unstarted: read, route and forward what is queued, and run the timers.
  * Started: run the callback the forwarding thread is waiting on, if any. */
 void jw_input_proxy_tick(jw_input_proxy *proxy);

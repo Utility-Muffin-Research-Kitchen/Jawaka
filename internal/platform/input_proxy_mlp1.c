@@ -297,6 +297,15 @@ static void jw__api_unlock(jw_mlp1_input_proxy_data *data) {
     }
 }
 
+/* For calls that only read state or pop the power-edge queue, which arm no
+   timer. jawakad makes those on every loop pass, and a kick each time woke
+   the forwarding thread for nothing. */
+static void jw__api_unlock_quiet(jw_mlp1_input_proxy_data *data) {
+    if (data && data->io_thread_running) {
+        pthread_mutex_unlock(&data->lock);
+    }
+}
+
 static bool jw__event_name_matches(int fd, const char *expected) {
     if (!expected || !expected[0]) {
         return false;
@@ -1373,6 +1382,15 @@ int jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy) {
     return -1;
 }
 
+bool jw_input_proxy_needs_tick_cadence(const jw_input_proxy *proxy) {
+    if (!proxy || !proxy->enabled || !proxy->backend_data) {
+        return false;
+    }
+    const jw_mlp1_input_proxy_data *data =
+        (const jw_mlp1_input_proxy_data *)proxy->backend_data;
+    return !data->io_thread_running;
+}
+
 int jw_input_proxy_poll_fd(const jw_input_proxy *proxy) {
     if (!proxy || !proxy->enabled || !proxy->backend_data) {
         return -1;
@@ -1409,11 +1427,19 @@ static void jw__handle_input(jw_input_proxy *proxy, const struct input_event *ev
     }
     if (generation != data->input_generation) return;
 
-    if (ev->type == EV_KEY ||
+    bool activity = ev->type == EV_KEY ||
         (ev->type == EV_ABS &&
-         (ev->code == ABS_HAT0X || ev->code == ABS_HAT0Y) && ev->value != 0))
+         (ev->code == ABS_HAT0X || ev->code == ABS_HAT0Y) && ev->value != 0);
+    if (activity)
         data->last_activity_ms = jw__monotonic_ms();
-    if (data->swallow) return;
+    if (data->swallow) {
+        /* Swallowed input is how a screen-off standby wakes. jawakad sleeps
+           up to a second between passes when idle, so tell it now rather than
+           leave the press for its next pass to notice. */
+        if (activity && data->io_thread_running)
+            jw__pipe_kick(data->main_wake_pipe[1]);
+        return;
+    }
     if (ev->type == EV_KEY) jw__handle_key(proxy, ev);
     else if (ev->type == EV_ABS && (ev->code == ABS_X || ev->code == ABS_Y))
         jw__forward_stick_abs(data, ev);
@@ -1544,7 +1570,7 @@ uint64_t jw_input_proxy_idle_ms(const jw_input_proxy *proxy) {
     jw_mlp1_input_proxy_data *data = jw__api_lock(proxy);
     uint64_t now = jw__monotonic_ms();
     uint64_t idle = (now > data->last_activity_ms) ? (now - data->last_activity_ms) : 0;
-    jw__api_unlock(data);
+    jw__api_unlock_quiet(data);
     return idle;
 }
 
@@ -1647,7 +1673,7 @@ bool jw_input_proxy_take_power_edge(jw_input_proxy *proxy, jw_power_edge *edge) 
         data->power_edge_head = (data->power_edge_head + 1) % JW_MLP1_POWER_EDGE_MAX;
         data->power_edge_count--;
     }
-    jw__api_unlock(data);
+    jw__api_unlock_quiet(data);
     return took;
 }
 

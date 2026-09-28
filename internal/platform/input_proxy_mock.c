@@ -42,6 +42,11 @@ int jw_input_proxy_poll_fd(const jw_input_proxy *proxy) {
     return -1;
 }
 
+bool jw_input_proxy_needs_tick_cadence(const jw_input_proxy *proxy) {
+    (void)proxy;
+    return false;
+}
+
 void jw_input_proxy_tick(jw_input_proxy *proxy) {
     (void)proxy;
 }
