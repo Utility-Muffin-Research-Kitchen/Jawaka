@@ -1997,6 +1997,15 @@ void jw_settings_ui_refresh_wifi_strength(jw_settings_ui *ui) {
 }
 
 int jw_settings_bt_state_now(void) {
+    /* The status bar polls this every few seconds. The kernel answers without
+       the bluetoothctl calls, the sqlite3 read and the saved-list sync that
+       jw_bt_radio_is_on() runs; the Bluetooth page still does all of that. */
+    bool powered = false;
+    bool connected = false;
+    if (jw_bt_kernel_state(&powered, &connected) == 0) {
+        if (!powered) return 0;
+        return connected ? 2 : 1;
+    }
     if (!jw_bt_radio_is_on()) return 0;
     return (jw_bt_any_connected() == 1) ? 2 : 1;
 }
