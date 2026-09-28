@@ -7,6 +7,8 @@
 #include "internal/platform/paths.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -17,6 +19,10 @@
 #include <unistd.h>
 
 static volatile sig_atomic_t g_stop;
+/* A signal that lands between the g_stop check and poll() would otherwise
+   wait for the next client, which may be never now that the loop has no
+   timeout while nothing is shown. The handler writes here to end the wait. */
+static int s_wake_pipe[2] = { -1, -1 };
 
 /* Test hooks for the daemon's late-reply handling: delay a banner before it
    is submitted, or after submission before the reply. Unset in normal use. */
@@ -34,6 +40,23 @@ static int jw__env_delay_ms(const char *name) {
 static void jw__handle_signal(int signo) {
     (void)signo;
     g_stop = 1;
+    if (s_wake_pipe[1] >= 0) {
+        int saved = errno;
+        ssize_t n = write(s_wake_pipe[1], "s", 1);
+        (void)n;
+        errno = saved;
+    }
+}
+
+static void jw__wake_pipe_setup(void) {
+    if (pipe(s_wake_pipe) != 0) {
+        s_wake_pipe[0] = s_wake_pipe[1] = -1;
+        return;
+    }
+    for (int i = 0; i < 2; i++) {
+        fcntl(s_wake_pipe[i], F_SETFD, FD_CLOEXEC);
+        fcntl(s_wake_pipe[i], F_SETFL, fcntl(s_wake_pipe[i], F_GETFL) | O_NONBLOCK);
+    }
 }
 
 static uint64_t jw__now_ms(void) {
@@ -151,6 +174,33 @@ static int jw__handle_message(jw_ipc_client *client, const char *body) {
     return jw__reply_error(client, "unknown type");
 }
 
+/* Sleeps until a client connects, the backend has events, a signal arrives,
+   or the view's timer (a level toast ending) runs out. With nothing timed on
+   screen there is no timeout at all. Returns true when a client is waiting. */
+static bool jw__wait(jw_ipc_server *server) {
+    struct pollfd fds[3];
+    nfds_t count = 0;
+    fds[count++] = (struct pollfd){ .fd = jw_ipc_server_fd(server), .events = POLLIN };
+    int backend_fd = jw_osd_backend_event_fd();
+    if (backend_fd >= 0) {
+        fds[count++] = (struct pollfd){ .fd = backend_fd, .events = POLLIN };
+    }
+    if (s_wake_pipe[0] >= 0) {
+        fds[count++] = (struct pollfd){ .fd = s_wake_pipe[0], .events = POLLIN };
+    }
+    int timeout = jw_osd_backend_timeout_ms(jw__now_ms());
+    if (s_wake_pipe[0] < 0 && (timeout < 0 || timeout > 1000)) {
+        timeout = 1000;   /* no pipe: a missed signal waits at most a second */
+    }
+    int ready = poll(fds, count, timeout);
+    if (ready < 0 && errno != EINTR) {
+        jw_log_warn("osd: poll failed: %s", strerror(errno));
+        usleep(50000);
+        return false;
+    }
+    return ready > 0 && (fds[0].revents & POLLIN);
+}
+
 /* Readiness is one byte on the pipe the daemon passed down, written only once
    fonts, the backend and the socket are all up. */
 static void jw__announce_ready(void) {
@@ -169,6 +219,7 @@ static void jw__announce_ready(void) {
 
 int main(void) {
     uint64_t started_ms = jw__now_ms();
+    jw__wake_pipe_setup();
     signal(SIGINT, jw__handle_signal);
     signal(SIGTERM, jw__handle_signal);
     signal(SIGPIPE, SIG_IGN);
@@ -204,9 +255,12 @@ int main(void) {
                 jw_i18n_language(), (unsigned long long)(jw__now_ms() - started_ms));
     while (!g_stop) {
         jw_osd_backend_tick(jw__now_ms());
+        if (!jw__wait(server)) {
+            continue;
+        }
 
         jw_ipc_client *client = NULL;
-        int rc = jw_ipc_server_accept(server, &client, 50);
+        int rc = jw_ipc_server_accept(server, &client, 0);
         if (rc == 1) {
             continue;
         }
@@ -226,6 +280,9 @@ int main(void) {
 
     jw_ipc_server_close(server);
     jw_osd_backend_shutdown();
+    for (int i = 0; i < 2; i++) {
+        if (s_wake_pipe[i] >= 0) close(s_wake_pipe[i]);
+    }
     jw_i18n_shutdown();
     free(socket_path);
     return 0;

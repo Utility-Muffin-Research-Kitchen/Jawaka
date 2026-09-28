@@ -177,6 +177,19 @@ void jw_osd_backend_hide_game_launch(void) {
     (void)jw__apply(jw_osd_view_hide_stage(&s_view));
 }
 
+/* SDL wants its events pumped even with nothing shown, so the host preview
+   keeps the old 50 ms cadence. */
+#define JW_OSD_SDL_PUMP_MS 50
+
+int jw_osd_backend_event_fd(void) {
+    return -1;
+}
+
+int jw_osd_backend_timeout_ms(uint64_t now_ms) {
+    int timeout = jw_osd_view_timeout_ms(&s_view, now_ms);
+    return (timeout < 0 || timeout > JW_OSD_SDL_PUMP_MS) ? JW_OSD_SDL_PUMP_MS : timeout;
+}
+
 void jw_osd_backend_tick(uint64_t now_ms) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) { }

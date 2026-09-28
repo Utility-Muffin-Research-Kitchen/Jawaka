@@ -52,5 +52,9 @@ jw_osd_view_effect jw_osd_view_stage(jw_osd_view *view, jw_osd_game_stage stage,
                                      int pending_items, uint64_t now_ms);
 jw_osd_view_effect jw_osd_view_hide_stage(jw_osd_view *view);
 jw_osd_view_effect jw_osd_view_tick(jw_osd_view *view, uint64_t now_ms);
+/* How long until jw_osd_view_tick has something to do: milliseconds until a
+   timed view ends (0 when it is already due), or -1 when nothing on screen
+   ends by itself. */
+int jw_osd_view_timeout_ms(const jw_osd_view *view, uint64_t now_ms);
 
 #endif /* JW_OSD_VIEW_H */
