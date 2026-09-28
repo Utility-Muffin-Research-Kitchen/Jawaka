@@ -14,6 +14,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-shortcut-ipc.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
@@ -28,9 +29,11 @@ CTL="$ROOT_DIR/$BUILD_REL/bin/jawaka-platformctl"
 DAEMON_PID=""
 
 cleanup() {
-    [ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null || true
-    [ -n "$DAEMON_PID" ] && wait "$DAEMON_PID" 2>/dev/null || true
+    status=$?
+    set +e
+    smoke_daemon_stop || status=1
     rm -rf "$TMP_DIR"
+    exit "$status"
 }
 trap cleanup EXIT
 
@@ -55,16 +58,13 @@ INSERT OR REPLACE INTO settings(key,value) VALUES
   ('screenshots_enabled','1'),
   ('recording_enabled','0');"
 
-(
-    cd "$ROOT_DIR"
+smoke_daemon_start "$ROOT_DIR" "$LOG" \
     PLATFORM=mac SDCARD_PATH="$PRIMARY" APPS_PATH="$PRIMARY/Apps" \
     USERDATA_PATH="$USERDATA" LOGS_PATH="$LOGS" \
     UMRK_PLATFORM_PATH="$PLATFORM_ROOT" UMRK_RUNTIME_PATH="$RUNTIME" \
     UMRK_DAEMON_SOCKET="$SOCKET" UMRK_INTERNAL_DATA_PATH="$STATE" \
     JAWAKA_SDCARD_ROOT="$PRIMARY" \
-        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-) &
-DAEMON_PID=$!
+    "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
 for _ in $(seq 1 300); do
     [ -S "$SOCKET" ] && break
     kill -0 "$DAEMON_PID" 2>/dev/null || fail "daemon exited before opening its socket"

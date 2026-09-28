@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_DIR="${BUILD:-build/pakrat-service-mutation-smoke}"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jw-service-mutation.XXXXXX")"
 PRIMARY="$TMP_ROOT/primary"
@@ -30,10 +31,7 @@ HTTP_PID=""
 cleanup() {
     local status=$?
     set +e
-    if [ -n "$DAEMON_PID" ]; then
-        kill "$DAEMON_PID" >/dev/null 2>&1 || true
-        wait "$DAEMON_PID" >/dev/null 2>&1 || true
-    fi
+    smoke_daemon_stop || status=1
     if [ -n "$HTTP_PID" ]; then
         kill "$HTTP_PID" >/dev/null 2>&1 || true
         wait "$HTTP_PID" >/dev/null 2>&1 || true
@@ -196,9 +194,8 @@ common_env=(
 
 start_daemon() {
     : >"$DAEMON_LOG"
-    env "${common_env[@]}" "$DAEMON" --daemon-only \
-        >"$DAEMON_LOG" 2>&1 &
-    DAEMON_PID=$!
+    smoke_daemon_start "$PWD" "$DAEMON_LOG" \
+        "${common_env[@]}" "$DAEMON" --daemon-only
     for _ in $(seq 1 250); do
         [ -S "$SOCKET" ] && return 0
         kill -0 "$DAEMON_PID" >/dev/null 2>&1 || return 1
@@ -208,11 +205,7 @@ start_daemon() {
 }
 
 stop_daemon() {
-    if [ -n "$DAEMON_PID" ]; then
-        kill "$DAEMON_PID" >/dev/null 2>&1 || true
-        wait "$DAEMON_PID" >/dev/null 2>&1 || true
-        DAEMON_PID=""
-    fi
+    smoke_daemon_stop
     rm -f "$SOCKET"
 }
 

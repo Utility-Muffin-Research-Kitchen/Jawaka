@@ -14,6 +14,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TARGET_KIND="${UMRK_CORE_PIN_TARGET:-path}"
 PHASE="${UMRK_CORE_PIN_PHASE:-vanish}"
@@ -58,10 +59,7 @@ esac
 cleanup() {
     exit_status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || exit_status=1
     if [ "$exit_status" -ne 0 ] && [ -f "$LOG" ]; then
         sed -n '1,240p' "$LOG" >&2
     fi
@@ -151,8 +149,7 @@ alternate = path_core("alternate_writer", "Alternate Writer",
         "image_root": "Images/N64", "bios_notes": []}]}))
 CATALOG
 
-(
-    cd "$ROOT_DIR"
+smoke_daemon_start "$ROOT_DIR" "$LOG" \
     PLATFORM=mac SDCARD_PATH="$PRIMARY" APPS_PATH="$PRIMARY/Apps" \
     USERDATA_PATH="$USERDATA" LOGS_PATH="$LOGS" \
     SAVES_PATH="$PRIMARY/Saves" STATES_PATH="$PRIMARY/States" \
@@ -162,9 +159,7 @@ CATALOG
     UMRK_RETROARCH_BIN="$RETROARCH_BIN" \
     UMRK_LIFE1_FIXTURE_SERVICE_ID="$SERVICE_ID" \
     UMRK_LIFE1_FIXTURE_SCENARIO="$SCENARIO" \
-        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-) &
-DAEMON_PID=$!
+    "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
 
 for _ in $(seq 1 300); do
     [ -S "$SOCKET" ] && break

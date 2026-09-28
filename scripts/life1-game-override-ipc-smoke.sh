@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-life1-override.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
@@ -22,9 +23,10 @@ CTL="$ROOT_DIR/$BUILD_REL/bin/jawaka-platformctl"
 cleanup() {
     exit_status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
+    smoke_daemon_stop || exit_status=1
+    if [ -n "${OLD_DAEMON_PID:-}" ]; then
+        DAEMON_PID="$OLD_DAEMON_PID"
+        smoke_daemon_stop KILL || exit_status=1
     fi
     if [ -n "${OLD_PGID:-}" ]; then
         kill -TERM "-$OLD_PGID" 2>/dev/null || true
@@ -58,8 +60,7 @@ printf '%s\n' \
   >"$DEFAULTS/systems.json"
 
 start_daemon() {
-    (
-        cd "$ROOT_DIR"
+    smoke_daemon_start "$ROOT_DIR" "$LOG" \
         PLATFORM=mac SDCARD_PATH="$PRIMARY" APPS_PATH="$PRIMARY/Apps" \
         USERDATA_PATH="$USERDATA" LOGS_PATH="$LOGS" \
         SAVES_PATH="$PRIMARY/Saves" STATES_PATH="$PRIMARY/States" \
@@ -68,9 +69,7 @@ start_daemon() {
         JAWAKA_SDCARD_ROOT="$PRIMARY" \
         UMRK_LIFE1_FIXTURE_SERVICE_ID="$SERVICE_ID" \
         UMRK_LIFE1_FIXTURE_SCENARIO=game-never-subscribe \
-            "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-    ) &
-    DAEMON_PID=$!
+        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
     for _ in $(seq 1 300); do
         response="$($CTL --socket "$SOCKET" request \
             '{"type":"library-status"}' 2>/dev/null || true)"
@@ -95,9 +94,12 @@ service_status="$($CTL --socket "$SOCKET" request \
 OLD_PGID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["ownership_identity"]["pgid"])' \
     <<<"$service_status")"
 
-kill -KILL "$DAEMON_PID"
-wait "$DAEMON_PID" 2>/dev/null || true
+# Lose the daemon but keep its service. A SIGKILL would not do that on Linux,
+# where a service dies with jawakad (SVC-1 arms PR_SET_PDEATHSIG), so freeze
+# it instead: a stopped daemon supervises nothing, and cleanup kills it.
+OLD_DAEMON_PID="$DAEMON_PID"
 DAEMON_PID=""
+kill -STOP "$OLD_DAEMON_PID"
 kill -0 "$OLD_PGID"
 
 start_daemon

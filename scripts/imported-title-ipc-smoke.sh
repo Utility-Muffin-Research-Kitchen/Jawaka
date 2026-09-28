@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-imported-title.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
 SECONDARY="$TMP_DIR/secondary"
@@ -16,10 +17,7 @@ OUTSIDE="$TMP_DIR/outside.cue"
 cleanup() {
     status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || status=1
     if [ "$status" -ne 0 ] && [ -f "$LOG" ]; then
         cat "$LOG" >&2
     fi
@@ -46,17 +44,14 @@ for n in $(seq 1 600); do
     printf 'p8\n' >"$PRIMARY/Roms/PICO8/queue-fixture-$n.p8"
 done
 
-(
-    cd "$ROOT_DIR"
+smoke_daemon_start "$ROOT_DIR" "$LOG" \
     UMRK_RUNTIME_PATH="$RUNTIME" \
     UMRK_DAEMON_SOCKET="$SOCKET" \
     UMRK_INTERNAL_DATA_PATH="$STATE" \
     UMRK_PLATFORM_PATH="$PLATFORM" \
     JAWAKA_SDCARD_ROOT="$PRIMARY" \
     SDCARD_PATHS="$PRIMARY:$SECONDARY" \
-    build/bin/jawakad --daemon-only >"$LOG" 2>&1
-) &
-DAEMON_PID=$!
+    build/bin/jawakad --daemon-only
 
 for _ in $(seq 1 500); do
     [ -S "$SOCKET" ] && break

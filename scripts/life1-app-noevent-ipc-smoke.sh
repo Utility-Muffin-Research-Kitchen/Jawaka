@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-life1-app.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
@@ -21,10 +22,7 @@ CTL="$ROOT_DIR/$BUILD_REL/bin/jawaka-platformctl"
 cleanup() {
     status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || status=1
     if [ "$status" -ne 0 ] && [ -f "$LOG" ]; then cat "$LOG" >&2; fi
     rm -rf "$TMP_DIR"
     exit "$status"
@@ -51,17 +49,14 @@ printf '%s\n' '#!/bin/sh' 'sleep 0.15' \
   >"$APP_PAK/launch.sh"
 chmod 755 "$APP_PAK/launch.sh"
 
-(
-    cd "$ROOT_DIR"
+smoke_daemon_start "$ROOT_DIR" "$LOG" \
     PLATFORM=mac SDCARD_PATH="$PRIMARY" APPS_PATH="$PRIMARY/Apps" \
     USERDATA_PATH="$USERDATA" LOGS_PATH="$LOGS" \
     UMRK_RUNTIME_PATH="$RUNTIME" UMRK_DAEMON_SOCKET="$SOCKET" \
     UMRK_INTERNAL_DATA_PATH="$STATE" JAWAKA_SDCARD_ROOT="$PRIMARY" \
     UMRK_LIFE1_FIXTURE_SERVICE_ID="$SERVICE_ID" \
     UMRK_LIFE1_FIXTURE_SCENARIO=game-exchange \
-        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-) &
-DAEMON_PID=$!
+    "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
 for _ in $(seq 1 300); do
     [ -S "$SOCKET" ] && break
     kill -0 "$DAEMON_PID" 2>/dev/null || exit 1

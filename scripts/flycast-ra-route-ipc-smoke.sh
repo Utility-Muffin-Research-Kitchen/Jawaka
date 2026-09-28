@@ -19,6 +19,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-flycast-route.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
@@ -42,7 +43,7 @@ FAKE_RA="$TMP_DIR/fake-retroarch.sh"
 cleanup() {
     exit_status=$?
     set +e
-    stop_daemon
+    stop_daemon || exit_status=1
     if [ "$exit_status" -ne 0 ] && [ -f "$LOG" ]; then
         sed -n '1,240p' "$LOG" >&2
     fi
@@ -158,8 +159,7 @@ SH
 
 start_daemon() {
     # Stale inherited values must not survive daemon startup or any launch.
-    (
-        cd "$ROOT_DIR"
+    smoke_daemon_start "$ROOT_DIR" "$LOG" \
         PLATFORM=mac SDCARD_PATH="$PRIMARY" APPS_PATH="$APPS" \
         USERDATA_PATH="$USERDATA" LOGS_PATH="$LOGS" \
         SAVES_PATH="$PRIMARY/Saves" STATES_PATH="$PRIMARY/States" \
@@ -170,9 +170,7 @@ start_daemon() {
         UMRK_FLYCAST_RA_ROUTE="service-live" \
         FLYCAST_PROBE="1" \
         FLYCAST_CONFIG_OVERRIDES="achievements:HostUrl=http://inherited.invalid" \
-            "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-    ) &
-    DAEMON_PID=$!
+        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
     for _ in $(seq 1 300); do
         [ -S "$SOCKET" ] && break
         kill -0 "$DAEMON_PID" 2>/dev/null || fail "daemon exited during startup"
@@ -198,11 +196,7 @@ wait_no_active_game() {
 }
 
 stop_daemon() {
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-        DAEMON_PID=""
-    fi
+    smoke_daemon_stop || return 1
     rm -f "$SOCKET"
 }
 

@@ -13,6 +13,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-rop-bridge.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
@@ -39,10 +40,7 @@ cleanup() {
     exit_status=$?
     set +e
     [ -n "$HEALTH_PID" ] && kill "$HEALTH_PID" 2>/dev/null
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || exit_status=1
     if [ "$exit_status" -ne 0 ]; then
         [ -f "$LOG" ] && tail -80 "$LOG" >&2
         [ -f "$SHARED_CFG" ] && { echo "--- shared cfg ---" >&2; cat "$SHARED_CFG" >&2; }
@@ -130,17 +128,14 @@ printf '%s\n' \
 printf 'rom\n' >"$PRIMARY/Roms/N64/Bridge.n64"
 printf 'rom\n' >"$PRIMARY/Roms/DC/Bridge.cdi"
 
-(
-    cd "$ROOT_DIR"
+smoke_daemon_start "$ROOT_DIR" "$LOG" \
     PLATFORM=mac SDCARD_PATH="$PRIMARY" APPS_PATH="$PRIMARY/Apps" \
     USERDATA_PATH="$USERDATA" LOGS_PATH="$LOGS" \
     SAVES_PATH="$PRIMARY/Saves" STATES_PATH="$PRIMARY/States" \
     UMRK_PLATFORM_PATH="$PLATFORM_ROOT" UMRK_RUNTIME_PATH="$RUNTIME" \
     UMRK_DAEMON_SOCKET="$SOCKET" UMRK_INTERNAL_DATA_PATH="$STATE" \
     UMRK_RETROARCH_BIN="$FAKE_RA" JAWAKA_SDCARD_ROOT="$PRIMARY" \
-        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-) &
-DAEMON_PID=$!
+    "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
 
 for _ in $(seq 1 300); do
     [ -S "$SOCKET" ] && break
