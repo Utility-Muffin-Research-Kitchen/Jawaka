@@ -134,7 +134,10 @@ case "$SCENARIO" in
         grep -F 'life1: user cancelled check-before-stop' "$LOG" >/dev/null
         grep -F 'life1: launch status stage=checking' "$LOG" >/dev/null
         grep -F 'life1: launch status stage=syncing pending_items=3' "$LOG" >/dev/null
-        ! grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null
+        if grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null; then
+            echo "launch status showed stage=starting" >&2
+            exit 1
+        fi
         echo "PASS life1-game-check-ipc-smoke ($SCENARIO)"
         exit 0
         ;;
@@ -181,7 +184,10 @@ grep -F 'life1: verified service stop service=' "$LOG" >/dev/null
 grep -F 'life1: writer started' "$LOG" >/dev/null
 grep -F 'life1: launch status stage=checking' "$LOG" >/dev/null
 grep -F 'life1: launch status stage=stopping' "$LOG" >/dev/null
-! grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null
+if grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null; then
+    echo "launch status showed stage=starting" >&2
+    exit 1
+fi
 stop_line="$(grep -n -F 'life1: verified service stop service=' "$LOG" | tail -1 | cut -d: -f1)"
 writer_line="$(grep -n -F 'life1: writer started' "$LOG" | tail -1 | cut -d: -f1)"
 checking_line="$(grep -n -F 'life1: launch status stage=checking' "$LOG" | head -1 | cut -d: -f1)"
