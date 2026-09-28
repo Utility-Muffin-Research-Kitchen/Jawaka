@@ -274,6 +274,18 @@ int  jw_platform_poll_fds(jw_platform_context *ctx, int *fds, int max);
    -1 when it only waits for its poll fds. Periodic checks that tolerate a
    second of delay are left out; the daemon's own heartbeat covers them. */
 long long jw_platform_next_deadline_ms(jw_platform_context *ctx, long long now_ms);
+/* Quiesce audio for JW_PLATFORM_ACTION_SLEEP before the caller drops to its
+   sleep performance profile: a playing stream is suspended while the clocks
+   are still up, since a buffer refill caught by the drop runs long enough to
+   trip PulseAudio's realtime limit. The SLEEP action does it itself when this
+   was not called. */
+void jw_platform_sleep_audio(jw_platform_context *ctx);
+/* Finish waking audio after JW_PLATFORM_ACTION_SLEEP returns, once the
+   caller has restored its wake performance profile: a stream suspended for
+   the sleep refills its buffer here, and at sleep clocks that refill takes
+   long enough to trip PulseAudio's realtime limit. The backend also does it
+   on its next audio tick if nobody calls this. */
+void jw_platform_wake_audio(jw_platform_context *ctx);
 /* Best-effort repair of live audio route/volume after wake or before launch. */
 void jw_platform_audio_reconcile(jw_platform_context *ctx, const char *reason);
 void jw_platform_frontend_ready(jw_platform_context *ctx, const char *role, jw_platform_result *out);
