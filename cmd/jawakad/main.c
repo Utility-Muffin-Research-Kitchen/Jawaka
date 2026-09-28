@@ -15209,6 +15209,9 @@ static bool jw__content_child_active(const jw_daemon_state *state) {
 #define JW_LOOP_IDLE_MAX_MS 1000
 
 static bool jw__loop_busy(const jw_daemon_state *state) {
+    /* Shutting down: the shutdown branch waits for every child to exit, so
+       each pass has to look for exits whether or not a SIGCHLD was seen. */
+    if (state->shutdown_requested) return true;
     /* Game or app: speaker-gate SETUP window (~150 ms), rumble reclaim
        (250 ms), switcher resume and warning retries (100 ms), menu prewarm,
        shader poll (25 ms), menu escape, writer-group absence waits, standalone
@@ -15266,6 +15269,18 @@ static int jw__loop_timeout_ms(jw_daemon_state *state) {
     return (int)(due - now);
 }
 
+/* Drained at the top of every pass rather than after the poll, because the
+   shutdown branch never reaches the poll. */
+static void jw__drain_sigchld(jw_daemon_state *state) {
+    if (g_sigchld_pipe[0] < 0) {
+        return;
+    }
+    char drain[64];
+    while (read(g_sigchld_pipe[0], drain, sizeof(drain)) > 0) {
+        state->sigchld_seen = true;
+    }
+}
+
 static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
     /* Listen socket, connections, then the wake-only fds below. */
     enum { JW_POLL_EXTRA = 2 + 4 + JW_EXT_INPUT_MAX_PADS + 1 };
@@ -15304,13 +15319,11 @@ static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
         count++;
     }
 
-    /* Wake-only fds: their ticks drain them on the next pass, so revents is
-       not looked at here (except the SIGCHLD pipe, drained below). */
+    /* Wake-only fds: the next pass drains them (the SIGCHLD pipe at its top,
+       the rest in their ticks), so revents is not looked at here. */
     int wake_fds[JW_POLL_EXTRA];
     int wake_count = 0;
-    int sigchld_index = -1;
     if (g_sigchld_pipe[0] >= 0) {
-        sigchld_index = (int)count + wake_count;
         wake_fds[wake_count++] = g_sigchld_pipe[0];
     }
     wake_count += jw_platform_poll_fds(&state->platform, wake_fds + wake_count, 4);
@@ -15333,13 +15346,7 @@ static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
         jw_log_warn("ipc poll failed: %s", strerror(errno));
         return;
     }
-    if (ready > 0 && sigchld_index >= 0 &&
-        (poll_fds[sigchld_index].revents & POLLIN)) {
-        char drain[64];
-        while (read(g_sigchld_pipe[0], drain, sizeof(drain)) > 0) {
-        }
-        state->sigchld_seen = true;
-    }
+
     if (ready > 0 && (poll_fds[0].revents & POLLIN)) {
         jw__ipc_accept_ready(state);
     }
@@ -16448,6 +16455,7 @@ int main(int argc, char *argv[]) {
         if (g_shutdown_requested) {
             state.shutdown_requested = true;
         }
+        jw__drain_sigchld(&state);
 
         /* Detect a resume from ANY suspend — our auto-sleep OR loong_power's power
            button — by the gap between BOOTTIME (counts suspend time) and MONOTONIC
