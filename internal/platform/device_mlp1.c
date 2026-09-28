@@ -112,7 +112,9 @@
    in Leaf mode jawakad does (see jw__mlp1_speaker_gate_sync). */
 #define JW_MLP1_SPK_CTL "/sys/kernel/powerCtrl/spk_ctl"
 #define JW_MLP1_RK817_PCM_STATUS "/proc/asound/card1/pcm0p/sub0/status"
-#define JW_MLP1_SPK_GATE_POLL_MS 100
+/* Under the daemon's 50 ms loop tick, so every tick checks: SETUP to the first
+   samples at the DAC is ~150 ms, and the gate has to be up inside that. */
+#define JW_MLP1_SPK_GATE_POLL_MS 40
 
 /* The rk817 DAC (ALSA numid=16) is the dominant hardware loudness control and is
    pinned to a fixed level at boot (platform.d/00-audio-init.sh). The user-facing
@@ -2796,8 +2798,9 @@ static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reaso
                 why, jw_platform_audio_output_label(target));
 }
 
-/* rk817 playback substream state: 1 = RUNNING, 0 = closed, -1 = anything in
-   between (PREPARED, XRUN, DRAINING, PAUSED) or unreadable. */
+/* rk817 playback substream state: 1 = a stream is set up or running (SETUP,
+   PREPARED, RUNNING), 0 = closed, -1 = anything else (OPEN, XRUN, DRAINING,
+   PAUSED, SUSPENDED) or unreadable. */
 static int jw__mlp1_rk817_playback_state(void) {
     int fd = open(JW_MLP1_RK817_PCM_STATUS, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
@@ -2810,7 +2813,9 @@ static int jw__mlp1_rk817_playback_state(void) {
         return -1;
     }
     buf[n] = '\0';
-    if (strncmp(buf, "state: RUNNING", 14) == 0) {
+    if (strncmp(buf, "state: RUNNING", 14) == 0 ||
+        strncmp(buf, "state: PREPARED", 15) == 0 ||
+        strncmp(buf, "state: SETUP", 12) == 0) {
         return 1;
     }
     if (strncmp(buf, "closed", 6) == 0) {
@@ -2819,7 +2824,7 @@ static int jw__mlp1_rk817_playback_state(void) {
     return -1;
 }
 
-/* Gate value for a running rk817 stream: off with wired headphones in. */
+/* Gate value for an active rk817 stream: off with wired headphones in. */
 static int jw__mlp1_speaker_gate_for_playback(void) {
     int jack = jw__mlp1_jack_input_state();
     if (jack < 0) {
@@ -2831,18 +2836,23 @@ static int jw__mlp1_speaker_gate_for_playback(void) {
 /* Own the external speaker amp gate. The rk817 feeds its DAC to the speaker amp
    and the headphone jack at once (Playback Path is a register-level no-op), so
    spk_ctl is both "speaker on" during playback and the only way to mute the
-   speaker for wired headphones. Raise it while rk817 playback runs with the jack
-   empty; drop it for headphones and once PulseAudio has closed the device
-   (suspend-on-idle), when DAPM has already powered the output stage down and the
-   drop cannot pop. Intermediate states (XRUN, PREPARED) leave the gate alone so a
-   hiccup never toggles the amp. HDMI, USB-C and Bluetooth never open this
-   substream, so they need no case of their own.
+   speaker for wired headphones.
+
+   Raise it (jack empty) as soon as a stream is set up: SETUP and PREPARED come
+   ~150 ms before the first samples reach the DAC, so the amp is on and settled
+   before the sound starts. Waiting for RUNNING clipped the start of every sound
+   after an idle gap (PulseAudio's suspend-on-idle closes the device after 1 s)
+   and switched the amp on under a live DAC. Drop it for headphones, and once the
+   device is closed, when DAPM has already powered the output stage down and the
+   drop cannot pop. XRUN, DRAINING and PAUSED leave the gate alone so a hiccup
+   never toggles the amp. HDMI, USB-C and Bluetooth never open this substream,
+   so they need no case of their own.
 
    This replaced a platform.d shell loop that forked grep/sleep five times a
-   second and was ~40% of idle CPU. Here it is one /proc read per poll and a
-   sysfs write only when the gate has to move. The current value is read back
-   rather than cached, so a resume or another writer is corrected on the next
-   poll. */
+   second, about 10 points of one core at idle. Here it is one /proc read per
+   poll and a sysfs write only when the gate has to move. The current value is
+   read back rather than cached, so a resume or another writer is corrected on
+   the next poll. */
 static void jw__mlp1_speaker_gate_sync(bool force) {
     static long long next_ms = 0;
     long long now = jw__monotonic_ms();
