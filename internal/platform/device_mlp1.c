@@ -147,10 +147,12 @@
    register level, so it cannot power the amp down. Instead power down just the
    analog headphone stage over i2c (bus 0, addr 0x20): AHP_CFG0 0x3d=0xe0 and its
    charge pump AHP_CP 0x3f=0x09 — the same values the codec driver uses, so it is
-   pop-free. Crucially this touches ONLY the headphone amp, not the shared DAC
-   (DDAC_MUTE_MIXCTL/ADAC_CFG1): the DAC stays live so PulseAudio's open device is
-   never disturbed (muting it under a live sink crashed PA) and the speaker path
-   (same DAC) is unaffected. The two register values are read and restored on
+   pop-free. It touches ONLY the headphone amp, not the shared DAC
+   (DDAC_MUTE_MIXCTL/ADAC_CFG1), so the speaker path (same DAC) is unaffected.
+   An earlier attempt muted the DAC in this path and lost PulseAudio, but that
+   was the wake-time RLIMIT_RTTIME kill (the refill after resume ran at sleep
+   clocks), not the mute: muting the DAC under a live stream leaves PulseAudio's
+   realtime thread at ~110 ms of its budget (measured 2026-09-28). The two register values are read and restored on
    resume (see the SLEEP action). */
 #define JW_MLP1_HP_POWERDOWN \
     "i2cset -f -y 0 0x20 0x3d 0xe0 >/dev/null 2>&1; " \
@@ -3122,8 +3124,32 @@ static void jw__mlp1_speaker_gate_sync(const jw_platform_context *ctx, bool forc
     warned = false;
 }
 
+/* Set by the SLEEP action when it suspended a playing sink; the sink is
+   resumed by jw__mlp1_wake_audio once the daemon has put the CPU, GPU and
+   DMC back on their wake profile. Resuming it inside the action ran the
+   refill of a 2 s buffer at 408 MHz CPU / 324 MHz DMC (~375 ms of one
+   realtime thread, past PulseAudio's old 200 ms RLIMIT_RTTIME). */
+static bool s_mlp1_sink_resume_pending = false;
+
+static void jw__mlp1_wake_audio(jw_platform_context *ctx) {
+    (void)ctx;
+    if (!s_mlp1_sink_resume_pending) {
+        return;
+    }
+    s_mlp1_sink_resume_pending = false;
+    /* Raise the gate before the stream comes back rather than leaving it to
+       the audio tick, which only runs after the service rescan and the audio
+       reconcile: ~0.8 s of a game playing into a muted speaker. The DAC is
+       still idle here, so the amp comes up silent. */
+    (void)jw__write_int_file(JW_MLP1_SPK_CTL, jw__mlp1_speaker_gate_for_playback());
+    (void)jw__exec_shell(JW_MLP1_PA_RESUME_SINK);
+}
+
 static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
     unsigned events = 0;
+
+    /* A caller that performed SLEEP without jw_platform_wake_audio(). */
+    jw__mlp1_wake_audio(ctx);
 
     /* Reap the test-clip player if it finished on its own (keeps it from
        lingering as a zombie and keeps the play/stop state accurate). */
@@ -3469,6 +3495,23 @@ static int jw__mlp1_read_codec_reg(int reg) {
     return (val >= 0 && val <= 0xff) ? val : -1;
 }
 
+/* True once jw__mlp1_sleep_audio has quiesced audio for the coming SLEEP. */
+static bool s_mlp1_sleep_audio_done = false;
+
+/* Suspend a playing sink while the daemon's clocks are still up: a refill
+   that the sleep profile's drop to 408 MHz catches mid-way ran 344 ms on
+   PulseAudio's realtime thread (measured), past the old 200 ms limit. */
+static void jw__mlp1_sleep_audio(jw_platform_context *ctx) {
+    (void)ctx;
+    bool playing = jw__mlp1_pa_sink_running();
+    if (playing) {
+        (void)jw__exec_shell(JW_MLP1_PA_SUSPEND_SINK);
+        usleep(200000);
+    }
+    s_mlp1_sink_resume_pending = playing;
+    s_mlp1_sleep_audio_done = true;
+}
+
 static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                     int value, jw_platform_result *out) {
     if (action == JW_PLATFORM_ACTION_PLAY_TEST_SOUND) {
@@ -3519,19 +3562,18 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
               suspend). The Playback Path control is a register-level no-op. What
               works is powering the analog HP stage down over i2c (AHP_CFG0 + its
               charge pump) before suspend and restoring it on resume. This touches
-              ONLY the HP amp, never the shared DAC, so PulseAudio's open device is
-              undisturbed (muting the DAC under a live sink crashed PA) and the
-              speaker is unaffected. Done unconditionally — it is cheap and DAC-safe
+              ONLY the HP amp, never the shared DAC, so the speaker is
+              unaffected. Done unconditionally — it is cheap and DAC-safe
               — so a jack change during sleep can never leave a biased amp hissing.
               Snapshot the two registers first so the restore matches the live
               state (idle vs active playback). */
-        bool audio_playing = jw__mlp1_pa_sink_running();
+        /* Normally done already, before the sleep profile. */
+        if (!s_mlp1_sleep_audio_done) {
+            jw__mlp1_sleep_audio(ctx);
+        }
+        s_mlp1_sleep_audio_done = false;
         int hp_r3d = jw__mlp1_read_codec_reg(0x3d);
         int hp_r3f = jw__mlp1_read_codec_reg(0x3f);
-        if (audio_playing) {
-            (void)jw__exec_shell(JW_MLP1_PA_SUSPEND_SINK);
-            usleep(200000);
-        }
         (void)jw__exec_shell(JW_MLP1_HP_POWERDOWN);
         /* Speaker amp off for the sleep. The sink is suspended or already idle,
            so nothing is driving it. A stream that was playing gets the gate
@@ -3611,8 +3653,8 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         }
         /* Resumed: restore the two HP-amp registers (charge pump then output
            stage), falling back to the codec's power-up defaults if a snapshot read
-           failed. Re-assert the DAC floor (PulseAudio can drift it low) and
-           un-suspend the sink if we suspended it so a live stream continues. */
+           failed. Re-assert the DAC floor (PulseAudio can drift it low). A
+           sink suspended above is resumed later, by jw__mlp1_wake_audio. */
         char hp_restore[160];
         snprintf(hp_restore, sizeof(hp_restore),
                  "i2cset -f -y 0 0x20 0x3f 0x%02x >/dev/null 2>&1; "
@@ -3620,16 +3662,9 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
                  hp_r3f >= 0 ? hp_r3f : 0x11, hp_r3d >= 0 ? hp_r3d : 0x80);
         (void)jw__exec_shell(hp_restore);
         (void)jw__exec_shell(JW_MLP1_ENSURE_DAC_FLOOR);
-        if (audio_playing) {
-            /* Raise the gate before the stream comes back rather than leaving
-               it to the audio tick, which only runs after the wake profile,
-               the service rescan and the audio reconcile, ~0.8 s of a game
-               playing into a muted speaker. The DAC is still idle here, so
-               the amp comes up silent. */
-            (void)jw__write_int_file(JW_MLP1_SPK_CTL,
-                                     jw__mlp1_speaker_gate_for_playback());
-            (void)jw__exec_shell(JW_MLP1_PA_RESUME_SINK);
-        }
+        /* A sink suspended by jw__mlp1_sleep_audio comes back in
+           jw__mlp1_wake_audio, after the daemon has restored its wake
+           performance profile. */
         if (resume_data) {
             resume_data->resume_mount_repair_at_ms = jw__monotonic_ms() + 2500;
         }
@@ -4306,6 +4341,8 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .audio_tick = jw__mlp1_audio_tick,
         .poll_fds = jw__mlp1_poll_fds,
         .next_deadline_ms = jw__mlp1_next_deadline_ms,
+        .sleep_audio = jw__mlp1_sleep_audio,
+        .wake_audio = jw__mlp1_wake_audio,
         .audio_reconcile = jw__mlp1_audio_reconcile,
         .frontend_ready = jw__mlp1_frontend_ready,
         .perform_action = jw__mlp1_perform_action,

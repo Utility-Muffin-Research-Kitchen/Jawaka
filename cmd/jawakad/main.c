@@ -2626,10 +2626,16 @@ static int jw__handle_performance_reset_session(jw_daemon_state *state,
 
 static void jw__platform_sleep_with_performance(jw_daemon_state *state,
                                                jw_platform_result *out) {
+    /* Audio first, while the clocks are still up: a stream refill caught by
+       the drop to sleep clocks can trip PulseAudio's realtime limit. */
+    jw_platform_sleep_audio(&state->platform);
     (void)jw__perf_apply_profile(state, JW_PLATFORM_PERF_PROFILE_SLEEP,
                                  NULL, "sleep");
     jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SLEEP, 0, out);
     (void)jw__perf_apply_current_context(state, "wake");
+    /* Only now, at wake clocks, may a stream suspended for the sleep refill
+       its buffer. */
+    jw_platform_wake_audio(&state->platform);
 }
 
 static void jw__cache_platform_status(jw_daemon_state *state,

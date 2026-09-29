@@ -176,6 +176,26 @@ long long jw_platform_next_deadline_ms(jw_platform_context *ctx, long long now_m
     return -1;
 }
 
+void jw_platform_sleep_audio(jw_platform_context *ctx) {
+    if (!ctx) {
+        return;
+    }
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->sleep_audio) {
+        backend->sleep_audio(ctx);
+    }
+}
+
+void jw_platform_wake_audio(jw_platform_context *ctx) {
+    if (!ctx) {
+        return;
+    }
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->wake_audio) {
+        backend->wake_audio(ctx);
+    }
+}
+
 void jw_platform_audio_reconcile(jw_platform_context *ctx, const char *reason) {
     if (!ctx) {
         return;

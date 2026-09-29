@@ -16,6 +16,9 @@ typedef struct {
     /* Optional: see jw_platform_poll_fds / jw_platform_next_deadline_ms. */
     int  (*poll_fds)(jw_platform_context *ctx, int *fds, int max);
     long long (*next_deadline_ms)(jw_platform_context *ctx, long long now_ms);
+    /* Optional: see jw_platform_sleep_audio / jw_platform_wake_audio. */
+    void (*sleep_audio)(jw_platform_context *ctx);
+    void (*wake_audio)(jw_platform_context *ctx);
     void (*audio_reconcile)(jw_platform_context *ctx, const char *reason);
     void (*frontend_ready)(jw_platform_context *ctx, const char *role,
                            jw_platform_result *out);
