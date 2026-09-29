@@ -198,6 +198,10 @@ typedef enum {
     JW_SYSTEM_ROW_LANGUAGE = 0,   /* conditional: a translation is installed */
     JW_SYSTEM_ROW_TIMEZONE,       /* opens the Time Zone picker screen */
     JW_SYSTEM_ROW_AUTO_SLEEP,
+    /* Save the RetroArch game on a power-button shutdown. Shown everywhere,
+       usable on MLP1 only: other platforms need their own button
+       qualification. */
+    JW_SYSTEM_ROW_POWER_HOLD_SAVE,
     JW_SYSTEM_ROW_BOOT_SPLASH,
     JW_SYSTEM_ROW_SD_CARDS,
     JW_SYSTEM_ROW_SERVICES,       /* conditional: -> Services, was a category */

@@ -5339,6 +5339,7 @@ static int jw__system_rows(const jw_settings_ui *ui, jw_system_row_kind *out) {
     if (ui->language_count > 1) out[n++] = JW_SYSTEM_ROW_LANGUAGE;
     out[n++] = JW_SYSTEM_ROW_TIMEZONE;
     out[n++] = JW_SYSTEM_ROW_AUTO_SLEEP;
+    out[n++] = JW_SYSTEM_ROW_POWER_HOLD_SAVE;
     out[n++] = JW_SYSTEM_ROW_BOOT_SPLASH;
     out[n++] = JW_SYSTEM_ROW_SD_CARDS;
     if (ui->services_count > 0) out[n++] = JW_SYSTEM_ROW_SERVICES;
@@ -5385,6 +5386,16 @@ static void jw__render_system(const jw_settings_ui *ui, int x, int y, int w, int
                                 "Auto Sleep", kAutoSleepLabels[idx], true);
             break;
         }
+        case JW_SYSTEM_ROW_POWER_HOLD_SAVE:
+            if (ui->power_hold_save_supported) {
+                jw__render_toggle_row(&ui->system_list, x, ly, w, row,
+                                      "Save Before Power Off",
+                                      ui->power_hold_save_enabled ? "On" : "Off");
+            } else {
+                jw__render_list_row(&ui->system_list, x, ly, w, row,
+                                    "Save Before Power Off", "Unavailable", false);
+            }
+            break;
         case JW_SYSTEM_ROW_BOOT_SPLASH: {
             const char *splash = ui->boot_splash_supported
                                  ? (ui->boot_splash_enabled ? "On" : "Off")
@@ -8868,6 +8879,21 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     ui->auto_sleep_index = next;
                     /* Persist the seconds value (the daemon reads it directly). */
                     jw__persist_int(ui, "auto_sleep_seconds", kAutoSleepSeconds[next]);
+                } else if (kind == JW_SYSTEM_ROW_POWER_HOLD_SAVE) {
+                    (void)dir;
+                    if (!ui->power_hold_save_supported) {
+                        break;
+                    }
+                    /* The daemon re-reads this key on its settings poll. */
+                    ui->power_hold_save_enabled = !ui->power_hold_save_enabled;
+                    jw__persist_bool(ui, "save_state_on_power_hold",
+                                     ui->power_hold_save_enabled);
+                    if (status_buf && status_size > 0) {
+                        snprintf(status_buf, (size_t)status_size, "%s",
+                                 ui->power_hold_save_enabled
+                                     ? T("Hold power to shut down, then release to save")
+                                     : T("Power off will not save your game"));
+                    }
                 } else if (kind == JW_SYSTEM_ROW_BOOT_SPLASH) {
                     (void)dir;
                     jw__set_boot_splash(ui, !ui->boot_splash_enabled,
