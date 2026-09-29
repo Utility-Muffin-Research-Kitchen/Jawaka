@@ -171,7 +171,7 @@ msgstr "%s 不是由 Pak Rat 安装的"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%s launcher exited (status %s)"
-msgstr ""
+msgstr "%s 启动器已退出（状态 %s）"
 
 #: cmd/jawaka-launcher/main.c
 msgid ""
@@ -262,17 +262,26 @@ msgstr "12小时制"
 #: internal/retroarch/shader_strings.c
 msgid "120Hz BFI measured 59.249 FPS and further reduces brightness."
 msgstr ""
+"120Hz 下开启 BFI 实测为\n"
+"59.249 FPS，且会进一步\n"
+"降低亮度。"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "120Hz cadence counters can report periodic drops for nominal 59.94/60fps "
 "content."
 msgstr ""
+"对于标称 59.94/60fps\n"
+"的内容，120Hz 帧节奏计数器可\n"
+"能会周期性报告掉帧。"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "120Hz cadence counters can report periodic drops for nominal 60fps content."
 msgstr ""
+"对于标称 60fps 的内容，120Hz\n"
+"帧节奏计数器可能会周期性报告\n"
+"掉帧。"
 
 #: internal/settings/settings.c
 msgid "15 sec"
@@ -354,6 +363,8 @@ msgstr "重新加载游戏后，可能会应用作用范围更广的预设。"
 #: internal/retroarch/shader_strings.c
 msgid "A lighter handheld LCD grid with softer cell edges."
 msgstr ""
+"更轻柔的掌机 LCD 网格，像素\n"
+"边缘更柔和。"
 
 #: cmd/jawaka-launcher/main.c
 msgid ""
@@ -437,7 +448,6 @@ msgid "Active: %s  Temp: %d C"
 msgstr "生效：%s  温度：%d°C"
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "Adding Splore favorites"
 msgstr "正在添加 Splore 收藏"
 
@@ -446,33 +456,49 @@ msgid ""
 "Adds a Pocket-style backing texture and low-cost pixel grid tuned for Game "
 "Boy Color art."
 msgstr ""
+"加入适配 Game Boy Color\n"
+"画面的 Pocket 风格背景纹理和\n"
+"低开销像素网格。"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "Adds a gray backing texture, low-cost pixel grid, and transparency response "
 "tuned for the original GBA screen."
 msgstr ""
+"加入适配初代 GBA 屏幕的灰色\n"
+"背景纹理、低开销像素网格及\n"
+"透明效果。"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "Adds a lightweight aperture mask and softened scanlines without curvature."
 msgstr ""
+"加入轻量级孔径遮罩和柔和\n"
+"扫描线，不模拟屏幕曲率。"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "Adds a subdued Pocket-style backing texture, pixel grid, and edge shadows "
 "for original Game Boy games."
 msgstr ""
+"为初代 Game Boy 游戏加入柔和\n"
+"的 Pocket 风格背景纹理、像素\n"
+"网格和边缘阴影。"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "Adds lightweight scanlines with reduced darkness for 8-bit, 16-bit, and "
 "PlayStation-era games."
 msgstr ""
+"为 8 位、16 位及 PlayStation\n"
+"时代的游戏加入较浅的轻量级\n"
+"扫描线。"
 
 #: internal/retroarch/shader_strings.c
 msgid "Adds the fine RGB pixel grid of a handheld LCD panel."
 msgstr ""
+"模拟掌机 LCD 面板细密的 RGB\n"
+"像素网格。"
 
 #: internal/settings/timezones.c
 msgid "Adelaide"
@@ -549,6 +575,8 @@ msgstr "应用"
 #: internal/retroarch/shader_strings.c
 msgid "Approximates the softer color response of the Game Boy Color LCD."
 msgstr ""
+"模拟 Game Boy Color LCD\n"
+"较柔和的色彩表现。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Apps"
@@ -632,7 +660,7 @@ msgstr "B: 返回   A: 下一步"
 
 #: internal/retroarch/shader_strings.c
 msgid "BFI further reduces brightness."
-msgstr ""
+msgstr "BFI 会进一步降低亮度。"
 
 #: internal/launcher/bios.c
 msgid "BIOS file ready"
@@ -675,6 +703,9 @@ msgid ""
 "Best at integer or near-integer scaling; the upstream shader can look uneven "
 "at arbitrary scales."
 msgstr ""
+"适合整数或接近整数的缩放；原\n"
+"版着色器在任意缩放倍率下可能\n"
+"显得不均匀。"
 
 #: internal/settings/settings.c
 msgid ""
@@ -776,21 +807,24 @@ msgstr "CPU 温度"
 
 #: internal/retroarch/shader_strings.c
 msgid "CRT Curved"
-msgstr ""
+msgstr "CRT 曲面"
 
 #: internal/retroarch/shader_strings.c
 msgid "CRT Lite"
-msgstr ""
+msgstr "轻量 CRT"
 
 #: internal/retroarch/shader_strings.c
 msgid "CRT Sharp"
-msgstr ""
+msgstr "锐利 CRT"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "CRT effects reduce brightness; the preset uses a milder mask and scanline "
 "strength than upstream defaults."
 msgstr ""
+"CRT 效果会降低亮度；此预设的\n"
+"遮罩和扫描线强度比原版默认值\n"
+"更柔和。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Cancel"
@@ -813,6 +847,9 @@ msgid ""
 "Carries a Leaf local patch until upstream fixes its GLSL ES precision "
 "mismatch."
 msgstr ""
+"在上游修复 GLSL ES\n"
+"精度不匹配问题之前，使用\n"
+"Leaf 本地补丁。"
 
 #: internal/settings/timezones.c
 msgid "Central Europe"
@@ -912,7 +949,7 @@ msgstr "继续"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Controller setup failed. Restart Leaf and try again."
-msgstr ""
+msgstr "控制器设置失败。请重启 Leaf 后重试。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Core"
@@ -940,7 +977,7 @@ msgstr "当前"
 
 #: internal/retroarch/shader_strings.c
 msgid "Curvature crops slightly at the screen edges."
-msgstr ""
+msgstr "曲面效果会轻微裁切屏幕边缘。"
 
 #: cmd/jawaka-menu/main.c
 msgid "Custom"
@@ -968,12 +1005,14 @@ msgstr "默认"
 
 #: internal/retroarch/shader_strings.c
 msgid "Designed for handheld content."
-msgstr ""
+msgstr "专为掌机内容设计。"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "Designed for handheld content; the grid is very fine at console resolutions."
 msgstr ""
+"专为掌机内容设计；在主机分辨\n"
+"率下网格会非常细密。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Details"
@@ -1023,6 +1062,10 @@ msgid ""
 "Do not combine with BFI when using mGBA: the no-shader mGBA control falls to "
 "38.499 FPS at 120Hz with BFI."
 msgstr ""
+"使用 mGBA 时不要开启 BFI：\n"
+"无着色器的 mGBA 对照测试\n"
+"在 120Hz 下开启 BFI 后\n"
+"降至 38.499 FPS。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Done"
@@ -1150,11 +1193,11 @@ msgstr "前端"
 
 #: internal/retroarch/shader_strings.c
 msgid "GBA Color"
-msgstr ""
+msgstr "GBA 色彩"
 
 #: internal/retroarch/shader_strings.c
 msgid "GBC Color"
-msgstr ""
+msgstr "GBC 色彩"
 
 #: cmd/jawaka-menu/main.c
 msgid "GPU"
@@ -1174,7 +1217,7 @@ msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "Game Boy Advance LCD"
-msgstr ""
+msgstr "Game Boy Advance LCD"
 
 #: internal/launcher/system_names.c
 msgid "Game Boy Color"
@@ -1182,11 +1225,11 @@ msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "Game Boy Color LCD"
-msgstr ""
+msgstr "Game Boy Color LCD"
 
 #: internal/retroarch/shader_strings.c
 msgid "Game Boy LCD"
-msgstr ""
+msgstr "Game Boy LCD"
 
 #: internal/launcher/system_names.c
 msgid "Game Gear"
@@ -1330,6 +1373,8 @@ msgid ""
 "Install the matching Leaf system update before checking this card on your "
 "device."
 msgstr ""
+"请先安装匹配的 Leaf 系统更新，再在设备上检\n"
+"查此卡。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installed"
@@ -1354,6 +1399,8 @@ msgstr ""
 #: internal/retroarch/shader_strings.c
 msgid "It is a scaling filter, not a CRT or LCD simulation."
 msgstr ""
+"这是缩放滤镜，不是 CRT 或\n"
+"LCD 模拟效果。"
 
 #: internal/settings/timezones.c
 msgid "Japan / Korea"
@@ -1366,6 +1413,8 @@ msgstr "保留"
 #: internal/retroarch/shader_strings.c
 msgid "Keep BFI off: PS1 at 120Hz with BFI measured 50.282 FPS."
 msgstr ""
+"请关闭 BFI：PS1 在 120Hz\n"
+"开启 BFI 时实测 50.282 FPS。"
 
 #: internal/settings/settings.c
 msgid "Keep Original"
@@ -1380,18 +1429,27 @@ msgid ""
 "Keep mGBA BFI off: the no-shader core path already falls below full speed at "
 "120Hz with BFI."
 msgstr ""
+"请勿为 mGBA 开启 BFI：\n"
+"在 120Hz 下，即使不使用\n"
+"着色器，开启 BFI 也无法\n"
+"全速运行。"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "Keeps pixel art crisp at integer and non-integer scaling without adding a "
 "CRT effect."
 msgstr ""
+"在整数和非整数缩放下保持像素\n"
+"画清晰，且不加入 CRT 效果。"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "Keeps rectangular pixels as sharp as possible at awkward non-integer scales "
 "while avoiding scrolling shimmer."
 msgstr ""
+"在不规则的非整数缩放下尽量保\n"
+"持矩形像素锐利，同时避免滚动\n"
+"画面闪烁。"
 
 #: internal/settings/settings.c
 msgid "Kernel"
@@ -1399,11 +1457,11 @@ msgstr "内核"
 
 #: internal/retroarch/shader_strings.c
 msgid "LCD Grid"
-msgstr ""
+msgstr "LCD 网格"
 
 #: internal/retroarch/shader_strings.c
 msgid "LCD Grid Fast"
-msgstr ""
+msgstr "快速 LCD 网格"
 
 #: internal/settings/settings.c
 msgid "Language"
@@ -1558,7 +1616,6 @@ msgid "Menu"
 msgstr "菜单"
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "Menu: Start now"
 msgstr "菜单键：立即开始"
 
@@ -1607,9 +1664,8 @@ msgid "Nearby"
 msgstr "附近设备"
 
 #: internal/settings/storage_ui.c
-#, fuzzy
 msgid "Needs check"
-msgstr "需要修复"
+msgstr "需要检查"
 
 #: internal/settings/storage_ui.c
 msgid "Needs repair"
@@ -1648,7 +1704,6 @@ msgid "New Zealand"
 msgstr ""
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "New saves may fail"
 msgstr "新存档可能无法保存"
 
@@ -1743,6 +1798,8 @@ msgstr "暂无存档"
 #: internal/retroarch/shader_strings.c
 msgid "No screen curvature; use CRT Curved for that."
 msgstr ""
+"不模拟屏幕曲率；如需曲面效果\n"
+"，请使用 CRT 曲面。"
 
 #: internal/settings/settings.c
 msgid "No services installed"
@@ -1917,7 +1974,6 @@ msgid "Playtime"
 msgstr "游玩时长"
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "Please wait"
 msgstr "请稍候"
 
@@ -1937,13 +1993,15 @@ msgstr "关机"
 msgid ""
 "Prefer this over Sharp Pixels when non-integer scrolling visibly shimmers."
 msgstr ""
+"非整数缩放时若滚动画面明显闪\n"
+"烁，请优先使用此效果而非锐利\n"
+"像素。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Press MENU to exit"
 msgstr "按菜单键退出"
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "Press Menu again"
 msgstr "再次按菜单键"
 
@@ -2177,7 +2235,6 @@ msgid "RetroArch reset canceled"
 msgstr "RetroArch 重置已取消"
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "RetroArch settings not saved"
 msgstr "RetroArch 设置未保存"
 
@@ -2190,7 +2247,6 @@ msgid "Return to Launcher"
 msgstr "返回启动器"
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "Return to Leaf?"
 msgstr "返回 Leaf？"
 
@@ -2282,16 +2338,22 @@ msgstr "扫描失败"
 #: internal/retroarch/shader_strings.c
 msgid "Scanlines and an aperture mask with a flat screen and crisp scaling."
 msgstr ""
+"在平面屏幕和清晰缩放的基础上\n"
+"加入扫描线与孔径遮罩。"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "Scanlines and aperture mask with screen curvature, rounded corners and "
 "vignetting."
 msgstr ""
+"加入扫描线、孔径遮罩、屏幕曲\n"
+"率、圆角和暗角效果。"
 
 #: internal/retroarch/shader_strings.c
 msgid "Scanlines reduce brightness, especially when combined with BFI."
 msgstr ""
+"扫描线会降低亮度，与 BFI\n"
+"同时使用时尤其明显。"
 
 #: internal/settings/settings.c
 msgid "Scanning"
@@ -2480,11 +2542,11 @@ msgstr "着色器作用范围"
 
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Pixels"
-msgstr ""
+msgstr "锐利像素"
 
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Shimmerless"
-msgstr ""
+msgstr "锐利无闪烁"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"
@@ -2563,7 +2625,6 @@ msgid "Split Over 10MB"
 msgstr "超过 10MB 时分割"
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "Splore import incomplete"
 msgstr "Splore 导入未完成"
 
@@ -2641,7 +2702,7 @@ msgstr "样式"
 
 #: internal/retroarch/shader_strings.c
 msgid "Subtle Scanlines"
-msgstr ""
+msgstr "柔和扫描线"
 
 #: internal/launcher/system_names.c
 msgid "Super Famicom"
@@ -2681,25 +2742,21 @@ msgstr "游戏切换"
 msgid "Sydney"
 msgstr "悉尼"
 
-# In-game OSD banners (Syncthing, settings, SD card, PICO-8). MACHINE SEED,
-# marked fuzzy until a reviewer confirms them; untranslated they render English.
+# In-game OSD banners (Syncthing, settings, SD card, PICO-8).
+# Reviewed; fuzzy markers cleared.
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "Syncthing: Checking saves"
 msgstr "Syncthing：正在检查存档"
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "Syncthing: Stopping"
 msgstr "Syncthing：正在停止"
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "Syncthing: Syncing %d item"
 msgstr "Syncthing：正在同步 %d 项"
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "Syncthing: Syncing %d items"
 msgstr "Syncthing：正在同步 %d 项"
 
@@ -2734,6 +2791,8 @@ msgstr "标签页"
 #: internal/retroarch/shader_strings.c
 msgid "Tames colors authored for the original Game Boy Advance LCD."
 msgstr ""
+"柔化针对初代 Game Boy\n"
+"Advance LCD 调校的色彩。"
 
 #: internal/settings/settings.c
 msgid "Test Sound"
@@ -2782,12 +2841,16 @@ msgid ""
 "The check took too long. Your SD card is still protected. You can check it "
 "on a computer or restart to try again."
 msgstr ""
+"检查时间过长。SD 卡仍处于保护状态。您可以\n"
+"在电脑上检查，或重启设备后重试。"
 
 #: internal/settings/storage_ui.c
 msgid ""
 "The last check or repair did not finish. Restart your device to check the "
 "card before saving is enabled again."
 msgstr ""
+"上次检查或修复未能完成。请重启设备检查此卡\n"
+"，检查通过后才能再次保存文件。"
 
 #: internal/settings/storage_ui.c
 msgid "The repair couldn't be started. Check the card on a computer instead."
@@ -2815,6 +2878,8 @@ msgstr "无法移除已保存的着色器。"
 #: internal/retroarch/shader_strings.c
 msgid "The texture and grid intentionally soften bright flat colors."
 msgstr ""
+"纹理和网格会有意柔化明亮的纯\n"
+"色区域。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "The theme contains files a theme is not allowed to have."
@@ -2923,11 +2988,15 @@ msgstr "此游戏"
 #: internal/retroarch/shader_strings.c
 msgid "This is a scaling filter, not a CRT simulation."
 msgstr ""
+"这是缩放滤镜，不是 CRT\n"
+"模拟效果。"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "This is a stronger display simulation than the simpler GBC Color preset."
 msgstr ""
+"相比更简洁的 GBC 色彩预设，\n"
+"此效果的屏幕模拟更明显。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "This is your current theme."
@@ -2968,7 +3037,6 @@ msgid "Total"
 msgstr "总计"
 
 #: cmd/jawaka-osd/game_launch.c
-#, fuzzy
 msgid "Try Splore again"
 msgstr "请再次打开 Splore"
 
@@ -3136,19 +3204,23 @@ msgstr "使用高级选项在 RetroArch 中编辑。"
 
 #: internal/retroarch/shader_strings.c
 msgid "Use only for GBA content."
-msgstr ""
+msgstr "仅适用于 GBA 内容。"
 
 #: internal/retroarch/shader_strings.c
 msgid "Use only for Game Boy Color content."
 msgstr ""
+"仅适用于 Game Boy Color\n"
+"内容。"
 
 #: internal/retroarch/shader_strings.c
 msgid "Use only for original Game Boy Advance content."
 msgstr ""
+"仅适用于初代 Game Boy\n"
+"Advance 内容。"
 
 #: internal/retroarch/shader_strings.c
 msgid "Use only for original Game Boy content."
-msgstr ""
+msgstr "仅适用于初代 Game Boy 内容。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Use the system setting"
@@ -3215,9 +3287,8 @@ msgid "Your SD card check did not finish successfully."
 msgstr "SD 卡检查未能完成。"
 
 #: internal/settings/storage_ui.c
-#, fuzzy
 msgid "Your SD card is protected"
-msgstr "SD 卡已启用写保护"
+msgstr "SD 卡处于保护状态"
 
 #: internal/settings/storage_ui.c
 msgid ""
@@ -3300,13 +3371,12 @@ msgid "Your device will restart to check and repair this card on battery power. 
 msgstr "设备将重启，并使用电池供电检查和修复此卡。如果修复开始前电量降至百分之三十以下，修复将不会运行。受损文件可能被截断、重命名，或以新名称恢复。请先在电脑上备份重要文件。"
 
 #: internal/settings/storage_ui.c
-#, fuzzy
 msgid ""
 "Your device will restart to check this card. If the check passes, you can "
 "save files again."
 msgstr ""
-"设备将重启以检查此卡。检查通过后，此卡即可恢复写入。检查完成前，请保持设备连"
-"接电源。"
+"设备将重启以检查此卡。\n"
+"检查通过后，即可再次保存文件。"
 
 #: internal/settings/storage_ui.c
 msgid ""
@@ -3482,3 +3552,43 @@ msgstr ""
 
 #~ msgid "Layout"
 #~ msgstr "布局"
+
+#: internal/settings/settings.c
+msgid "%d K"
+msgstr "%d K"
+
+#: internal/settings/settings.c
+msgid "Color temperature change failed"
+msgstr "色温调整失败"
+
+#: internal/settings/settings.c
+msgid "Color temperature unavailable on this platform"
+msgstr "此平台不支持调整色温"
+
+#: internal/settings/settings.c
+msgid "Color temperature unavailable while HDMI is active"
+msgstr "HDMI 启用时无法调整色温"
+
+#: internal/settings/storage_ui.c
+msgid "Leaf checked this card and found file system errors, usually left by a shutdown that didn't finish saving. To keep your files safe, you can't save to this card until it's repaired."
+msgstr ""
+"Leaf 检查此卡后发现文件系统错误，通常是因\n"
+"为关机时数据尚未保存完毕。为保护文件安全，\n"
+"修复前此卡将无法写入。"
+
+#: internal/settings/storage_ui.c
+msgid "Leaf couldn't repair this card on your device. Turn off your device, repair the card on a computer, then check it here to save to it again."
+msgstr ""
+"Leaf 无法在设备上修复此卡。请关闭设备，在\n"
+"电脑上修复存储卡，然后返回此处检查，检查通\n"
+"过后才能再次写入。"
+
+#: internal/settings/settings.c
+msgid "Panel only"
+msgstr "仅限设备屏幕"
+
+#: internal/settings/storage_ui.c
+msgid "The last check took too long and stopped. Restart your device to check the card again before saving is enabled."
+msgstr ""
+"上次检查耗时过长，已停止。请重启设备并重新\n"
+"检查此卡，检查通过后才能再次保存文件。"

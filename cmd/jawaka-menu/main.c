@@ -2103,7 +2103,7 @@ static void jw__render_ingame_shader(const jw_ingame_state *state,
                matrix asks the user to see when one is present. */
             for (size_t i = 0; i < selected->constraint_count; i++) {
                 if (strstr(selected->constraints[i], "BFI")) {
-                    constraint = selected->constraints[i];
+                    constraint = T(selected->constraints[i]);
                     break;
                 }
             }

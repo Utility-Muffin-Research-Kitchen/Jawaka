@@ -54,6 +54,10 @@ shader_render="$(body_for jw__render_ingame_shader)"
 main_row="$(body_for jw__draw_ingame_menu_item)"
 perf_row="$(body_for jw__draw_ingame_perf_item)"
 shader_row="$(body_for jw__draw_ingame_shader_item)"
+require "$shader_render" 'constraint = T(selected->constraints[i]);' \
+    "preferred shader BFI caveat bypasses translation"
+reject "$shader_render" 'constraint = selected->constraints[i];' \
+    "preferred shader BFI caveat displays untranslated text"
 for body in "$main_render" "$perf_render" "$shader_render"; do
     require "$body" "cat_draw_list_pane_layered(" \
         "an in-game list no longer uses layered focus rendering"
