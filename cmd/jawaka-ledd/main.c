@@ -2,7 +2,7 @@
  *
  * The stock loong_light daemon owns the AW20036 ring and re-asserts its config
  * on a refresh loop, so to run custom per-LED animations we FREEZE it
- * (SIGSTOP), drive /sys/.../mmrgball directly at a fixed frame rate, and THAW
+ * (SIGSTOP), drive /sys/.../mmrgball directly at a per-effect frame rate, and THAW
  * it (SIGCONT) on exit. On SIGCONT the daemon resumes and re-applies its cfg,
  * so the ring returns to the cooperative (Path A) state automatically.
  *
@@ -37,7 +37,9 @@
    motion glide instead of hopping LED-to-LED. */
 #define JW_LED_SUB   256
 #define JW_LED_RING  (JW_LED_COUNT * JW_LED_SUB)
-#define JW_LED_FPS_INTERVAL_MS 25   /* ~40fps for smooth motion */
+/* The effects are written in ticks of this length. An effect with a slower
+   frame advances several ticks per frame, so it runs at the same speed. */
+#define JW_LED_TICK_MS 25   /* ~40fps for smooth motion */
 
 /* Physical ring geometry (verified): index 0 ≈ 4 o'clock, winding CCW ~45°.
  * For the Fountain effect we fill from the bottom up each side to the top.
@@ -191,12 +193,16 @@ static void jw__fx_comet(uint32_t out[JW_LED_COUNT], long head,
     }
 }
 
+static int jw__fountain_hold(int speed) {
+    int hold = 3 + (10 - speed) * 4;   /* ticks held per fill level */
+    return hold < 1 ? 1 : hold;
+}
+
 /* Fountain: fill from the bottom up both sides to the top, then drain back. */
 static void jw__fx_fountain(uint32_t out[JW_LED_COUNT], int t,
                             const jw_effect_params *p, int speed) {
     for (int i = 0; i < JW_LED_COUNT; i++) out[i] = jw__argb(0, 0, 0, 0);
-    int hold = 3 + (10 - speed) * 4;   /* frames held per fill level */
-    if (hold < 1) hold = 1;
+    int hold = jw__fountain_hold(speed);
     static const int kLevels[8] = { 0, 1, 2, 3, 4, 3, 2, 1 };
     int level = kLevels[(t / hold) % 8];
     uint32_t lit = jw__argb(p->alpha_max, p->r, p->g, p->b);
@@ -206,15 +212,43 @@ static void jw__fx_fountain(uint32_t out[JW_LED_COUNT], int t,
     }
 }
 
-/* Hiccup: a sharp flash to full, then a smooth dim to off, brief pause, repeat. */
-static void jw__fx_hiccup(uint32_t out[JW_LED_COUNT], int t,
+/* Hiccup: a sharp flash to full, then a smooth dim to off, brief pause, repeat.
+   `step` is ticks per frame. Each cycle restarts on a frame boundary so it
+   always opens on the flash; with several ticks per frame a plain t % cycle
+   lands on it only every few cycles and the rhythm stutters. */
+static void jw__fx_hiccup(uint32_t out[JW_LED_COUNT], int t, int step,
                           const jw_effect_params *p, int speed) {
-    int decay = 6 + (10 - speed);      /* frames to fade from full to off */
-    int pause = 4 + (10 - speed) / 2;  /* dark frames before the next flash */
-    int phase = t % (decay + pause);
+    int decay = 6 + (10 - speed);      /* ticks to fade from full to off */
+    int pause = 4 + (10 - speed) / 2;  /* dark ticks before the next flash */
+    int cycle_frames = (decay + pause + step - 1) / step;
+    int phase = ((t / step) % cycle_frames) * step;
     int a = (phase < decay) ? p->alpha_max * (decay - phase) / decay : 0;
     uint32_t c = jw__argb(a, p->r, p->g, p->b);
     for (int i = 0; i < JW_LED_COUNT; i++) out[i] = c;
+}
+
+/* Frame interval per effect. Every frame is a sysfs write that the aw20036
+   driver turns into ~28 i2c transactions on a bus it shares with the codec and
+   the backlight, so only the effects that need it get the fast rate.
+     - comet, sweep, rainbow: one tick; the sub-LED glide and the hue roll
+       are what the frame rate buys.
+     - breath, hiccup, fountain: 100 ms; a uniform pulse or a fill level
+       reads the same at 10 fps. Fountain drops to its hold time at top speed
+       so no fill level is skipped.
+     - off, static: the frame never changes. The AW20036 latches its
+       registers, so a slow refresh is enough. */
+static long jw__effect_interval_ms(const char *effect, int speed) {
+    if (strcmp(effect, "off") == 0 || strcmp(effect, "static") == 0) {
+        return 1000;
+    }
+    if (strcmp(effect, "breath") == 0 || strcmp(effect, "hiccup") == 0) {
+        return 100;
+    }
+    if (strcmp(effect, "fountain") == 0) {
+        long hold_ms = (long)jw__fountain_hold(speed) * JW_LED_TICK_MS;
+        return hold_ms < 100 ? hold_ms : 100;
+    }
+    return JW_LED_TICK_MS;
 }
 
 int main(int argc, char **argv) {
@@ -238,16 +272,12 @@ int main(int argc, char **argv) {
        fading tail on its white background. */
     p.tail_sub = (strcmp(effect, "sweep") == 0) ? 0 : 3 * JW_LED_SUB;
 
-    /* Fixed high frame rate for smooth motion; speed drives how fast the dot
-       advances per frame (sub-LED units), not the frame interval. */
-    /* "off" and "static" are constant frames: the AW20036 latches its registers,
-       so re-driving them at the animation frame rate just churns the shared i2c
-       bus (codec, brightness) ~40x/second for a frame that never changes. Hold
-       them at a slow refresh; animated effects keep the smooth rate. */
-    int constant_frame = (strcmp(effect, "off") == 0 ||
-                          strcmp(effect, "static") == 0);
-    long interval_ms = constant_frame ? 1000 : JW_LED_FPS_INTERVAL_MS;
-    long advance = 6 + (long)speed * 6;   /* sub-LED units per frame */
+    /* Speed drives how far each effect moves per tick (sub-LED units for the
+       dot), not the frame interval. */
+    long interval_ms = jw__effect_interval_ms(effect, speed);
+    int step = (int)(interval_ms / JW_LED_TICK_MS);   /* ticks per frame */
+    if (step < 1) step = 1;
+    long advance = 6 + (long)speed * 6;   /* sub-LED units per tick */
 
     /* Handlers before the freeze: jawakad sends SIGTERM as soon as it stops
        an effect or dies, and a default-action SIGTERM after the SIGSTOP would
@@ -280,13 +310,13 @@ int main(int argc, char **argv) {
         else if (strcmp(effect, "comet") == 0)    jw__fx_comet(frame, head, &p, 1);
         else if (strcmp(effect, "sweep") == 0)    jw__fx_comet(frame, head, &p, 0);
         else if (strcmp(effect, "fountain") == 0) jw__fx_fountain(frame, t, &p, speed);
-        else if (strcmp(effect, "hiccup") == 0)   jw__fx_hiccup(frame, t, &p, speed);
+        else if (strcmp(effect, "hiccup") == 0)   jw__fx_hiccup(frame, t, step, &p, speed);
         else { fprintf(stderr, "unknown effect: %s\n", effect); return 2; }
 
         jw__write_frame(frame);
         nanosleep(&sleep_for, NULL);
-        head = (head + advance) % JW_LED_RING;
-        t++;
+        head = (head + advance * step) % JW_LED_RING;
+        t += step;
     }
     jw__thaw();
     return 0;
