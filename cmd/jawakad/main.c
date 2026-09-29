@@ -11344,6 +11344,7 @@ static bool jw__power_hold_save_eligible(jw_daemon_state *state) {
 static void jw__power_long_press(jw_daemon_state *state, long long press_ms,
                                  long long held_ms) {
     bool first = !state->shutdown_requested;
+    bool handed_off = false;
     state->power_sleep_armed = false;
     if (first) {
         jw_suspend_policy_long_press(&state->suspend_policy);
@@ -11352,13 +11353,17 @@ static void jw__power_long_press(jw_daemon_state *state, long long press_ms,
         } else {
             jw_log_info("power: long-press -> clean power off");
         }
-        jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF);
+        /* On MLP1 this publishes the request to the supervisor right now; a
+           refused handoff means no shutdown, so a save prompt would be a lie. */
+        handed_off = jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF,
+                                                  "power-button");
     }
     if (state->power_hold_save.phase != JW_POWER_HOLD_SAVE_IDLE) {
         return;  /* duplicate hold tick, or an attempt already decided */
     }
-    /* Off, other platforms, and anything but a RetroArch game get no save phase. */
-    if (!first || !state->power_hold_save_enabled ||
+    /* Off, a refused handoff, other platforms, and anything but a RetroArch
+       game get no save phase. */
+    if (!first || !handed_off || !state->power_hold_save_enabled ||
         strcmp(state->platform.platform_id, "mlp1") != 0 ||
         !jw__has_retroarch_session(state) || g_shutdown_requested) {
         return;
@@ -17053,7 +17058,7 @@ int main(int argc, char *argv[]) {
            release wait or the save runs. Top-of-loop input, child reaping, and
            service supervision above keep running. */
         if (state.shutdown_requested && jw__tick_power_hold_save(&state)) {
-            usleep(10000);
+            jw__usleep(10000);
             continue;
         }
 
