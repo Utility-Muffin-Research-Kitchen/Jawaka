@@ -73,6 +73,11 @@ void jw_bt_mac_canonical(const char *mac, char out[JW_BT_MAC_LEN]);
 
 int  jw_bt_status(jw_bt_status_t *out);
 bool jw_bt_radio_is_on(void);
+/* Adapter power and "anything connected" straight from the kernel, for status
+ * icons polled every few seconds. Returns 0 on success, -1 when the kernel
+ * cannot say (no adapter, no HCI socket); callers then fall back to
+ * jw_bt_radio_is_on() and jw_bt_any_connected(). */
+int  jw_bt_kernel_state(bool *powered, bool *connected);
 int  jw_bt_set_radio(bool on);
 int  jw_bt_any_connected(void);
 int  jw_bt_audio_connected(void);

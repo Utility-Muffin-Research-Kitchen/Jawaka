@@ -10,8 +10,12 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <dirent.h>
+#include <stdint.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <spawn.h>
@@ -486,6 +490,65 @@ int jw_bt_status(jw_bt_status_t *out) {
 
     out->any_connected = jw_bt_any_connected() == 1;
     (void)jw_bt_sync_stock_saved_list();
+    return 0;
+}
+
+/* HCIGETDEVINFO from the kernel's HCI socket ABI (include/net/bluetooth/
+   hci_sock.h), spelled out because the toolchain has no BlueZ headers. Only
+   dev_id (in) and flags (out; bit 0 is HCI_UP) are used; the rest sizes the
+   buffer the kernel copies into. No capability is needed to ask. */
+#define JW_AF_BLUETOOTH  31
+#define JW_BTPROTO_HCI   1
+#define JW_HCIGETDEVINFO _IOR('H', 211, int)
+#define JW_HCI_UP        0
+struct jw_hci_dev_info {
+    uint16_t dev_id;
+    char     name[8];
+    uint8_t  bdaddr[6];
+    uint32_t flags;
+    uint8_t  type;
+    uint8_t  features[8];
+    uint32_t pkt_type;
+    uint32_t link_policy;
+    uint32_t link_mode;
+    uint16_t acl_mtu;
+    uint16_t acl_pkts;
+    uint16_t sco_mtu;
+    uint16_t sco_pkts;
+    uint32_t stat[10];
+};
+
+int jw_bt_kernel_state(bool *powered, bool *connected) {
+    int fd = socket(JW_AF_BLUETOOTH, SOCK_RAW | SOCK_CLOEXEC, JW_BTPROTO_HCI);
+    if (fd < 0) {
+        return -1;
+    }
+    struct jw_hci_dev_info info;
+    memset(&info, 0, sizeof(info));
+    info.dev_id = 0;   /* hci0 */
+    int rc = ioctl(fd, JW_HCIGETDEVINFO, &info);
+    close(fd);
+    if (rc != 0) {
+        return -1;
+    }
+    bool up = (info.flags & (1u << JW_HCI_UP)) != 0;
+    /* Each live ACL link is a device object named hci0:<handle>. */
+    bool any = false;
+    if (up) {
+        DIR *dir = opendir("/sys/class/bluetooth");
+        if (dir) {
+            struct dirent *entry;
+            while ((entry = readdir(dir)) != NULL) {
+                if (strncmp(entry->d_name, "hci0:", 5) == 0) {
+                    any = true;
+                    break;
+                }
+            }
+            closedir(dir);
+        }
+    }
+    if (powered) *powered = up;
+    if (connected) *connected = any;
     return 0;
 }
 

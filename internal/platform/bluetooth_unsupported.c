@@ -50,6 +50,12 @@ bool jw_bt_radio_is_on(void) {
     return false;
 }
 
+int jw_bt_kernel_state(bool *powered, bool *connected) {
+    (void)powered;
+    (void)connected;
+    return -1;
+}
+
 int jw_bt_set_radio(bool on) {
     (void)on;
     return -1;
