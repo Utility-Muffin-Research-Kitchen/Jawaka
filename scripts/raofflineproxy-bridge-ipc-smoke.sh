@@ -36,6 +36,8 @@ CAPTURED_CFG="$TMP_DIR/captured.cfg"
 HEALTH_PID=""
 CTL="$ROOT_DIR/$BUILD_REL/bin/jawaka-platformctl"
 
+fail() { echo "raofflineproxy-bridge-ipc-smoke: $1" >&2; exit 1; }
+
 cleanup() {
     exit_status=$?
     set +e
@@ -219,7 +221,8 @@ cheevos_hardcore_mode_enable = \"false\"
 elapsed_ms=$(launch_timed)
 wait_backup_fresh 1
 [ -e "$CAPTURED_CFG" ]
-! grep -q "127.0.0.1:8080" "$CAPTURED_CFG"
+! grep -q "127.0.0.1:8080" "$CAPTURED_CFG" ||
+    fail "case1: a disabled service still routed through the proxy"
 grep -q "cheevos_custom_host = \"foreign.example:9999\"" "$SHARED_CFG"
 [ "$elapsed_ms" -lt 450 ]
 echo "case1 disabled-direct ok (${elapsed_ms}ms)"
@@ -242,8 +245,10 @@ grep -q "cheevos_hardcore_mode_enable = \"false\"" "$CAPTURED_CFG"
 # Snapshot restore: foreign shared values byte-identical, no injected content.
 grep -qxF 'cheevos_custom_host = "foreign.example:9999"' "$SHARED_CFG"
 [ "$(grep -c 'cheevos_custom_host' "$SHARED_CFG")" = 1 ]
-! grep -q "127.0.0.1:8080" "$SHARED_CFG"
-! grep -q "cheevos_token" "$SHARED_CFG"
+! grep -q "127.0.0.1:8080" "$SHARED_CFG" ||
+    fail "case2: the proxy host leaked into the shared config"
+! grep -q "cheevos_token" "$SHARED_CFG" ||
+    fail "case2: a token leaked into the shared config"
 echo "case2 ready-proxied ok"
 
 # -- Case 3: durable Hardcore=true -> direct, no injection, no wait --
@@ -254,7 +259,8 @@ cheevos_hardcore_mode_enable = \"true\"
 elapsed_ms=$(launch_timed)
 wait_backup_fresh 3
 [ -e "$CAPTURED_CFG" ]
-! grep -q "127.0.0.1:8080" "$CAPTURED_CFG"
+! grep -q "127.0.0.1:8080" "$CAPTURED_CFG" ||
+    fail "case3: a Hardcore launch still routed through the proxy"
 grep -qxF 'cheevos_hardcore_mode_enable = "true"' "$SHARED_CFG"
 [ "$elapsed_ms" -lt 450 ]
 echo "case3 hardcore-direct ok (${elapsed_ms}ms)"
@@ -277,7 +283,8 @@ cheevos_hardcore_mode_enable = \"false\"
 elapsed_ms=$(launch_timed)
 wait_backup_fresh 4
 [ -e "$CAPTURED_CFG" ]
-! grep -q "127.0.0.1:8080" "$CAPTURED_CFG"
+! grep -q "127.0.0.1:8080" "$CAPTURED_CFG" ||
+    fail "case4: a session-stopped service still routed through the proxy"
 [ "$elapsed_ms" -lt 450 ]
 echo "case4 session-stopped-direct ok (${elapsed_ms}ms)"
 
@@ -390,8 +397,10 @@ grep -q "cheevos_hardcore_mode_enable = \"false\"" "$CAPTURED_CFG"
 # Snapshot restore intact, exactly as case 2.
 grep -qxF 'cheevos_custom_host = "foreign.example:9999"' "$SHARED_CFG"
 [ "$(grep -c 'cheevos_custom_host' "$SHARED_CFG")" = 1 ]
-! grep -q "127.0.0.1:8080" "$SHARED_CFG"
-! grep -q "cheevos_token" "$SHARED_CFG"
+! grep -q "127.0.0.1:8080" "$SHARED_CFG" ||
+    fail "case5c: the proxy host leaked into the shared config"
+! grep -q "cheevos_token" "$SHARED_CFG" ||
+    fail "case5c: a token leaked into the shared config"
 blocked="$($CTL --socket "$SOCKET" request '{"type":"game-launch-blocked-status"}')"
 printf '%s' "$blocked" | grep -q '"blocked":false'
 echo "case5c retry-healthy-proxied ok"
@@ -413,9 +422,12 @@ grep -F '"type":"error"' "$TMP_DIR/retry.reply" >/dev/null
     grep -F '"type":"ok"' >/dev/null
 wait_backup_fresh 6
 [ -e "$CAPTURED_CFG" ]
-! grep -q "127.0.0.1:8080" "$CAPTURED_CFG"
-! grep -q "cheevos_custom_host" "$SHARED_CFG"
-! grep -q "cheevos_token" "$SHARED_CFG"
+! grep -q "127.0.0.1:8080" "$CAPTURED_CFG" ||
+    fail "case6: the override launch still routed through the proxy"
+! grep -q "cheevos_custom_host" "$SHARED_CFG" ||
+    fail "case6: a custom host leaked into the shared config"
+! grep -q "cheevos_token" "$SHARED_CFG" ||
+    fail "case6: a token leaked into the shared config"
 echo "case6 override-direct ok"
 
 # The bypass is consumed: with the service back up and healthy, the very next
@@ -460,7 +472,8 @@ launch | grep -F '"type":"ok"' >/dev/null
 wait_backup_fresh 8
 grep -q "cheevos_custom_host = \"127.0.0.1:8080\"" "$CAPTURED_CFG"
 grep -q "cheevos_hardcore_mode_enable = \"false\"" "$CAPTURED_CFG"
-! grep -q "cheevos_custom_host" "$SHARED_CFG"
+! grep -q "cheevos_custom_host" "$SHARED_CFG" ||
+    fail "case8: a custom host leaked into the shared config"
 echo "case8 run-without-start-with-leaf ok"
 
 # -- Bundled Flycast child and the STARTING supervisor state ---------------
@@ -513,7 +526,8 @@ expect_flycast_route() { # value
         return 1
     }
     # Intent only: never a host, port, URL or credential.
-    ! grep -E '^UMRK_FLYCAST_RA_ROUTE=.*(127\.0\.0\.1|8080|http)' "$FLYCAST_ENV"
+    ! grep -qE '^UMRK_FLYCAST_RA_ROUTE=.*(127\.0\.0\.1|8080|http)' "$FLYCAST_ENV" ||
+        fail "route value carries more than intent"
 }
 
 # Run a launch inside the service's STARTING window. The window is the
@@ -543,7 +557,8 @@ wait_backup_fresh 8
 service_status | grep -q '"effective_state":"running"'
 launch_flycast
 expect_flycast_route service-live
-! grep -q '^JAWAKA_CHEEVOS_' "$FLYCAST_ENV"
+! grep -q '^JAWAKA_CHEEVOS_' "$FLYCAST_ENV" ||
+    fail "case9: RetroArch credentials reached the Flycast child"
 echo "case9 flycast running -> service-live ok"
 
 # -- Case 10: RUNNING but health down -> still service-live, never gated --
@@ -586,7 +601,8 @@ in_starting_window starting_retroarch
 if grep -qF '"type":"ok"' "$STARTING_REPLY"; then
     wait_backup_fresh $((starting_backups + 1))
     grep -q "cheevos_custom_host = \"127.0.0.1:8080\"" "$CAPTURED_CFG"
-    ! grep -q "cheevos_custom_host" "$SHARED_CFG"
+    ! grep -q "cheevos_custom_host" "$SHARED_CFG" ||
+        fail "case12: a custom host leaked into the shared config"
     echo "case12 retroarch starting -> proxied ok"
 else
     blocked="$($CTL --socket "$SOCKET" request '{"type":"game-launch-blocked-status"}' 2>/dev/null || true)"
