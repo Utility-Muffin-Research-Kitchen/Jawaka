@@ -701,6 +701,11 @@ package-quiesce-ipc-smoke:
 power-transition-ipc-smoke:
 	scripts/power-transition-ipc-smoke.sh
 
+# jawakad exits on SIGTERM while supervising a launcher child.
+.PHONY: daemon-shutdown-smoke
+daemon-shutdown-smoke:
+	scripts/daemon-shutdown-smoke.sh
+
 service-manifest-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/service-manifest-test \
 		internal/services/manifest_test.c internal/services/manifest.c \

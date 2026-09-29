@@ -113,9 +113,12 @@
    in Leaf mode jawakad does (see jw__mlp1_speaker_gate_sync). */
 #define JW_MLP1_SPK_CTL "/sys/kernel/powerCtrl/spk_ctl"
 #define JW_MLP1_RK817_PCM_STATUS "/proc/asound/card1/pcm0p/sub0/status"
-/* Under the daemon's 50 ms loop tick, so every tick checks: SETUP to the first
-   samples at the DAC is ~150 ms, and the gate has to be up inside that. */
+/* While playback is possible: under the daemon's 50 ms busy cadence, so every
+   pass checks. SETUP to the first samples at the DAC is ~150 ms, and the gate
+   has to be up inside that. Otherwise once a second is enough to notice the
+   device closing. */
 #define JW_MLP1_SPK_GATE_POLL_MS 40
+#define JW_MLP1_SPK_GATE_IDLE_POLL_MS 1000
 
 /* The rk817 DAC (ALSA numid=16) is the dominant hardware loudness control and is
    pinned to a fixed level at boot (platform.d/00-audio-init.sh). The user-facing
@@ -2707,49 +2710,94 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
     return 0;
 }
 
-/* Read the headphone-jack switch straight from its input device (event3,
-   "rk817-codec Headphones") via EVIOCGSW — kernel state, no amixer fork. The fd
-   is opened once by name and cached. Returns 1 = plugged, 0 = unplugged,
-   -1 = no device. */
-static int jw__mlp1_jack_input_state(void) {
-    static int fd = -2;   /* -2 = not yet probed */
-    if (fd == -2) {
-        fd = -1;
-        for (int i = 0; i < 32; i++) {
-            char path[32];
-            snprintf(path, sizeof(path), "/dev/input/event%d", i);
-            int f = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-            if (f < 0) {
-                continue;
-            }
-            char name[128] = {0};
-            if (ioctl(f, EVIOCGNAME(sizeof(name)), name) >= 0 &&
-                strstr(name, "rk817-codec Headphones")) {
-                fd = f;
-                break;
-            }
-            close(f);
-        }
-        if (fd < 0) {
-            /* Found nothing (e.g. the codec input device hasn't appeared yet at
-               boot) — reset to the "not probed" sentinel so the next call
-               re-scans instead of caching the miss forever. */
-            fd = -2;
-            return -1;
-        }
+/* The headphone jack's input device (event3, "rk817-codec Headphones"). The fd
+   is opened once by name and sits in jawakad's poll set, so a plug or unplug
+   wakes the daemon; the state is kept from its EV_SW events rather than asked
+   for with an ioctl on every pass. -2 = not yet probed, -1 = no device. */
+static int s_mlp1_jack_fd = -2;
+static int s_mlp1_jack_state = -1;   /* 1 plugged, 0 unplugged, -1 unknown */
+
+static void jw__mlp1_jack_close(void) {
+    if (s_mlp1_jack_fd >= 0) {
+        close(s_mlp1_jack_fd);
     }
+    /* Back to the "not probed" sentinel so the next call re-scans (driver
+       rebind, suspend/resume, or a device that had not appeared at boot). */
+    s_mlp1_jack_fd = -2;
+    s_mlp1_jack_state = -1;
+}
+
+/* Re-read the switch with EVIOCGSW: on open, after SYN_DROPPED, and on wake,
+   when events may have been lost. */
+static void jw__mlp1_jack_resync(void) {
+    if (s_mlp1_jack_fd < 0) {
+        return;
+    }
+    unsigned long bits[2] = {0};   /* SW_HEADPHONE_INSERT (2) lives in word 0 */
+    if (ioctl(s_mlp1_jack_fd, EVIOCGSW(sizeof(bits)), bits) < 0) {
+        jw__mlp1_jack_close();
+        return;
+    }
+    s_mlp1_jack_state = (bits[0] >> SW_HEADPHONE_INSERT) & 1UL ? 1 : 0;
+}
+
+static int jw__mlp1_jack_fd(void) {
+    if (s_mlp1_jack_fd != -2) {
+        return s_mlp1_jack_fd;
+    }
+    for (int i = 0; i < 32; i++) {
+        char path[32];
+        snprintf(path, sizeof(path), "/dev/input/event%d", i);
+        int f = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (f < 0) {
+            continue;
+        }
+        char name[128] = {0};
+        if (ioctl(f, EVIOCGNAME(sizeof(name)), name) >= 0 &&
+            strstr(name, "rk817-codec Headphones")) {
+            s_mlp1_jack_fd = f;
+            jw__mlp1_jack_resync();
+            return s_mlp1_jack_fd;
+        }
+        close(f);
+    }
+    /* Nothing yet (the codec input device can appear after jawakad starts):
+       stay "not probed" so the next call scans again. */
+    return -1;
+}
+
+/* Returns 1 = plugged, 0 = unplugged, -1 = no device. Drains pending switch
+   events first; with nothing queued that is one read returning EAGAIN. */
+static int jw__mlp1_jack_input_state(void) {
+    int fd = jw__mlp1_jack_fd();
     if (fd < 0) {
         return -1;
     }
-    unsigned long bits[2] = {0};   /* SW_HEADPHONE_INSERT (2) lives in word 0 */
-    if (ioctl(fd, EVIOCGSW(sizeof(bits)), bits) < 0) {
-        /* The cached node went stale (driver rebind, suspend/resume) — drop it
-           and reset to the "not probed" sentinel so the next call re-probes. */
-        close(fd);
-        fd = -2;
+    struct input_event ev;
+    for (;;) {
+        ssize_t got = read(fd, &ev, sizeof(ev));
+        if (got == (ssize_t)sizeof(ev)) {
+            if (ev.type == EV_SW && ev.code == SW_HEADPHONE_INSERT) {
+                s_mlp1_jack_state = ev.value ? 1 : 0;
+            } else if (ev.type == EV_SYN && ev.code == SYN_DROPPED) {
+                jw__mlp1_jack_resync();
+                if (s_mlp1_jack_fd < 0) {
+                    return -1;
+                }
+            }
+            continue;
+        }
+        if (got < 0 && errno == EINTR) {
+            continue;
+        }
+        if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            break;
+        }
+        /* ENODEV or a short read: the node went stale. */
+        jw__mlp1_jack_close();
         return -1;
     }
-    return (bits[0] >> SW_HEADPHONE_INSERT) & 1UL ? 1 : 0;
+    return s_mlp1_jack_state;
 }
 
 /* Re-route audio when the headphone jack changes. On this hardware the rk817
@@ -2794,6 +2842,8 @@ static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi) {
 static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reason) {
     (void)ctx;
     const char *why = (reason && reason[0]) ? reason : "unknown";
+    /* Switch events can be lost across a suspend; take the kernel's word. */
+    jw__mlp1_jack_resync();
     jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
     jw_platform_audio_output current = jw__mlp1_get_audio_output();
 
@@ -2878,15 +2928,30 @@ static int jw__mlp1_speaker_gate_for_playback(void) {
    poll and a sysfs write only when the gate has to move. The current value is
    read back rather than cached, so a resume or another writer is corrected on
    the next poll. */
-static void jw__mlp1_speaker_gate_sync(bool force) {
-    static long long next_ms = 0;
+static long long s_mlp1_gate_polled_ms = -1;
+static int s_mlp1_gate_last_playback = 0;   /* last state read; 0 = closed */
+
+/* A stream can start at any moment while a game or app runs, while the test
+   clip plays, or while the device is still open. Only then does the gate need
+   the fast poll; at an idle launcher the PCM stays closed. */
+static bool jw__mlp1_speaker_gate_fast(const jw_platform_context *ctx) {
+    return (ctx && ctx->content_active) || jw__mlp1_test_sound_active() ||
+           s_mlp1_gate_last_playback != 0;
+}
+
+static void jw__mlp1_speaker_gate_sync(const jw_platform_context *ctx, bool force) {
     long long now = jw__monotonic_ms();
-    if (!force && now < next_ms) {
+    long long interval = jw__mlp1_speaker_gate_fast(ctx)
+                             ? JW_MLP1_SPK_GATE_POLL_MS
+                             : JW_MLP1_SPK_GATE_IDLE_POLL_MS;
+    if (!force && s_mlp1_gate_polled_ms >= 0 &&
+        now - s_mlp1_gate_polled_ms < interval) {
         return;
     }
-    next_ms = now + JW_MLP1_SPK_GATE_POLL_MS;
+    s_mlp1_gate_polled_ms = now;
 
     int playback = jw__mlp1_rk817_playback_state();
+    s_mlp1_gate_last_playback = playback;
     if (playback < 0) {
         return;
     }
@@ -2907,14 +2972,13 @@ static void jw__mlp1_speaker_gate_sync(bool force) {
 }
 
 static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
-    (void)ctx;
     unsigned events = 0;
 
     /* Reap the test-clip player if it finished on its own (keeps it from
        lingering as a zombie and keeps the play/stop state accurate). */
     (void)jw__mlp1_test_sound_active();
 
-    jw__mlp1_speaker_gate_sync(false);
+    jw__mlp1_speaker_gate_sync(ctx, false);
 
     /* ── Headphone-jack edge (cheap kernel switch, checked every loop). ──
        On unplug, fall back to Bluetooth if a headset is still connected, not
@@ -2931,7 +2995,7 @@ static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
         jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
         jw__mlp1_set_audio_output(target, &res);
         /* Mute or unmute the speaker now rather than on the next poll. */
-        jw__mlp1_speaker_gate_sync(true);
+        jw__mlp1_speaker_gate_sync(ctx, true);
         events |= JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
         jw_log_info("audio: headphone jack %s, routed to %s",
                     present ? "inserted" : "removed",
@@ -3750,6 +3814,53 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
     return changed;
 }
 
+/* The hotplug netlink socket and the headphone jack. Everything else the audio
+   and storage ticks watch is either a timer (next_deadline_ms) or a periodic
+   check that runs on whatever pass comes next. */
+static int jw__mlp1_poll_fds(jw_platform_context *ctx, int *fds, int max) {
+    jw_mlp1_platform_data *data = ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
+    int count = 0;
+    if (data && data->uevent_fd >= 0 && count < max) {
+        fds[count++] = data->uevent_fd;
+    }
+    int jack = jw__mlp1_jack_fd();
+    if (jack >= 0 && count < max) {
+        fds[count++] = jack;
+    }
+    return count;
+}
+
+static void jw__mlp1_deadline_min(long long *best, long long at) {
+    if (*best < 0 || at < *best) {
+        *best = at;
+    }
+}
+
+/* Timed work in the audio and storage ticks. Left out on purpose, because a
+   second of lateness is harmless and the daemon wakes at least once a second:
+   the 400 ms charger poll (charger uevents never arrive on this device, see
+   the storage tick), the 1 s USB-audio and 1.5 s Bluetooth-audio probes, and
+   the idle speaker-gate poll. */
+static long long jw__mlp1_next_deadline_ms(jw_platform_context *ctx, long long now_ms) {
+    jw_mlp1_platform_data *data = ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
+    long long best = -1;
+    if (data && data->resume_mount_repair_pending) {
+        jw__mlp1_deadline_min(&best, data->resume_mount_repair_at_ms);
+    }
+    if (data && data->pending_storage_event) {
+        jw__mlp1_deadline_min(&best, data->debounce_until_ms);
+    }
+    if (data && data->pending_charge_event) {
+        jw__mlp1_deadline_min(&best, data->charge_settle_until_ms);
+    }
+    if (jw__mlp1_speaker_gate_fast(ctx)) {
+        jw__mlp1_deadline_min(&best, s_mlp1_gate_polled_ms < 0
+                                         ? now_ms
+                                         : s_mlp1_gate_polled_ms + JW_MLP1_SPK_GATE_POLL_MS);
+    }
+    return best;
+}
+
 static void jw__mlp1_get_storage_status(jw_platform_context *ctx,
                                         const char *source_id,
                                         jw_platform_storage_status *out) {
@@ -4038,6 +4149,8 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .get_status = jw__mlp1_get_status,
         .get_audio_status = jw__mlp1_get_audio_status,
         .audio_tick = jw__mlp1_audio_tick,
+        .poll_fds = jw__mlp1_poll_fds,
+        .next_deadline_ms = jw__mlp1_next_deadline_ms,
         .audio_reconcile = jw__mlp1_audio_reconcile,
         .frontend_ready = jw__mlp1_frontend_ready,
         .perform_action = jw__mlp1_perform_action,

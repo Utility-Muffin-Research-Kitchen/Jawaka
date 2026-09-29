@@ -84,6 +84,12 @@ struct jw_svc_supervisor {
     /* LIFE-1 authoritative active-launch gate. This is initialized from the
      * runtime active-game record before the first scan/autostart tick. */
     bool game_active;
+    /* Set once the daemon reports child exits through
+     * jw_svc_supervisor_note_child_exit(). Leader exits are then checked only
+     * after such a report, not with a waitid per running service on every
+     * tick. */
+    bool exit_notify;
+    bool child_exit_pending;
 };
 
 /* ------------------------------------------------------------------ */
@@ -1872,12 +1878,93 @@ static bool jw__observe_leader_exit(pid_t leader, int *out_exit_code,
     return true;
 }
 
+void jw_svc_supervisor_set_exit_notify(jw_svc_supervisor *sup, bool enabled) {
+    if (!sup) {
+        return;
+    }
+    sup->exit_notify = enabled;
+    sup->child_exit_pending = true;   /* check every leader once on the switch */
+}
+
+void jw_svc_supervisor_note_child_exit(jw_svc_supervisor *sup) {
+    if (sup) {
+        sup->child_exit_pending = true;
+    }
+}
+
+static void jw__deadline_min(long long *best, long long at) {
+    if (*best < 0 || at < *best) {
+        *best = at;
+    }
+}
+
+/* Mirrors the tick below: which of its branches can act, and when. */
+long long jw_svc_supervisor_next_deadline_ms(const jw_svc_supervisor *sup,
+                                             long long now_ms) {
+    if (!sup) {
+        return -1;
+    }
+    long long best = -1;
+    for (int i = 0; i < sup->count; i++) {
+        const jw_svc_supervised *e = &sup->entries[i];
+        if (e->pgid > 0 && (e->reap_pending || e->stop_requested)) {
+            /* The stop sequence checks for the group to be gone each tick. */
+            jw__deadline_min(&best, now_ms);
+            continue;
+        }
+        if (e->pgid > 0) {
+            if (e->state == JW_SVC_STATE_STARTING) {
+                jw__deadline_min(&best, e->stopping_since_ms +
+                                            JW_SVC_STARTING_SETTLE_MS);
+            }
+            continue;   /* running: only its exit matters */
+        }
+        if (sup->package_quiesce_active) {
+            continue;
+        }
+        if (sup->game_active &&
+            (e->manifest.lifecycle_game != JW_SVC_LIFECYCLE_GAME_IGNORE ||
+             e->game_restart_pending)) {
+            continue;
+        }
+        bool startable = e->state != JW_SVC_STATE_STALE_GENERATION &&
+                         e->state != JW_SVC_STATE_STOPPING &&
+                         jw__entry_available(e);
+        if (e->game_restart_pending && startable) {
+            jw__deadline_min(&best, now_ms);
+        }
+        if (e->lifecycle_restart_pending && startable &&
+            !(sup->storage_restart_blocked &&
+              e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_STORAGE)) {
+            jw__deadline_min(&best, now_ms);
+        }
+        if (e->state == JW_SVC_STATE_BACKOFF) {
+            jw__deadline_min(&best, e->backoff_retry_at_ms);
+        }
+        if (e->state == JW_SVC_STATE_STALE_GENERATION) {
+            jw__deadline_min(&best, e->lease_retry_next_ms);
+        }
+        bool idle = e->state != JW_SVC_STATE_BACKOFF &&
+                    e->state != JW_SVC_STATE_FAILED &&
+                    e->state != JW_SVC_STATE_STOPPING &&
+                    e->state != JW_SVC_STATE_STALE_GENERATION &&
+                    e->state != JW_SVC_STATE_STARTING;
+        if (idle && e->autostart_pending && e->manifest_valid &&
+            e->pak_present && !e->on_secondary_root) {
+            jw__deadline_min(&best, now_ms);
+        }
+    }
+    return best;
+}
+
 int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
     if (!sup) {
         return -1;
     }
     int changes = 0;
     long long now = jw__mono_ms();
+    bool observe_exits = !sup->exit_notify || sup->child_exit_pending;
+    sup->child_exit_pending = false;
 
     for (int i = 0; i < sup->count; i++) {
         jw_svc_supervised *e = &sup->entries[i];
@@ -1886,7 +1973,8 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
         if (e->pgid > 0 && !e->reap_pending) {
             int exit_code = -1;
             bool failed = true;
-            if (jw__observe_leader_exit(e->pgid, &exit_code, &failed)) {
+            if (observe_exits &&
+                jw__observe_leader_exit(e->pgid, &exit_code, &failed)) {
                 jw__handle_leader_exit(sup, e, exit_code, failed);
                 changes++;
                 continue;
@@ -2119,9 +2207,9 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
                 changes++;
             } else if (e->pgid <= 0) {
                 /* Consume this startup attempt. Retrying a fork/exec or
-                 * reservation failure at the daemon's ~20 Hz tick rate is a
-                 * process-spawn loop, not an autostart policy. A user Run can
-                 * explicitly try again. */
+                 * reservation failure on every daemon tick is a process-spawn
+                 * loop, not an autostart policy. A user Run can explicitly
+                 * try again. */
                 e->autostart_pending = false;
                 e->state = jw__entry_idle_state(e);
                 jw__persist(sup, e, "autostart-failed");

@@ -102,6 +102,10 @@ typedef struct {
     char script_dir[JW_PLATFORM_MAX_PATH];
     jw_platform_capabilities capabilities;
     bool home_ready_sent;
+    /* Set by the daemon each loop pass: a game or app child is running, so
+       audio can start at any moment. The backend polls audio state quickly
+       only while this, or its own playback, says it can. */
+    bool content_active;
     void *backend_data;
 } jw_platform_context;
 
@@ -262,6 +266,14 @@ void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out);
 void jw_platform_get_audio_status(jw_platform_context *ctx, jw_platform_status *out);
 /* Poll for audio edge events and re-route audio. Call periodically. */
 unsigned jw_platform_audio_tick(jw_platform_context *ctx);
+/* Descriptors the daemon should add to its poll set (POLLIN) so the audio and
+   storage ticks run when they have something to read. Returns the count
+   written, at most max; 0 when the backend has none. */
+int  jw_platform_poll_fds(jw_platform_context *ctx, int *fds, int max);
+/* The next monotonic ms at which the audio or storage tick has timed work, or
+   -1 when it only waits for its poll fds. Periodic checks that tolerate a
+   second of delay are left out; the daemon's own heartbeat covers them. */
+long long jw_platform_next_deadline_ms(jw_platform_context *ctx, long long now_ms);
 /* Best-effort repair of live audio route/volume after wake or before launch. */
 void jw_platform_audio_reconcile(jw_platform_context *ctx, const char *reason);
 void jw_platform_frontend_ready(jw_platform_context *ctx, const char *role, jw_platform_result *out);

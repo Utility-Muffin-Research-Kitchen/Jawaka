@@ -154,6 +154,28 @@ unsigned jw_platform_audio_tick(jw_platform_context *ctx) {
     return 0;
 }
 
+int jw_platform_poll_fds(jw_platform_context *ctx, int *fds, int max) {
+    if (!ctx || !fds || max <= 0) {
+        return 0;
+    }
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->poll_fds) {
+        return backend->poll_fds(ctx, fds, max);
+    }
+    return 0;
+}
+
+long long jw_platform_next_deadline_ms(jw_platform_context *ctx, long long now_ms) {
+    if (!ctx) {
+        return -1;
+    }
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->next_deadline_ms) {
+        return backend->next_deadline_ms(ctx, now_ms);
+    }
+    return -1;
+}
+
 void jw_platform_audio_reconcile(jw_platform_context *ctx, const char *reason) {
     if (!ctx) {
         return;

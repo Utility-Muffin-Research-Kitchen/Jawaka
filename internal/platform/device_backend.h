@@ -13,6 +13,9 @@ typedef struct {
     void (*get_status)(jw_platform_context *ctx, jw_platform_status *out);
     void (*get_audio_status)(jw_platform_context *ctx, jw_platform_status *out);
     unsigned (*audio_tick)(jw_platform_context *ctx);
+    /* Optional: see jw_platform_poll_fds / jw_platform_next_deadline_ms. */
+    int  (*poll_fds)(jw_platform_context *ctx, int *fds, int max);
+    long long (*next_deadline_ms)(jw_platform_context *ctx, long long now_ms);
     void (*audio_reconcile)(jw_platform_context *ctx, const char *reason);
     void (*frontend_ready)(jw_platform_context *ctx, const char *role,
                            jw_platform_result *out);
