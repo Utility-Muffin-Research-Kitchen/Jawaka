@@ -108,6 +108,13 @@
 #define JW_MLP1_PLAYBACK_PATH_OFF "amixer -c 1 cset numid=13 0 >/dev/null 2>&1"
 #define JW_MLP1_HP_JACK_CMD "amixer -c 1 cget numid=1 2>/dev/null"
 #define JW_MLP1_HDMI_STATUS "/sys/class/drm/card0-HDMI-A-1/status"
+/* External speaker amp enable (0 = off, 1 = on). Stock loong_service drives it;
+   in Leaf mode jawakad does (see jw__mlp1_speaker_gate_sync). */
+#define JW_MLP1_SPK_CTL "/sys/kernel/powerCtrl/spk_ctl"
+#define JW_MLP1_RK817_PCM_STATUS "/proc/asound/card1/pcm0p/sub0/status"
+/* Under the daemon's 50 ms loop tick, so every tick checks: SETUP to the first
+   samples at the DAC is ~150 ms, and the gate has to be up inside that. */
+#define JW_MLP1_SPK_GATE_POLL_MS 40
 
 /* The rk817 DAC (ALSA numid=16) is the dominant hardware loudness control and is
    pinned to a fixed level at boot (platform.d/00-audio-init.sh). The user-facing
@@ -2791,6 +2798,89 @@ static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reaso
                 why, jw_platform_audio_output_label(target));
 }
 
+/* rk817 playback substream state: 1 = a stream is set up or running (SETUP,
+   PREPARED, RUNNING), 0 = closed, -1 = anything else (OPEN, XRUN, DRAINING,
+   PAUSED, SUSPENDED) or unreadable. */
+static int jw__mlp1_rk817_playback_state(void) {
+    int fd = open(JW_MLP1_RK817_PCM_STATUS, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    char buf[32];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        return -1;
+    }
+    buf[n] = '\0';
+    if (strncmp(buf, "state: RUNNING", 14) == 0 ||
+        strncmp(buf, "state: PREPARED", 15) == 0 ||
+        strncmp(buf, "state: SETUP", 12) == 0) {
+        return 1;
+    }
+    if (strncmp(buf, "closed", 6) == 0) {
+        return 0;
+    }
+    return -1;
+}
+
+/* Gate value for an active rk817 stream: off with wired headphones in. */
+static int jw__mlp1_speaker_gate_for_playback(void) {
+    int jack = jw__mlp1_jack_input_state();
+    if (jack < 0) {
+        jack = jw__mlp1_headphone_jack_present() ? 1 : 0;
+    }
+    return jack > 0 ? 0 : 1;
+}
+
+/* Own the external speaker amp gate. The rk817 feeds its DAC to the speaker amp
+   and the headphone jack at once (Playback Path is a register-level no-op), so
+   spk_ctl is both "speaker on" during playback and the only way to mute the
+   speaker for wired headphones.
+
+   Raise it (jack empty) as soon as a stream is set up: SETUP and PREPARED come
+   ~150 ms before the first samples reach the DAC, so the amp is on and settled
+   before the sound starts. Waiting for RUNNING clipped the start of every sound
+   after an idle gap (PulseAudio's suspend-on-idle closes the device after 1 s)
+   and switched the amp on under a live DAC. Drop it for headphones, and once the
+   device is closed, when DAPM has already powered the output stage down and the
+   drop cannot pop. XRUN, DRAINING and PAUSED leave the gate alone so a hiccup
+   never toggles the amp. HDMI, USB-C and Bluetooth never open this substream,
+   so they need no case of their own.
+
+   This replaced a platform.d shell loop that forked grep/sleep five times a
+   second, about 10 points of one core at idle. Here it is one /proc read per
+   poll and a sysfs write only when the gate has to move. The current value is
+   read back rather than cached, so a resume or another writer is corrected on
+   the next poll. */
+static void jw__mlp1_speaker_gate_sync(bool force) {
+    static long long next_ms = 0;
+    long long now = jw__monotonic_ms();
+    if (!force && now < next_ms) {
+        return;
+    }
+    next_ms = now + JW_MLP1_SPK_GATE_POLL_MS;
+
+    int playback = jw__mlp1_rk817_playback_state();
+    if (playback < 0) {
+        return;
+    }
+    int want = playback == 1 ? jw__mlp1_speaker_gate_for_playback() : 0;
+    int current = jw__read_int_file(JW_MLP1_SPK_CTL);
+    if (current == want) {
+        return;
+    }
+    static bool warned = false;
+    if (jw__write_int_file(JW_MLP1_SPK_CTL, want) != 0) {
+        if (!warned) {
+            warned = true;
+            jw_log_warn("audio: speaker gate write failed: %s", strerror(errno));
+        }
+        return;
+    }
+    warned = false;
+}
+
 static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
     (void)ctx;
     unsigned events = 0;
@@ -2798,6 +2888,8 @@ static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
     /* Reap the test-clip player if it finished on its own (keeps it from
        lingering as a zombie and keeps the play/stop state accurate). */
     (void)jw__mlp1_test_sound_active();
+
+    jw__mlp1_speaker_gate_sync(false);
 
     /* ── Headphone-jack edge (cheap kernel switch, checked every loop). ──
        On unplug, fall back to Bluetooth if a headset is still connected, not
@@ -2813,6 +2905,8 @@ static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
         jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
         jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
         jw__mlp1_set_audio_output(target, &res);
+        /* Mute or unmute the speaker now rather than on the next poll. */
+        jw__mlp1_speaker_gate_sync(true);
         events |= JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
         jw_log_info("audio: headphone jack %s, routed to %s",
                     present ? "inserted" : "removed",
@@ -3178,7 +3272,7 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
               close the device cleanly, and un-suspend on resume to continue it.
 
            2. Headphone hiss. The rk817 headphone amp has no external gate (the
-              speaker's spk_ctl is dropped at idle, so speaker sleeps are already
+              speaker's spk_ctl is dropped below, so speaker sleeps are already
               silent), so it stays biased through `echo mem` and hisses once the
               I2S clocks stop — whether or not anything was playing, and suspending
               the sink does NOT fix it (verified: it re-hisses through a real
@@ -3199,6 +3293,10 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
             usleep(200000);
         }
         (void)jw__exec_shell(JW_MLP1_HP_POWERDOWN);
+        /* Speaker amp off for the sleep. The sink is suspended or already idle,
+           so nothing is driving it. A stream that was playing gets the gate
+           back just before its sink resumes, below. */
+        (void)jw__write_int_file(JW_MLP1_SPK_CTL, 0);
         int sfd = open("/sys/power/state", O_WRONLY | O_CLOEXEC);
         int rc = -1;
         if (sfd >= 0) {
@@ -3283,6 +3381,13 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         (void)jw__exec_shell(hp_restore);
         (void)jw__exec_shell(JW_MLP1_ENSURE_DAC_FLOOR);
         if (audio_playing) {
+            /* Raise the gate before the stream comes back rather than leaving
+               it to the audio tick, which only runs after the wake profile,
+               the service rescan and the audio reconcile, ~0.8 s of a game
+               playing into a muted speaker. The DAC is still idle here, so
+               the amp comes up silent. */
+            (void)jw__write_int_file(JW_MLP1_SPK_CTL,
+                                     jw__mlp1_speaker_gate_for_playback());
             (void)jw__exec_shell(JW_MLP1_PA_RESUME_SINK);
         }
         if (resume_data) {
