@@ -69,6 +69,7 @@
 #define JW_MLP1_BACKLIGHT_MAX JW_MLP1_BACKLIGHT_DIR "/max_brightness"
 
 #define JW_MLP1_CPUFREQ_POLICY "/sys/devices/system/cpu/cpufreq/policy0"
+#define JW_MLP1_SCHEDUTIL_RATE_LIMIT_US 50000
 #define JW_MLP1_GPU_DEVFREQ "/sys/devices/platform/fde60000.gpu/devfreq/fde60000.gpu"
 #define JW_MLP1_DMC_DEVFREQ "/sys/devices/platform/dmc/devfreq/dmc"
 #define JW_MLP1_SOC_TEMP "/sys/class/thermal/thermal_zone0/temp"
@@ -831,6 +832,26 @@ static void jw__mlp1_get_performance_status(jw_platform_context *ctx,
              out->supported ? "performance ready" : "performance partially unavailable");
 }
 
+/* schedutil's default 10 ms rate limit lets it step the CPU clock up to 100
+   times a second, and on this board every step is a VDD write to the tcs4525
+   regulator over the i2c bus it shares with the rk817 PMIC and codec. At idle
+   that measured 45-67 steps/s with the sugov:0 kthread near 4% CPU; 50 ms
+   brings it under 20/s. The tunable lives in the governor's directory, which
+   the kernel recreates at its default whenever schedutil is selected again,
+   so it is written after every governor write, not once at boot. */
+static void jw__mlp1_tune_schedutil(const char *base) {
+    char path[PATH_MAX];
+    if (jw__join_sysfs_path(path, sizeof(path), base,
+                            "schedutil/rate_limit_us") != 0 ||
+        access(path, W_OK) != 0) {
+        return;
+    }
+    if (jw__write_int_file(path, JW_MLP1_SCHEDUTIL_RATE_LIMIT_US) != 0) {
+        jw_log_warn("performance: schedutil rate limit write failed: %s",
+                    strerror(errno));
+    }
+}
+
 static int jw__mlp1_apply_perf_domain(jw_platform_perf_domain domain,
                                       const jw_platform_perf_domain_request *request,
                                       char *message,
@@ -878,6 +899,10 @@ static int jw__mlp1_apply_perf_domain(jw_platform_perf_domain domain,
         snprintf(message, message_size, "%s governor write failed: %s",
                  status.name, strerror(errno));
         return -1;
+    }
+    if (domain == JW_PLATFORM_PERF_DOMAIN_CPU &&
+        strcmp(request->governor, "schedutil") == 0) {
+        jw__mlp1_tune_schedutil(base);
     }
 
     if (request->frequency >= 0) {
