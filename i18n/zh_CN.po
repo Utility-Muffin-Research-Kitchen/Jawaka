@@ -3592,3 +3592,39 @@ msgid "The last check took too long and stopped. Restart your device to check th
 msgstr ""
 "上次检查耗时过长，已停止。请重启设备并重新\n"
 "检查此卡，检查通过后才能再次保存文件。"
+
+#, fuzzy
+msgid "Save Before Power Off"
+msgstr "关机前存档"
+
+#, fuzzy
+msgid "Hold power to shut down, then release to save"
+msgstr "长按电源键关机，松开即可存档"
+
+#, fuzzy
+msgid "Power off will not save your game"
+msgstr "关机时不会保存游戏进度"
+
+#, fuzzy
+msgid "Preparing to save"
+msgstr "正在准备存档"
+
+#, fuzzy
+msgid "Release the power button"
+msgstr "请松开电源键"
+
+#, fuzzy
+msgid "Saving game"
+msgstr "正在保存游戏"
+
+#, fuzzy
+msgid "Game saved"
+msgstr "游戏已保存"
+
+#, fuzzy
+msgid "Game not saved"
+msgstr "游戏未保存"
+
+#, fuzzy
+msgid "Powering off"
+msgstr "正在关机"
