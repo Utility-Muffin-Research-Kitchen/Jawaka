@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-life1-subscriber.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
@@ -19,10 +20,7 @@ CTL="$ROOT_DIR/$BUILD_REL/bin/jawaka-platformctl"
 cleanup() {
     status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || status=1
     if [ "$status" -ne 0 ] && [ -f "$LOG" ]; then cat "$LOG" >&2; fi
     rm -rf "$TMP_DIR"
     exit "$status"
@@ -38,8 +36,7 @@ printf '%s\n' \
   "{\"id\":\"$SERVICE_ID\",\"name\":\"LIFE-1 Fixture\",\"platform\":\"mac\",\"pak_version\":\"1.0.0\",\"service\":{\"schema\":1,\"id\":\"$SERVICE_ID\",\"run\":{\"path\":\"bin/life1-fixture-service\",\"args\":[]},\"default_enabled\":false,\"stop_grace_ms\":300,\"restart\":\"no\",\"lifecycle\":{\"game\":\"notify\"}}}" \
   >"$PAK/pak.json"
 
-(
-    cd "$ROOT_DIR"
+smoke_daemon_start "$ROOT_DIR" "$LOG" \
     PLATFORM=mac \
     SDCARD_PATH="$PRIMARY" \
     APPS_PATH="$PRIMARY/Apps" \
@@ -50,9 +47,7 @@ printf '%s\n' \
     UMRK_INTERNAL_DATA_PATH="$STATE" \
     JAWAKA_SDCARD_ROOT="$PRIMARY" \
     UMRK_LIFE1_FIXTURE_SERVICE_ID="$SERVICE_ID" \
-        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-) &
-DAEMON_PID=$!
+    "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
 for _ in $(seq 1 250); do
     [ -S "$SOCKET" ] && break
     kill -0 "$DAEMON_PID" 2>/dev/null || exit 1

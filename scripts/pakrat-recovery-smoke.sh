@@ -9,6 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 JAWAKA_DIR="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
+. "$JAWAKA_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_DIR="${BUILD:-build/pakrat-recovery-smoke}"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jawaka-pakrat-recovery.XXXXXX")"
 SHORT_RUNTIME_ROOT="$(mktemp -d "/tmp/jwpr.XXXXXX")"
@@ -16,16 +17,16 @@ SERVER_PID=""
 DAEMON_PID=""
 
 cleanup() {
-    if [ -n "$DAEMON_PID" ]; then
-        kill "$DAEMON_PID" >/dev/null 2>&1 || true
-        wait "$DAEMON_PID" >/dev/null 2>&1 || true
-    fi
+    status=$?
+    set +e
+    smoke_daemon_stop || status=1
     if [ -n "$SERVER_PID" ]; then
         kill "$SERVER_PID" >/dev/null 2>&1 || true
         wait "$SERVER_PID" >/dev/null 2>&1 || true
     fi
     rm -rf "$TMP_ROOT"
     rm -rf "$SHORT_RUNTIME_ROOT"
+    exit "$status"
 }
 trap cleanup EXIT
 
@@ -192,7 +193,7 @@ run_daemon_recovery() {
     local socket="$runtime/jawakad.sock"
     local log="$TMP_ROOT/daemon-$SCENARIO.log"
     mkdir -p "$runtime"
-    (
+    smoke_daemon_start "$PWD" "$log" \
         SDCARD_PATH="$SD_ROOT" \
         SDCARD_PATHS="$SD_ROOT" \
         JAWAKA_SDCARD_ROOT="$SD_ROOT" \
@@ -200,9 +201,7 @@ run_daemon_recovery() {
         UMRK_DAEMON_SOCKET="$socket" \
         UMRK_INTERNAL_DATA_PATH="$STATE_DIR" \
         UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
-        "$DAEMON_BIN" --daemon-only >"$log" 2>&1
-    ) &
-    DAEMON_PID=$!
+        "$DAEMON_BIN" --daemon-only
     for _ in $(seq 1 500); do
         [ -S "$socket" ] && break
         kill -0 "$DAEMON_PID" 2>/dev/null || {
@@ -218,9 +217,7 @@ run_daemon_recovery() {
     if [ "$linger" != "0" ]; then
         sleep "$linger"
     fi
-    kill "$DAEMON_PID" >/dev/null 2>&1 || true
-    wait "$DAEMON_PID" >/dev/null 2>&1 || true
-    DAEMON_PID=""
+    smoke_daemon_stop
 }
 
 fail() {

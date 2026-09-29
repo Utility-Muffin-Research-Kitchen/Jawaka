@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-active-recovery.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
@@ -19,10 +20,7 @@ CTL="$ROOT_DIR/$BUILD_REL/bin/jawaka-platformctl"
 cleanup() {
     status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || status=1
     if [ "$status" -ne 0 ] && [ -f "$LOG" ]; then cat "$LOG" >&2; fi
     rm -rf "$TMP_DIR"
     exit "$status"
@@ -44,8 +42,7 @@ printf '%s\n' \
 
 start_daemon() {
     rm -f "$SOCKET"
-    (
-        cd "$ROOT_DIR"
+    smoke_daemon_start "$ROOT_DIR" "$LOG" \
         PLATFORM=mac \
         SDCARD_PATH="$PRIMARY" \
         APPS_PATH="$PRIMARY/Apps" \
@@ -55,9 +52,7 @@ start_daemon() {
         UMRK_DAEMON_SOCKET="$SOCKET" \
         UMRK_INTERNAL_DATA_PATH="$STATE" \
         JAWAKA_SDCARD_ROOT="$PRIMARY" \
-            "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-    ) &
-    DAEMON_PID=$!
+        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
     for _ in $(seq 1 300); do
         [ -S "$SOCKET" ] && return 0
         kill -0 "$DAEMON_PID" 2>/dev/null || return 1
@@ -70,9 +65,7 @@ start_daemon
 "$CTL" --socket "$SOCKET" request \
     "{\"v\":1,\"op\":\"enable\",\"id\":\"enable\",\"service_id\":\"$SERVICE_ID\"}" |
     grep -F '"ok":true' >/dev/null
-kill "$DAEMON_PID"
-wait "$DAEMON_PID" || true
-unset DAEMON_PID
+smoke_daemon_stop
 
 printf '%s' \
   "{\"launch_id\":\"recovered-launch\",\"source_id\":\"primary\",\"saves_path\":\"$PRIMARY/Saves\",\"states_path\":\"$PRIMARY/States\"}" \

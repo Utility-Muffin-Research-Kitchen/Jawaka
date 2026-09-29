@@ -22,6 +22,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-ra-account-env.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
@@ -45,10 +46,7 @@ PASS_VALUE='p@$$ w0rd; |&,'
 cleanup() {
     exit_status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || exit_status=1
     if [ "$exit_status" -ne 0 ] && [ -f "$LOG" ]; then
         sed -n '1,240p' "$LOG" >&2
     fi
@@ -190,8 +188,7 @@ CATALOG
 # Stale inherited values must not survive daemon startup or any launch.
 start_daemon() { # platform
     rm -f "$SOCKET"
-    (
-        cd "$ROOT_DIR"
+    smoke_daemon_start "$ROOT_DIR" "$LOG" \
         PLATFORM="$1" SDCARD_PATH="$PRIMARY" APPS_PATH="$APPS" \
         USERDATA_PATH="$USERDATA" LOGS_PATH="$LOGS" \
         SAVES_PATH="$PRIMARY/Saves" STATES_PATH="$PRIMARY/States" \
@@ -205,9 +202,7 @@ start_daemon() { # platform
         UMRK_RA_ACCOUNT_REVISION="99" \
         JAWAKA_CHEEVOS_USERNAME="stale-inherited" \
         JAWAKA_CHEEVOS_PASSWORD="stale-inherited" \
-            exec "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-    ) &
-    DAEMON_PID=$!
+        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
 
     for _ in $(seq 1 300); do
         [ -S "$SOCKET" ] && break
@@ -233,9 +228,7 @@ start_daemon() { # platform
 }
 
 stop_daemon() {
-    kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
-    DAEMON_PID=""
+    smoke_daemon_stop
 }
 
 start_daemon mac

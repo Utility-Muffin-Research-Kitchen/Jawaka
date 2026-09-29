@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_DIR="${BUILD:-build/source-paths-v2-smoke}"
 TMP_ROOT="$(mktemp -d /tmp/jw-path2.XXXXXX)"
 DAEMON_PID=""
@@ -9,10 +10,7 @@ DAEMON_PID=""
 cleanup() {
     status=$?
     set +e
-    if [ -n "$DAEMON_PID" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || status=1
     rm -rf "$TMP_ROOT"
     exit "$status"
 }
@@ -32,18 +30,19 @@ run_case() {
              "$runtime" "$state" "$platform/defaults"
 
     if [ "$name" = "invalid" ]; then
-        UMRK_ENV_VERSION=2 USERDATA_PATHS=/wrong-card/.userdata/mac \
-        UMRK_RUNTIME_PATH="$runtime" UMRK_DAEMON_SOCKET="$socket" \
-        UMRK_INTERNAL_DATA_PATH="$state" UMRK_PLATFORM_PATH="$platform" \
-        JAWAKA_SDCARD_ROOT="$sd" \
-        "$DAEMON" --daemon-only >"$log" 2>&1 &
+        smoke_daemon_start "$PWD" "$log" \
+            UMRK_ENV_VERSION=2 USERDATA_PATHS=/wrong-card/.userdata/mac \
+            UMRK_RUNTIME_PATH="$runtime" UMRK_DAEMON_SOCKET="$socket" \
+            UMRK_INTERNAL_DATA_PATH="$state" UMRK_PLATFORM_PATH="$platform" \
+            JAWAKA_SDCARD_ROOT="$sd" \
+            "$DAEMON" --daemon-only
     else
-        UMRK_RUNTIME_PATH="$runtime" UMRK_DAEMON_SOCKET="$socket" \
-        UMRK_INTERNAL_DATA_PATH="$state" UMRK_PLATFORM_PATH="$platform" \
-        JAWAKA_SDCARD_ROOT="$sd" \
-        "$DAEMON" --daemon-only >"$log" 2>&1 &
+        smoke_daemon_start "$PWD" "$log" \
+            UMRK_RUNTIME_PATH="$runtime" UMRK_DAEMON_SOCKET="$socket" \
+            UMRK_INTERNAL_DATA_PATH="$state" UMRK_PLATFORM_PATH="$platform" \
+            JAWAKA_SDCARD_ROOT="$sd" \
+            "$DAEMON" --daemon-only
     fi
-    DAEMON_PID=$!
     for _ in $(seq 1 500); do
         [ -S "$socket" ] && break
         kill -0 "$DAEMON_PID" 2>/dev/null || {
@@ -64,9 +63,7 @@ run_case() {
         cat "$output" >&2
         return 1
     fi
-    kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
-    DAEMON_PID=""
+    smoke_daemon_stop
 }
 
 run_case valid true
