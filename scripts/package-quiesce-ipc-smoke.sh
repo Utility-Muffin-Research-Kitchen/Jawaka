@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-package-ipc.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
 STATE="$TMP_DIR/state"
@@ -17,10 +18,7 @@ SERVICE_ID="org.umrk.test.packageipc"
 cleanup() {
     status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || status=1
     if [ "$status" -ne 0 ] && [ -f "$LOG" ]; then cat "$LOG" >&2; fi
     rm -rf "$TMP_DIR"
     exit "$status"
@@ -44,8 +42,7 @@ EOF
 }
 write_manifest 1.0.0
 
-(
-    cd "$ROOT_DIR"
+smoke_daemon_start "$ROOT_DIR" "$LOG" \
     PLATFORM=mac \
     SDCARD_PATH="$PRIMARY" \
     APPS_PATH="$PRIMARY/Apps" \
@@ -55,9 +52,7 @@ write_manifest 1.0.0
     UMRK_DAEMON_SOCKET="$SOCKET" \
     UMRK_INTERNAL_DATA_PATH="$STATE" \
     JAWAKA_SDCARD_ROOT="$PRIMARY" \
-        build/bin/jawakad --daemon-only >"$LOG" 2>&1
-) &
-DAEMON_PID=$!
+    build/bin/jawakad --daemon-only
 for _ in $(seq 1 200); do
     [ -S "$SOCKET" ] && break
     kill -0 "$DAEMON_PID" 2>/dev/null || exit 1

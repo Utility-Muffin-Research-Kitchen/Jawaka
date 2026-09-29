@@ -4,6 +4,8 @@
 #include "internal/settings/storage_ui.h"
 #include "internal/core/log.h"
 #include "internal/i18n/i18n.h"
+#include "internal/storage/health.h"
+#include "internal/storage/repair_advice.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -42,7 +44,10 @@ void jw_storage_ui_card_name(const jw_ipc_storage_status_info *card,
    exactly what the SD Cards row did. The literals are deliberately the same
    as the ones below, whose T() calls are what put them in the string table. */
 const char *jw_storage_ui_card_state_key(const jw_ipc_storage_status_info *card) {
-    if (card && strcmp(card->repair, "failed") == 0) return "Needs repair";
+    if (card && strcmp(card->repair, "failed") == 0) {
+        const char *key = jw_storage_advice_state_key(jw_storage_repair_advice(card));
+        return key ? key : "Needs repair";
+    }
     if (!card || !card->mounted) return "Not mounted";
     if (strcmp(card->repair, "pending") == 0 || strcmp(card->repair, "running") == 0)
         return "Repair pending";
@@ -54,7 +59,8 @@ const char *jw_storage_ui_card_state_key(const jw_ipc_storage_status_info *card)
 const char *jw_storage_ui_card_state(const jw_ipc_storage_status_info *card) {
     if (card && strcmp(card->repair, "failed") == 0) {
         /* Also when unmounted: hotplug refuses to mount a held card. */
-        return T("Needs repair");
+        const char *key = jw_storage_advice_state_key(jw_storage_repair_advice(card));
+        return key && strcmp(key, "Needs check") == 0 ? T("Needs check") : T("Needs repair");
     }
     if (!card || !card->mounted) {
         return T("Not mounted");
@@ -113,6 +119,9 @@ static const char *jw__storage_ui_unavailable_text(const char *reason) {
     if (strcmp(reason, "tool-missing") == 0 || strcmp(reason, "repair-runner-missing") == 0) {
         return T("Repair isn't installed on this device.");
     }
+    if (strcmp(reason, "power-handoff-missing") == 0) {
+        return T("Install the matching Leaf system update before checking this card on your device.");
+    }
     if (strcmp(reason, "unknown-identity") == 0) {
         return T("Leaf couldn't identify this card.");
     }
@@ -122,7 +131,7 @@ static const char *jw__storage_ui_unavailable_text(const char *reason) {
 /* User text for a daemon refusal of a repair request. */
 static const char *jw__storage_ui_refusal_text(const char *reason) {
     if (reason && strcmp(reason, "power-required") == 0) {
-        return T("Connect your device to power to repair this card.");
+        return T("Connect to power or charge the battery to at least 30 percent to repair this card.");
     }
     if (reason && strcmp(reason, "busy") == 0) {
         return T("Close the game or app first, then try again.");
@@ -155,20 +164,24 @@ bool jw_storage_ui_request_repair(const char *socket_path,
         jw__storage_ui_message(message);
         return false;
     }
-    if (!card->external_power) {
-        jw__storage_ui_message(T("Connect your device to power to repair this card."));
+    bool on_battery = !check && !card->external_power;
+    if (on_battery && card->battery_percent < JW_STORAGE_REPAIR_MIN_BATTERY_PERCENT) {
+        jw__storage_ui_message(T("Connect to power or charge the battery to at least 30 percent to repair this card."));
         return false;
     }
     const char *message = check
-        ? T("Your device will restart to check this card. If the check passes, the card can be written to again. Keep your device connected to power until the check finishes.")
+        ? T("Your device will restart to check this card. If the check passes, you can save files again.")
+        : on_battery
+        ? T("Your device will restart to check and repair this card on battery power. If the battery drops below 30 percent before repair starts, it won't run. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first.")
         : T("Your device will restart to check and repair this card. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first if you need to recover them. Keep your device connected to power until the check finishes.");
     if (!jw__storage_ui_confirm(message, T("Cancel"),
-                                check ? T("Restart and check") : T("Restart and repair"))) {
+                                check ? T("Restart and check") :
+                                on_battery ? T("Repair on battery") : T("Restart and repair"))) {
         return false;
     }
     char status[256] = "";
     if (jw_ipc_storage_repair_request(socket_path, card->source, check ? "check" : "repair",
-                                      status, (int)sizeof(status)) != 0) {
+                                      on_battery, status, (int)sizeof(status)) != 0) {
         jw_log_warn("storage: %s request for %s refused: %s", check ? "check" : "repair",
                     card->source, status[0] ? status : "no reply");
         jw__storage_ui_message(jw__storage_ui_refusal_text(status));
@@ -185,24 +198,49 @@ bool jw_storage_ui_show_warning(const char *socket_path,
     char name[128];
     char message[1024];
     jw_storage_ui_card_name(card, name, sizeof(name));
-    bool write_protected = strcmp(card->cause, "write-protected") == 0 ||
+    jw_storage_advice advice = jw_storage_repair_advice(card);
+    bool write_protected = advice == JW_STORAGE_ADVICE_WRITE_PROTECTED ||
+                           strcmp(card->cause, "write-protected") == 0 ||
                            card->block_write_protected;
-    if (write_protected) {
-        snprintf(message, sizeof(message), "%s\n\n%s\n\n%s %s",
-                 T("Your SD card is write-protected"),
-                 T("Your device can't write to this card. If you use an adapter with a lock switch, check that it isn't set to lock."),
-                 T("Card:"), name);
-    } else if (strcmp(card->cause, "filesystem-error") == 0) {
-        snprintf(message, sizeof(message), "%s\n\n%s\n\n%s %s",
-                 T("Your SD card needs repair"),
-                 T("Your SD card is read-only after a file system error. You can't save new files or changes to this card. This can happen after an unexpected shutdown."),
-                 T("Card:"), name);
-    } else {
-        snprintf(message, sizeof(message), "%s\n\n%s\n\n%s %s",
-                 T("Your SD card is read-only"),
-                 T("Your SD card is read-only. The cause couldn't be determined. You can't save new files or changes to this card."),
-                 T("Card:"), name);
+    const char *title;
+    const char *body;
+    switch (advice) {
+    case JW_STORAGE_ADVICE_WRITE_PROTECTED:
+        title = T("Your SD card is write-protected");
+        body = T("Your device can't write to this card. If you use an adapter with a lock switch, check that it isn't set to lock.");
+        break;
+    case JW_STORAGE_ADVICE_REPAIR_FOUND_ERRORS:
+        /* The check finished. Checking again gives the same answer, so this
+           is the one case that must lead to a repair, not another check. */
+        title = T("Your SD card needs repair");
+        body = T("Leaf checked this card and found file system errors, usually left by a shutdown that didn't finish saving. To keep your files safe, you can't save to this card until it's repaired.");
+        break;
+    case JW_STORAGE_ADVICE_REPAIR_FAILED:
+        title = T("Your SD card needs repair");
+        body = T("Leaf couldn't repair this card on your device. Turn off your device, repair the card on a computer, then check it here to save to it again.");
+        break;
+    case JW_STORAGE_ADVICE_CHECK_PAUSED_SHUTDOWN:
+        title = T("Your SD card is protected");
+        body = T("Your SD card is protected because your last shutdown didn't finish saving. Restart your device to check it.");
+        break;
+    case JW_STORAGE_ADVICE_CHECK_TIMED_OUT:
+        title = T("Your SD card is protected");
+        body = T("The last check took too long and stopped. Restart your device to check the card again before saving is enabled.");
+        break;
+    case JW_STORAGE_ADVICE_CHECK_INTERRUPTED:
+        title = T("Your SD card is protected");
+        body = T("The last check or repair did not finish. Restart your device to check the card before saving is enabled again.");
+        break;
+    case JW_STORAGE_ADVICE_FILESYSTEM_ERROR:
+        title = T("Your SD card needs repair");
+        body = T("Your SD card is read-only after a file system error. You can't save new files or changes to this card. This can happen after an unexpected shutdown.");
+        break;
+    default:
+        title = T("Your SD card is read-only");
+        body = T("Your SD card is read-only. The cause couldn't be determined. You can't save new files or changes to this card.");
+        break;
     }
+    snprintf(message, sizeof(message), "%s\n\n%s\n\n%s %s", title, body, T("Card:"), name);
 
     bool offer_repair = card->repair_supported && !write_protected;
     if (!offer_repair && !write_protected) {
@@ -213,32 +251,78 @@ bool jw_storage_ui_show_warning(const char *socket_path,
                  T("To repair it, turn off your device and check the card on a computer."));
     }
 
+    const char *next_mode = jw_storage_advice_next_mode(advice);
+    if (!next_mode) {
+        offer_repair = false;
+    }
+    bool check = next_mode && strcmp(next_mode, "check") == 0;
     bool repair = false;
     if (offer_repair) {
-        repair = jw__storage_ui_confirm(message, T("Later"), T("Repair SD card"));
+        repair = jw__storage_ui_confirm(message, T("Later"),
+                                        check ? T("Restart and check") : T("Repair SD card"));
     } else {
         jw__storage_ui_message(message);
     }
     if (jw_ipc_storage_warning_ack(socket_path, card->source) != 0) {
         jw_log_warn("storage: could not acknowledge the warning for %s", card->source);
     }
-    return repair && jw_storage_ui_request_repair(socket_path, card, "repair");
+    /* This warning already said what the check found; the separate result
+       screen would only repeat it. */
+    if (advice == JW_STORAGE_ADVICE_REPAIR_FOUND_ERRORS && card->last_repair_valid &&
+        !card->last_repair_acknowledged &&
+        jw_ipc_storage_repair_result_ack(socket_path, card->last_repair_request_id) != 0) {
+        jw_log_warn("storage: could not acknowledge repair result %s",
+                    card->last_repair_request_id);
+    }
+    return repair && jw_storage_ui_request_repair(socket_path, card, next_mode);
 }
 
-jw_storage_ui_result_action jw_storage_ui_show_repair_result(
+void jw_storage_ui_show_repair_result(
     const char *socket_path, const jw_ipc_storage_status_info *card,
     bool library_writable) {
     if (!socket_path || !card || !card->last_repair_valid) {
-        return JW_STORAGE_UI_RESULT_DISMISSED;
+        return;
     }
     const char *outcome = card->last_repair_outcome;
     bool success = (strcmp(outcome, "repaired") == 0 || strcmp(outcome, "clean") == 0) &&
-                   strcmp(card->last_repair_mount_state, "read-write") == 0;
+                   strcmp(card->last_repair_mount_state, "read-write") == 0 &&
+                   card->mounted && strcmp(card->access, "read-write") == 0 &&
+                   strcmp(card->repair, "none") == 0;
     char message[1024];
-    jw_storage_ui_result_action action = JW_STORAGE_UI_RESULT_DISMISSED;
+    if (jw_storage_repair_advice(card) == JW_STORAGE_ADVICE_REPAIR_FOUND_ERRORS) {
+        char name[128];
+        jw_storage_ui_card_name(card, name, sizeof(name));
+        snprintf(message, sizeof(message), "%s\n\n%s\n\n%s %s",
+                 T("Your SD card needs repair"),
+                 T("Leaf checked this card and found file system errors, usually left by a shutdown that didn't finish saving. To keep your files safe, you can't save to this card until it's repaired."),
+                 T("Card:"), name);
+        bool repair = card->repair_supported &&
+                      jw__storage_ui_confirm(message, T("Later"), T("Repair SD card"));
+        if (!card->repair_supported) {
+            jw__storage_ui_message(message);
+        }
+        if (jw_ipc_storage_repair_result_ack(socket_path, card->last_repair_request_id) != 0) {
+            jw_log_warn("storage: could not acknowledge repair result %s",
+                        card->last_repair_request_id);
+        }
+        if (repair) {
+            (void)jw_storage_ui_request_repair(socket_path, card, "repair");
+        }
+        return;
+    }
+    if (success && strcmp(card->last_repair_trigger, "paused-shutdown") == 0) {
+        /* A precautionary check after a paused shutdown found nothing wrong.
+           The user never saw the card held, so there is nothing to report. */
+        if (jw_ipc_storage_repair_result_ack(socket_path, card->last_repair_request_id) != 0) {
+            jw_log_warn("storage: could not acknowledge repair result %s",
+                        card->last_repair_request_id);
+        }
+        return;
+    }
     if (success) {
-        snprintf(message, sizeof(message), "%s%s",
+        snprintf(message, sizeof(message), "%s %s%s",
                  T("Your card passed the file system check."),
+                 T("You can save files again."),
                  strcmp(outcome, "repaired") == 0
                      ? T(" Some damaged files were changed.") : "");
         if (strcmp(outcome, "repaired") == 0) {
@@ -252,24 +336,29 @@ jw_storage_ui_result_action jw_storage_ui_show_repair_result(
             size_t used = strlen(message);
             snprintf(message + used, sizeof(message) - used, "\n\n%s",
                      T("Your other SD card is still read-only, so your library can't update yet."));
-            jw__storage_ui_message(message);
-        } else if (jw__storage_ui_confirm(message, T("OK"), T("Scrape missing artwork"))) {
-            action = JW_STORAGE_UI_RESULT_SCRAPE_MISSING;
         }
+        jw__storage_ui_message(message);
     } else {
         const char *hint;
-        if (strcmp(outcome, "power-required") == 0) {
-            hint = T("Connect your device to power and try again.");
+        if (strcmp(outcome, "timed-out") == 0) {
+            hint = T("The check took too long. Your SD card is still protected. You can check it on a computer or restart to try again.");
+        } else if (strcmp(outcome, "power-required") == 0) {
+            hint = T("Connect to power or charge the battery to at least 30 percent and try again.");
         } else if (strcmp(outcome, "busy") == 0 || strcmp(outcome, "not-found") == 0 ||
                    strcmp(outcome, "ambiguous") == 0 || strcmp(outcome, "unsupported") == 0) {
             hint = T("Leaf couldn't safely check this card, so nothing was changed. Check the card on a computer.");
         } else if (strcmp(outcome, "remount-failed") == 0) {
             hint = T("The card passed the check but couldn't be made writable. Restart your device, then try Check SD card.");
         } else {
-            hint = T("Your card is still read-only. Check the card on a computer, then choose Check SD card in Settings.");
+            hint = T("Your SD card is still protected. Turn off your device, repair the card on a computer, safely eject it, then insert it and turn your device on to check it again.");
         }
-        snprintf(message, sizeof(message), "%s\n\n%s",
-                 T("The repair did not finish. The log may include changes that were attempted."),
+        snprintf(message, sizeof(message), "%s%s%s\n\n%s",
+                 strcmp(card->last_repair_trigger, "paused-shutdown") == 0
+                     ? T("Your last shutdown didn't finish saving.") : "",
+                 strcmp(card->last_repair_trigger, "paused-shutdown") == 0 ? " " : "",
+                 strcmp(card->last_repair_mode, "check") == 0
+                     ? T("Your SD card check did not finish successfully.")
+                     : T("The repair did not finish. The log may include changes that were attempted."),
                  hint);
         jw__storage_ui_message(message);
     }
@@ -277,7 +366,6 @@ jw_storage_ui_result_action jw_storage_ui_show_repair_result(
         jw_log_warn("storage: could not acknowledge repair result %s",
                     card->last_repair_request_id);
     }
-    return action;
 }
 
 void jw_storage_ui_manage_cards(const char *socket_path, char *status,
@@ -331,17 +419,16 @@ void jw_storage_ui_manage_cards(const char *socket_path, char *status,
     cat_list_item actions[3];
     int action_ids[3];
     int action_count = 0;
-    bool secondary = strcmp(card->source, "secondary_sd") == 0;
-    if (card->mounted && jw_storage_ui_is_read_only(card) &&
-        strcmp(card->repair, "pending") != 0) {
+    jw_storage_card_actions offered = jw_storage_advice_card_actions(card);
+    if (offered.repair) {
         actions[action_count] = (cat_list_item)CAT_LIST_ITEM(T("Repair SD card"), "repair");
         action_ids[action_count++] = ACTION_REPAIR;
     }
-    if (strcmp(card->repair, "failed") == 0) {
+    if (offered.check) {
         actions[action_count] = (cat_list_item)CAT_LIST_ITEM(T("Check SD card"), "check");
         action_ids[action_count++] = ACTION_CHECK;
     }
-    if (secondary && card->mounted) {
+    if (offered.unmount) {
         actions[action_count] = (cat_list_item)CAT_LIST_ITEM(T("Unmount"), "unmount");
         action_ids[action_count++] = ACTION_UNMOUNT;
     }

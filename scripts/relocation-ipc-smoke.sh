@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-relocation-ipc.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
 SECONDARY="$TMP_DIR/secondary"
@@ -14,10 +15,7 @@ CTL="$ROOT_DIR/build/bin/jawaka-platformctl"
 cleanup() {
     status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || status=1
     if [ "$status" -ne 0 ] && [ -f "$LOG" ]; then
         cat "$LOG" >&2
     fi
@@ -36,17 +34,14 @@ for n in $(seq 1 40); do
 done
 
 start_daemon() {
-    (
-        cd "$ROOT_DIR"
+    smoke_daemon_start "$ROOT_DIR" "$LOG" \
         UMRK_RUNTIME_PATH="$RUNTIME" \
         UMRK_DAEMON_SOCKET="$SOCKET" \
         UMRK_INTERNAL_DATA_PATH="$STATE" \
         JAWAKA_SDCARD_ROOT="$PRIMARY" \
         SDCARD_PATHS="$PRIMARY:$SECONDARY" \
         JAWAKA_SCAN_TEST_DELAY_MS=100 \
-        build/bin/jawakad --daemon-only >>"$LOG" 2>&1
-    ) &
-    DAEMON_PID=$!
+        build/bin/jawakad --daemon-only
     for _ in $(seq 1 500); do
         [ -S "$SOCKET" ] && return 0
         kill -0 "$DAEMON_PID" 2>/dev/null || return 1
@@ -117,9 +112,7 @@ retry="$("$CTL" --socket "$SOCKET" relocate-revert move-large)"
 retry_generation="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["mapping_generation"])' <<<"$retry")"
 [ "$revert_generation" = "$retry_generation" ]
 
-kill "$DAEMON_PID"
-wait "$DAEMON_PID" || true
-unset DAEMON_PID
+smoke_daemon_stop
 rm -f "$SOCKET"
 start_daemon
 "$CTL" --socket "$SOCKET" relocate-status move-large |

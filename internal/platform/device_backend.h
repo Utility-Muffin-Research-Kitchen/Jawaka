@@ -13,6 +13,12 @@ typedef struct {
     void (*get_status)(jw_platform_context *ctx, jw_platform_status *out);
     void (*get_audio_status)(jw_platform_context *ctx, jw_platform_status *out);
     unsigned (*audio_tick)(jw_platform_context *ctx);
+    /* Optional: see jw_platform_poll_fds / jw_platform_next_deadline_ms. */
+    int  (*poll_fds)(jw_platform_context *ctx, int *fds, int max);
+    long long (*next_deadline_ms)(jw_platform_context *ctx, long long now_ms);
+    /* Optional: see jw_platform_sleep_audio / jw_platform_wake_audio. */
+    void (*sleep_audio)(jw_platform_context *ctx);
+    void (*wake_audio)(jw_platform_context *ctx);
     void (*audio_reconcile)(jw_platform_context *ctx, const char *reason);
     void (*frontend_ready)(jw_platform_context *ctx, const char *role,
                            jw_platform_result *out);
@@ -35,6 +41,8 @@ typedef struct {
                                       jw_platform_storage_repair_capability *out);
     void (*set_led)(jw_platform_context *ctx, const jw_led_config *cfg,
                     jw_platform_result *out);
+    /* Optional: the current mode of the active output. 0 on success, -1 unknown. */
+    int  (*get_display_mode)(jw_platform_context *ctx, int *width, int *height, int *hz);
 } jw_platform_backend;
 
 const jw_platform_backend *jw_platform_get_backend(void);

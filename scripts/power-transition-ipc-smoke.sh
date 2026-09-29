@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-power-transition.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
@@ -19,10 +20,7 @@ SERVICE_ID="org.umrk.test.powertransition"
 cleanup() {
     status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || status=1
     if [ -f "$SERVICE_PID_FILE" ]; then
         service_pid="$(cat "$SERVICE_PID_FILE" 2>/dev/null || true)"
         case "$service_pid" in
@@ -51,8 +49,7 @@ EOF
 
 start_daemon() {
     rm -f "$SOCKET" "$SERVICE_PID_FILE"
-    (
-        cd "$ROOT_DIR"
+    smoke_daemon_start "$ROOT_DIR" "$LOG" \
         PLATFORM=mac \
         SDCARD_PATH="$PRIMARY" \
         APPS_PATH="$PRIMARY/Apps" \
@@ -63,9 +60,7 @@ start_daemon() {
         UMRK_INTERNAL_DATA_PATH="$STATE" \
         JAWAKA_SDCARD_ROOT="$PRIMARY" \
         SERVICE_PID_FILE="$SERVICE_PID_FILE" \
-            "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-    ) &
-    DAEMON_PID=$!
+        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
     for _ in $(seq 1 200); do
         [ -S "$SOCKET" ] && return 0
         kill -0 "$DAEMON_PID" 2>/dev/null || return 1

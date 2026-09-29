@@ -109,11 +109,23 @@ int main(int argc, char **argv) {
     /* ── Damaged input must degrade, never crash ─────────────────────── */
     snprintf(path, sizeof(path), "%s/i18n/zh_CN.jwi", platform);
 
-    char good[65536];
+    /* Sized from the file, not a fixed buffer. This read into a 64 KB stack
+       array, which would silently truncate a larger table and then write the
+       truncated copy back as the "restored" one -- Mexican Spanish is already
+       49 KB. Reading the real size keeps the test independent of how many
+       strings a language has. */
+    size_t good_len = 0;
+    char *good = NULL;
     FILE *fp = fopen(path, "rb");
-    size_t good_len = fp ? fread(good, 1, sizeof(good), fp) : 0;
+    if (fp && fseek(fp, 0, SEEK_END) == 0) {
+        long sz = ftell(fp);
+        rewind(fp);
+        if (sz > 0 && (good = malloc((size_t)sz)) != NULL)
+            good_len = fread(good, 1, (size_t)sz, fp);
+    }
     if (fp) fclose(fp);
-    expect_true("fixture readable", good_len > 24);
+    expect_true("fixture readable", good && good_len > 24);
+    if (!good) return 1;
 
     char tmp[PATH_MAX];
     snprintf(tmp, sizeof(tmp), "%s/i18n/zh_CN.jwi.bak", platform);
@@ -135,19 +147,27 @@ int main(int argc, char **argv) {
 
     /* A corrupt offset must be caught at load, not by reading out of bounds on
        some later lookup. Point the first entry's key at the far end of nowhere. */
-    memcpy(tmp, good, good_len);
-    tmp[24 + 4] = (char)0xFF; tmp[24 + 5] = (char)0xFF;
-    tmp[24 + 6] = (char)0xFF; tmp[24 + 7] = (char)0x7F;
-    write_file(path, tmp, good_len);
+    /* Its own buffer. This used to reuse `tmp` -- a PATH_MAX path buffer, 1 KB on
+       macOS -- as scratch space for a copy of the whole table. It fit the tiny
+       fixture the test was written against; a real compiled table overran it by
+       34 KB and fortified libc aborted the run, so none of the checks below had
+       been running. */
+    char *corrupt = malloc(good_len);
+    if (!corrupt) return 1;
+    memcpy(corrupt, good, good_len);
+    corrupt[24 + 4] = (char)0xFF; corrupt[24 + 5] = (char)0xFF;
+    corrupt[24 + 6] = (char)0xFF; corrupt[24 + 7] = (char)0x7F;
+    write_file(path, corrupt, good_len);
+    free(corrupt);
     expect_true("out-of-range offset rejected", !jw_i18n_load("zh_CN"));
 
     /* Restore, confirm we are back to a working table, and shut down clean. */
     snprintf(tmp, sizeof(tmp), "%s/i18n/zh_CN.jwi.bak", platform);
-    fp = fopen(tmp, "rb");
-    good_len = fp ? fread(good, 1, sizeof(good), fp) : 0;
-    if (fp) fclose(fp);
+    /* The backup holds exactly `good`, so restore from memory rather than
+       re-reading it into a buffer that might again be the wrong size. */
     write_file(path, good, good_len);
     unlink(tmp);
+    free(good);
     expect_true("restored table loads", jw_i18n_load("zh_CN"));
     expect_str("restored lookup", T("Settings"), "设置");
 
@@ -188,15 +208,15 @@ int main(int argc, char **argv) {
     expect_true("null is not cjk", !jw_i18n_language_is_cjk(NULL));
     expect_true("empty is not cjk", !jw_i18n_language_is_cjk(""));
 
-    const char *langs[8];
-    size_t n = jw_i18n_available(langs, 8);
+    const char *langs[JW_I18N_MAX_LANGUAGES];
+    size_t n = jw_i18n_available(langs, JW_I18N_MAX_LANGUAGES);
     expect_true("finds the compiled table", n == 1 && strcmp(langs[0], "zh_CN") == 0);
 
     /* A dropped .tsv must not double-count a language the compiled table
        already offers -- the Settings row would show zh_CN twice. */
     snprintf(path, sizeof(path), "%s/i18n/zh_CN.tsv", userdata);
     write_file(path, "Settings\tX\n", 11);
-    n = jw_i18n_available(langs, 8);
+    n = jw_i18n_available(langs, JW_I18N_MAX_LANGUAGES);
     expect_true("tsv does not duplicate", n == 1);
     unlink(path);
 
@@ -204,9 +224,30 @@ int main(int argc, char **argv) {
        translator makes the row appear without a build. */
     snprintf(path, sizeof(path), "%s/i18n/ja.tsv", userdata);
     write_file(path, "Settings\t\xe8\xa8\xad\xe5\xae\x9a\n", 16);
-    n = jw_i18n_available(langs, 8);
+    n = jw_i18n_available(langs, JW_I18N_MAX_LANGUAGES);
     expect_true("tsv-only language offered", n == 2);
     unlink(path);
+
+    /* ── Capacity ─────────────────────────────────────────────────────── */
+    /* Exactly JW_I18N_MAX_LANGUAGES are offered and one more is refused, not
+       stored: the limit is the constant, not a number written out somewhere
+       else. The overflow is logged by the scanner. */
+    {
+        char cap_path[PATH_MAX];
+        for (int i = 0; i <= JW_I18N_MAX_LANGUAGES; i++) {   /* one past the limit */
+            snprintf(cap_path, sizeof(cap_path), "%s/i18n/x%02d.tsv", userdata, i);
+            write_file(cap_path, "Settings\tX\n", 11);
+        }
+        const char *many[JW_I18N_MAX_LANGUAGES];
+        size_t got = jw_i18n_available(many, JW_I18N_MAX_LANGUAGES);
+        expect_true("capacity is the constant", got == JW_I18N_MAX_LANGUAGES);
+        /* A caller asking for fewer than the limit is still honored. */
+        expect_true("smaller max honored", jw_i18n_available(many, 3) == 3);
+        for (int i = 0; i <= JW_I18N_MAX_LANGUAGES; i++) {
+            snprintf(cap_path, sizeof(cap_path), "%s/i18n/x%02d.tsv", userdata, i);
+            unlink(cap_path);
+        }
+    }
 
     /* ── Coverage recording ─────────────────────────────────────────── */
 

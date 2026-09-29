@@ -10,6 +10,16 @@ build contract.
   domain, RFC 1321-based) are vendored for the ScreenScraper scrape engine
   (`internal/scrape/`): JPEG/PNG decode, PNG encode and zip access, and ROM
   hashing. Copied from Helaas's nextui-scrapegoat-pak (MIT).
+- `retroarch/config_file_parser.inc` is **test-only**: RetroArch's
+  `config_file_strip_comment` and `config_file_extract_value`, copied verbatim
+  from libretro-common/file/config_file.c at v1.22.2 (MIT, notice in the file).
+  `make retroarch-config-test` parses Jawaka's generated config with it, so a
+  value such as a RetroAchievements password is checked against RetroArch's
+  real rules. To re-vendor after a RetroArch bump, replace the text between the
+  VERBATIM markers with the output of
+  `scripts/retroarch-config-parser-extract.sh <RetroArch>/libretro-common/file/config_file.c`;
+  `scripts/check-retroarch-config-parser.sh` (run by the test target) fails
+  when the copy and a fetched tree differ.
 - `catastrophe/` is a placeholder for a future submodule, but the active local
   workflow uses an adjacent `../Catastrophe` checkout or an explicit
   `CATASTROPHE_DIR`.

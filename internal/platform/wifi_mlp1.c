@@ -195,11 +195,45 @@ static int jw__wifi_strength(int rssi) {
     return 1;
 }
 
+/* Link quality of the current association from /proc/net/wireless (85 at
+   -47 dBm on this driver), or 0 when wlan0 is missing or not associated. The
+   status-bar icon polls this every few seconds; a wpa_cli signal_poll was a
+   process spawn and a round trip to wpa_supplicant each time. */
+static int jw__wifi_link_quality(void) {
+    FILE *fp = fopen("/proc/net/wireless", "r");
+    if (!fp) {
+        return 0;
+    }
+    char line[256];
+    int link = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        int value = 0;
+        if (strstr(line, "wlan0:") &&
+            sscanf(line, " %*[^:]: %*x %d", &value) == 1) {
+            link = value > 0 ? value : 0;
+            break;
+        }
+    }
+    fclose(fp);
+    return link;
+}
+
+/* 0..3 for the connected network, with the thresholds jawakad's
+   platform-status uses for the same number, so every Leaf Wi-Fi strength for
+   the current network agrees. Scan results keep jw__wifi_strength(rssi):
+   /proc only knows the network we are on. */
+static int jw__wifi_link_strength(int link) {
+    if (link <= 0) return 0;
+    if (link < 40) return 1;
+    if (link < 70) return 2;
+    return 3;
+}
+
 int jw_wifi_strength_now(void) {
-    /* Live 0..3 strength from the same RSSI source the Network page uses, so the
-       status-bar icon (which renders this) and the page can never disagree.
-       Bounded by jw__wifi_run's timeout; 0 when disconnected/radio off. */
-    return jw__wifi_strength(jw__wifi_rssi());
+    /* The same source as the Network page's connected entry, so the status-bar
+       icon (which renders this) and the page cannot disagree. 0 when
+       disconnected or the radio is off. */
+    return jw__wifi_link_strength(jw__wifi_link_quality());
 }
 
 static int jw__wifi_saved_id(const char *ssid);
@@ -229,7 +263,7 @@ int jw_wifi_status(jw_wifi_status_t *out) {
     jw__wifi_field(dump, "ip_address", out->ip, sizeof(out->ip));
     out->connected = (strcmp(out->state, "COMPLETED") == 0);
     out->rssi = out->connected ? jw__wifi_rssi() : 0;
-    out->strength = jw__wifi_strength(out->rssi);
+    out->strength = out->connected ? jw__wifi_link_strength(jw__wifi_link_quality()) : 0;
     out->valid = true;
     return 0;
 }
@@ -926,8 +960,9 @@ jw_wifi_evt jw_wifi_monitor_poll(int fd) {
                    ((strstr(buf, "Authentication") && strstr(buf, "timed out")) ||
                     strstr(buf, "CTRL-EVENT-ASSOC-REJECT") != NULL)) {
             /* SAE/WPA3 bad key, or assoc rejected — likely-but-not-certain bad key.
-               A clean successful connect never emits these, so it's safe to act on
-               within the attempt (the monitor is closed before recovery churn). */
+               A connect that succeeds can still emit one: an iPhone hotspot seen as
+               two BSSIDs rejected on one and accepted on the other a second later.
+               jw_wifi_attempt_resolve decides how many end the attempt. */
             result = JW_WIFI_EVT_AUTH_FAIL;
         }
     }

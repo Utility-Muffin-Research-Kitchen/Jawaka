@@ -25,6 +25,7 @@
 #define JW_STORAGE_KERNEL_MESSAGE_MAX 256
 #define JW_STORAGE_REQUEST_ID_MAX 64
 #define JW_STORAGE_REASON_MAX 64
+#define JW_STORAGE_REPAIR_MIN_BATTERY_PERCENT 30
 
 /* Internal-storage recovery root on MLP1. Deliberately separate from the
    SD-backed USERDATA_PATH and UMRK_INTERNAL_DATA_PATH: it must stay writable
@@ -89,6 +90,8 @@ typedef struct {
 
 typedef struct {
     char request_id[JW_STORAGE_REQUEST_ID_MAX];
+    char origin[32];
+    char trigger[32];   /* why the hold existed, e.g. paused-shutdown; "" if none */
     char outcome[32];
     char mount_state[32];
     char mode[16];
@@ -158,8 +161,14 @@ jw_storage_repair jw_storage_repair_hold_for_uuid(const jw_storage_probe_env *en
                                                   const char *uuid,
                                                   char *request_id,
                                                   size_t request_id_size);
-/* The most recent completed repair result, if any. */
-bool jw_storage_repair_last_result(const jw_storage_probe_env *env,
+/* The most recent completed result for this UUID. Legacy global pointers are
+   accepted only when the summary names this exact UUID. */
+/* Why this card is held ("paused-shutdown" when a shutdown could not prove it
+   closed). Empty and false when there is no hold or it names no trigger. The
+   hold's protection does not depend on this; it only selects wording. */
+bool jw_storage_repair_hold_trigger(const jw_storage_probe_env *env, const char *uuid,
+                                    char *out, size_t out_size);
+bool jw_storage_repair_last_result(const jw_storage_probe_env *env, const char *uuid,
                                    jw_storage_repair_result *out);
 
 /* Probe one configured card root. kernel_log may be NULL; the cause then

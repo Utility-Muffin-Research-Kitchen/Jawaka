@@ -86,6 +86,10 @@ $(error ScreenScraper credentials are required; create .env.local or set SCREENS
 endif
 endif
 
+.PHONY: screenscraper-status
+screenscraper-status:
+	@printf '%s\n' '$(if $(filter 1,$(SCREENSCRAPER_AVAILABLE)),true,false)'
+
 SCRAPE_CREDENTIALS_HEADER := $(BUILD)/generated/screenscraper_credentials.h
 
 # Translation-coverage recorder: a DEV-BUILD TOOL, compiled out of every
@@ -125,7 +129,8 @@ INPUT_PROXY_SRC := internal/platform/input_proxy_mlp1.c
 INPUT_ROSTER_SRC := internal/platform/input_roster_mlp1.c
 EXTERNAL_INPUT_SRC := internal/platform/external_input_monitor_mlp1.c
 BLUETOOTH_SRC := internal/platform/bluetooth_mlp1.c
-WIFI_SRC := internal/platform/wifi_mlp1.c internal/platform/wifi_ssid.c
+WIFI_SRC := internal/platform/wifi_mlp1.c internal/platform/wifi_ssid.c \
+	internal/platform/wifi_attempt.c
 OSD_BACKEND_SRC := cmd/jawaka-osd/osd_wayland.c $(BUILD)/generated/xdg-shell-protocol.c
 OSD_DEPS := $(BUILD)/generated/xdg-shell-client-protocol.h
 # Banner text renders with SDL_ttf into the Wayland shm buffer; Wayland keeps
@@ -139,7 +144,7 @@ INPUT_PROXY_SRC := internal/platform/input_proxy_mock.c
 INPUT_ROSTER_SRC := internal/platform/input_roster_mock.c
 EXTERNAL_INPUT_SRC := internal/platform/external_input_monitor_mock.c
 BLUETOOTH_SRC := internal/platform/bluetooth_unsupported.c
-WIFI_SRC := internal/platform/wifi_unsupported.c
+WIFI_SRC := internal/platform/wifi_unsupported.c internal/platform/wifi_attempt.c
 OSD_BACKEND_SRC := cmd/jawaka-osd/osd_sdl.c
 OSD_DEPS :=
 OSD_CFLAGS := $(CFLAGS_UI)
@@ -206,6 +211,7 @@ DAEMON_SRCS := \
 	internal/launcher/active_game.c \
 	internal/launcher/bios.c \
 	internal/launcher/standalone_policy.c \
+	internal/launcher/ra_account.c \
 	internal/launcher/core_selection.c \
 	internal/launcher/pico8.c \
 	$(PLATFORM_COMMON_SRC) \
@@ -221,6 +227,7 @@ DAEMON_SRCS := \
 	internal/platform/input_shortcuts.c \
 	$(LEAF_VERSION_SRC) \
 	internal/platform/paths.c \
+	internal/platform/perf_policy.c \
 	internal/platform/raofflineproxy.c \
 	internal/power/power_hold_save.c \
 	internal/power/power_hold_save_io.c \
@@ -427,6 +434,7 @@ UI_SRCS := \
 	$(EFFECTIVE_CATALOG_SRCS) \
 	internal/retroarch/shader_catalog.c \
 	internal/retroarch/shader_picker.c \
+	internal/retroarch/shader_strings.c \
 	internal/retroarch/states.c \
 	internal/storage/health.c \
 	internal/storage/sources.c \
@@ -461,7 +469,9 @@ UI_SRCS := \
 	internal/settings/appearance.c \
 	internal/i18n/i18n.c \
 	internal/settings/settings.c internal/settings/storage_ui.c \
+	internal/storage/repair_advice.c \
 	internal/settings/theme_resolve.c \
+	internal/settings/timezones.c \
 	internal/services/manifest.c \
 	third_party/cjson/cJSON.c \
 	third_party/miniz/miniz.c \
@@ -489,7 +499,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test input-shortcuts-test shortcut-dispatch-check shortcut-ipc-smoke jawaka-input-proxy-chord-test mlp1-adb-chord-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test theme-package-test user-themes-test storage-sources-test storage-health-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test log-heal-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test osd-view-test osd-client-test osd-layout-test osd-banner-ui-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke launch-core-pin-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test rumble-settings-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test appearance-env-test legacy-migration-test shader-catalog-test shader-picker-test shader-menu-contract-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test core-selection-test launch-notice-test bios-test bios-launch-contract-check scrape-systems-test ss-client-test suspend-inhibit-test power-hold-save-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-theme-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test wifi-attempt-test input-shortcuts-test shortcut-dispatch-check shortcut-ipc-smoke jawaka-input-proxy-chord-test mlp1-adb-chord-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test theme-package-test user-themes-test storage-sources-test storage-health-test storage-repair-advice-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test log-heal-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test osd-view-test osd-client-test osd-layout-test osd-banner-ui-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke launch-core-pin-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test rumble-settings-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke ra-account-test ra-account-launch-test ra-account-retroarch-test ra-account-contract-test ra-account-env-ipc-smoke flycast-ra-route-ipc-smoke settings-account-test settings-status-test states-core-test appearance-env-test jawaka-timezone-probe timezone-test mlp1-device-timezone-test legacy-migration-test shader-catalog-test shader-picker-test shader-menu-contract-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test core-selection-test launch-notice-test bios-test bios-launch-contract-check scrape-systems-test ss-client-test suspend-inhibit-test power-hold-save-test suspend-inhibit-ipc-smoke update-local-manifest-smoke update-github-check-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-theme-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -516,15 +526,26 @@ jawaka-content-runtime-smoke: $(BUILD)/bin/jawaka-content-runtime-smoke
 jawaka-core-override-smoke: $(BUILD)/bin/jawaka-core-override-smoke
 jawaka-i18n-test: $(BUILD)/bin/jawaka-i18n-test
 
+# Build and RUN the i18n engine test against its committed fixture. The binary
+# needs a fixture directory holding a compiled zh_CN table; that fixture was never
+# committed, so the test could not be run from the repo and nothing ran it.
+i18n-test: $(BUILD)/bin/jawaka-i18n-test
+	@fx=$$(mktemp -d); mkdir -p $$fx/platform/i18n $$fx/userdata/i18n; \
+	python3 tools/i18n-compile.py cmd/jawaka-i18n-test/fixture.po \
+		-o $$fx/platform/i18n/zh_CN.jwi >/dev/null && \
+	$(BUILD)/bin/jawaka-i18n-test $$fx; rc=$$?; rm -rf $$fx; exit $$rc
+
 # Regenerate the canonical key list from the sources. Commit the result --
 # CI diffs it, so a UI-string change without a regenerated .pot fails there.
 i18n-pot:
-	python3 tools/i18n-extract.py
+	python3 tools/gen-shader-strings.py
+	python3 tools/i18n-extract.py --po $(wildcard i18n/*.po)
 
 # What CI runs: the committed .pot must match the code, and any committed
 # translation must parse, carry no orphan keys, and keep its printf
 # conversions compatible (i18n-compile.py enforces that last one).
 i18n-check:
+	python3 tools/gen-shader-strings.py --check
 	python3 tools/i18n-extract.py --check --po $(wildcard i18n/*.po)
 	@for po in $(wildcard i18n/*.po); do \
 		python3 tools/i18n-compile.py $$po -o /tmp/i18n-check.jwi || exit 1; \
@@ -542,6 +563,11 @@ wifi-ssid-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/wifi-ssid-test \
 		internal/platform/wifi_ssid_test.c internal/platform/wifi_ssid.c
 	$(BUILD)/bin/wifi-ssid-test
+
+wifi-attempt-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/wifi-attempt-test \
+		internal/platform/wifi_attempt_test.c internal/platform/wifi_attempt.c
+	$(BUILD)/bin/wifi-attempt-test
 
 # Links input_shortcuts.c alone: it uses JW_UI(), which is a macro, so the
 # i18n.h include costs nothing at link time.
@@ -606,10 +632,39 @@ storage-sources-test: | $(BUILD)/bin
 		internal/storage/sources_test.c internal/storage/sources.c
 	$(BUILD)/bin/storage-sources-test
 
+# Weston outlives the Leaf generation that restarts it; see weston_initd.h.
+# Every S49weston call in C must go through that header and its helpers.
+.PHONY: weston-initd-test
+weston-initd-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/weston-initd-test internal/platform/weston_initd_test.c
+	$(BUILD)/bin/weston-initd-test
+	@if grep -rn --include='*.c' '/etc/init.d/S49weston' cmd internal; then \
+		echo "weston-initd-test: start S49weston through JW_WESTON_INITD (weston_initd.h)"; exit 1; fi
+	@if grep -rnE -A2 --include='*.c' '(system|popen|exec[lv]p?e?) *\(' cmd internal | grep 'JW_WESTON'; then \
+		echo "weston-initd-test: run JW_WESTON_INITD commands through jw_weston_initd_run/_spawn_detached"; exit 1; fi
+
+.PHONY: power-request-test
+power-request-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/power-request-test internal/platform/power_request_test.c
+	$(BUILD)/bin/power-request-test
+
+# jawaka-ledd ships for the MLP1 only, but it is plain libc: a host build is
+# enough to prove it stops, and hands the LED ring back, when jawakad dies.
+.PHONY: ledd-spawn-test
+ledd-spawn-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ledd-spawn-test-ledd cmd/jawaka-ledd/main.c
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ledd-spawn-test internal/platform/ledd_spawn_test.c
+	$(BUILD)/bin/ledd-spawn-test $(BUILD)/bin/ledd-spawn-test-ledd
+
 storage-health-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/storage-health-test \
 		internal/storage/health_test.c internal/storage/health.c internal/core/log.c
 	$(BUILD)/bin/storage-health-test
+
+storage-repair-advice-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/storage-repair-advice-test \
+		internal/storage/repair_advice_test.c internal/storage/repair_advice.c
+	$(BUILD)/bin/storage-repair-advice-test
 
 source-paths-v2-smoke:
 	BUILD="$(BUILD)" scripts/source-paths-v2-smoke.sh
@@ -626,6 +681,13 @@ rumble-settings-test: | $(BUILD)/bin
 		internal/storage/sources.c $(LDLIBS_COMMON)
 	$(BUILD)/bin/rumble-settings-test
 
+ra-account-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -Dsqlite3_close=jw_test_sqlite3_close \
+		-Dsqlite3_step=jw_test_sqlite3_step -o $(BUILD)/bin/ra-account-test \
+		internal/db/ra_account_test.c internal/db/db.c internal/db/relocation.c \
+		internal/storage/sources.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/ra-account-test
+
 relocation-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/relocation-test \
 		internal/db/relocation_test.c internal/db/db.c internal/db/relocation.c \
@@ -640,6 +702,11 @@ package-quiesce-ipc-smoke:
 
 power-transition-ipc-smoke:
 	scripts/power-transition-ipc-smoke.sh
+
+# jawakad exits on SIGTERM while supervising a launcher child.
+.PHONY: daemon-shutdown-smoke
+daemon-shutdown-smoke:
+	scripts/daemon-shutdown-smoke.sh
 
 service-manifest-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/service-manifest-test \
@@ -907,7 +974,13 @@ life1-game-override-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/g
 raofflineproxy-bridge-ipc-smoke: jawakad jawaka-platformctl
 	scripts/raofflineproxy-bridge-ipc-smoke.sh
 
-.PHONY: raofflineproxy-bridge-ipc-smoke raofflineproxy-bridge-test
+ra-account-env-ipc-smoke: jawakad jawaka-platformctl
+	scripts/ra-account-env-ipc-smoke.sh
+
+flycast-ra-route-ipc-smoke: jawakad jawaka-platformctl
+	scripts/flycast-ra-route-ipc-smoke.sh
+
+.PHONY: raofflineproxy-bridge-ipc-smoke raofflineproxy-bridge-test ra-account-env-ipc-smoke flycast-ra-route-ipc-smoke
 
 life1-app-noevent-ipc-smoke: $(BUILD)/bin/life1-fixture-service
 	scripts/life1-app-noevent-ipc-smoke.sh
@@ -942,6 +1015,13 @@ wordmark-test: | $(BUILD)/bin check-catastrophe check-sdl
 		internal/launcher/wordmark_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
 	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/wordmark-test
 
+# The RetroAchievements Accounts row reads the account through the handoff's
+# validator. No renderer, so it runs wherever the UI sources build.
+settings-account-test: | $(BUILD)/bin check-catastrophe check-sdl
+	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/settings-account-test \
+		internal/settings/settings_account_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
+	$(BUILD)/bin/settings-account-test
+
 settings-status-test: | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/settings-status-test \
 		internal/settings/settings_status_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
@@ -950,10 +1030,36 @@ settings-status-test: | $(BUILD)/bin check-catastrophe check-sdl
 appearance-env-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -D_GNU_SOURCE -o $(BUILD)/bin/appearance-env-test \
 		internal/settings/appearance_env_test.c internal/settings/appearance.c \
-		internal/settings/theme_resolve.c internal/i18n/i18n.c internal/core/log.c \
+		internal/settings/theme_resolve.c internal/settings/timezones.c \
+		internal/i18n/i18n.c internal/core/log.c \
 		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
 		$(BLUETOOTH_SRC) $(LDLIBS_COMMON)
 	$(BUILD)/bin/appearance-env-test
+
+# The time-zone table against the C library that will convert it. Build only,
+# so the same rule serves the cross-build that `make mlp1-device-timezone-test`
+# ships to a device.
+jawaka-timezone-probe: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -D_GNU_SOURCE -o $(BUILD)/bin/timezone-probe \
+		internal/settings/timezone_probe.c internal/settings/timezones.c \
+		$(LDLIBS_COMMON)
+
+# Host run. The device run is the one that counts: the host's zoneinfo is not
+# the device's, and this table is only as good as the data under it.
+timezone-test: jawaka-timezone-probe
+	$(BUILD)/bin/timezone-probe
+
+# Cross-build the probe and run it on an MLP1. It converts fixed UTC instants
+# and never touches the system clock, so it is safe with the launcher up.
+mlp1-device-timezone-test:
+	docker run --rm \
+		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		-v "$(WORKSPACE_ROOT)":/workspace \
+		-v "$(CURDIR)":/workspace/Jawaka \
+		-w /workspace/Jawaka \
+		"$(MLP1_TOOLCHAIN_IMAGE)" \
+		make -f ports/mlp1/Makefile timezone-probe
+	scripts/mlp1-timezone-probe.sh
 
 imported-title-ipc-smoke:
 	scripts/imported-title-ipc-smoke.sh
@@ -1018,7 +1124,11 @@ RETROARCH_CONFIG_TEST_SRCS := \
 # Both platform shapes, because the hotkey ownership/migration matrix and the
 # rest of the MLP1 protected-key policy only compile under -DPLATFORM_MLP1,
 # while this Mac lane's default build is the one that covers the generic path.
+# The credential round trip parses with a vendored copy of RetroArch's config
+# parser; the drift check compares it with a fetched RetroArch tree when one
+# exists (RETROARCH_SRC, default ../retroarch-builds/workdir/src/RetroArch).
 retroarch-config-test: | $(BUILD)/bin
+	sh scripts/check-retroarch-config-parser.sh
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/retroarch-config-test \
 		$(RETROARCH_CONFIG_TEST_SRCS)
 	$(BUILD)/bin/retroarch-config-test
@@ -1027,13 +1137,43 @@ retroarch-config-test: | $(BUILD)/bin
 		$(RETROARCH_CONFIG_TEST_SRCS)
 	$(BUILD)/bin/retroarch-config-mlp1-test
 
+# standalone-ra-account-v1 producer replay against the pinned contract. The
+# pin (commit + fixtures sha256) lives here and in
+# .github/workflows/ra-account.yml; bump both together in a reviewed change.
+LEAF_CONTRACTS_DIR ?= $(WORKSPACE_ROOT)/leaf-contracts
+RA_ACCOUNT_FIXTURES_SHA256 := 981a98efb4f55598918e410d6a443fb2ddf0330e2ee46138175b9cb53d18d534
+ra-account-contract-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ra-account-contract-test \
+		internal/launcher/ra_account_contract_test.c \
+		internal/launcher/ra_account.c internal/launcher/standalone_policy.c \
+		internal/platform/leaf_version.c third_party/cjson/cJSON.c \
+		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
+		$(LDLIBS_COMMON)
+	python3 scripts/ra-account-contract-replay.py \
+		--contracts "$(LEAF_CONTRACTS_DIR)" \
+		--sha256 $(RA_ACCOUNT_FIXTURES_SHA256) \
+		--producer $(BUILD)/bin/ra-account-contract-test
+
+# The RetroArch half of the account handoff: stored rows -> the launch
+# resolve -> JAWAKA_CHEEVOS_* -> cheevos_username/password in the config.
+ra-account-retroarch-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ra-account-retroarch-test \
+		internal/launcher/ra_account_retroarch_test.c \
+		internal/launcher/ra_account.c internal/launcher/standalone_policy.c \
+		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
+		$(filter-out internal/platform/paths_config_test.c,$(RETROARCH_CONFIG_TEST_SRCS)) \
+		$(LDLIBS_COMMON)
+	$(BUILD)/bin/ra-account-retroarch-test
+
 raofflineproxy-bridge-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/raofflineproxy-bridge-test \
 		internal/platform/raofflineproxy_bridge_test.c internal/platform/paths.c \
 		internal/platform/raofflineproxy.c \
 		internal/platform/platform_id_mock.c internal/retroarch/catalog.c \
+		internal/launcher/ra_account.c internal/launcher/standalone_policy.c \
+		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
 		$(EFFECTIVE_CATALOG_SRCS) \
-		internal/core/log.c third_party/cjson/cJSON.c -lpthread
+		internal/core/log.c third_party/cjson/cJSON.c -lpthread $(LDLIBS_COMMON)
 	$(BUILD)/bin/raofflineproxy-bridge-test
 
 retroarch-runner-stop-smoke: jawaka-retroarch-runner
@@ -1095,9 +1235,17 @@ bios-test: | $(BUILD)/bin
 
 standalone-policy-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/standalone-policy-test \
-		internal/launcher/standalone_policy_test.c \
-		internal/launcher/standalone_policy.c
+		internal/launcher/standalone_policy_test.c internal/launcher/standalone_policy.c
 	$(BUILD)/bin/standalone-policy-test
+
+ra-account-launch-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ra-account-launch-test \
+		internal/launcher/ra_account_test.c internal/launcher/ra_account.c \
+		internal/launcher/standalone_policy.c \
+		internal/platform/leaf_version.c third_party/cjson/cJSON.c \
+		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
+		$(LDLIBS_COMMON)
+	$(BUILD)/bin/ra-account-launch-test
 
 .PHONY: menu-escape-test
 menu-escape-test: | $(BUILD)/bin
@@ -1116,6 +1264,25 @@ core-selection-test: | $(BUILD)/bin
 		internal/launcher/core_selection_test.c \
 		internal/launcher/core_selection.c
 	$(BUILD)/bin/core-selection-test
+
+# The AUTO governor-profile rule: which systems enter performance without a
+# user override. Dreamcast-family systems (DC, NAOMI, ATOMISWAVE) are the ones
+# every Flycast choice depends on, standalone and libretro alike. Above 60 Hz
+# AUTO boosts every game, since each frame gets one refresh of time.
+.PHONY: perf-policy-test
+perf-policy-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/perf-policy-test \
+		internal/platform/perf_policy_test.c \
+		internal/platform/perf_policy.c
+	$(BUILD)/bin/perf-policy-test
+
+# End-to-end governor policy against a real jawakad on the mock platform: every
+# Dreamcast-family choice enters performance before the child runs and restores
+# the frontend profile on exit, including a launch that fails after the profile
+# was applied.
+.PHONY: performance-dreamcast-ipc-smoke
+performance-dreamcast-ipc-smoke:
+	scripts/performance-dreamcast-ipc-smoke.sh
 
 # Pure header over the shared system-notice primitive: set/expiry/only-a-new-
 # launch-attempt-clears. Link-free, so no product sources are dragged in.
@@ -1212,6 +1379,9 @@ suspend-inhibit-ipc-smoke:
 update-local-manifest-smoke:
 	@scripts/update-local-manifest-smoke.sh
 
+update-github-check-smoke:
+	@scripts/update-github-check-smoke.sh
+
 $(BUILD)/bin:
 	@mkdir -p $(BUILD)/bin
 
@@ -1300,7 +1470,7 @@ $(BUILD)/bin/jawaka-core-override-smoke: $(sort $(CORE_OVERRIDE_SMOKE_SRCS)) | $
 	$(CC) $(CFLAGS_COMMON) -o $@ $(sort $(CORE_OVERRIDE_SMOKE_SRCS)) $(LDLIBS_COMMON)
 
 $(BUILD)/bin/jawaka-update-smoke: $(sort $(UPDATE_SMOKE_SRCS)) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) $(CURL_CFLAGS) -o $@ $(sort $(UPDATE_SMOKE_SRCS)) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread
+	$(CC) $(CFLAGS_COMMON) -DJW_UPDATE_USE_LIBCURL=1 $(CURL_CFLAGS) -o $@ $(sort $(UPDATE_SMOKE_SRCS)) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread
 
 $(BUILD)/bin/jawaka-inhibitctl: $(INHIBIT_CTL_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(INHIBIT_CTL_SRCS)
@@ -1409,6 +1579,7 @@ mlp1:
 		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
 		-e SCREENSCRAPER_REQUIRED="$(SCREENSCRAPER_REQUIRED)" \
 		-e I18N_COVERAGE="$(I18N_COVERAGE)" \
+		-e SCREENSCRAPER_ENV_FILE \
 		-e SCREENSCRAPER_DEV_ID \
 		-e SCREENSCRAPER_DEV_PASSWORD \
 		-e SCREENSCRAPER_DEBUG_PASSWORD \
@@ -1489,12 +1660,15 @@ help:
 	@echo "  make suspend-inhibit-test suspend-inhibit-ipc-smoke  Run native lease/power tests"
 	@echo "  make power-hold-save-test  Run the power-hold save policy test"
 	@echo "  make wifi-ssid-test          Validate wpa_supplicant SSID conversions"
+	@echo "  make wifi-attempt-test       Validate when a Wi-Fi join attempt succeeds or fails"
 	@echo "  make jawaka-retroarch-runner Build RetroArch app/config runner"
 	@echo "  make jawaka-update-runner    Build OTA install handoff runner"
 	@echo "  make jawaka-pakrat-smoke     Build local Pak Rat install/uninstall smoke helper"
 	@echo "  make jawaka-catalog-smoke    Build metadata/core-choice smoke helper"
 	@echo "  make standalone-policy-test  Validate standalone DRM/input classification"
 	@echo "  make core-selection-test  Validate saved/default/alternate launch core order"
+	@echo "  make perf-policy-test     Validate the AUTO performance-profile rule per system and refresh rate"
+	@echo "  make performance-dreamcast-ipc-smoke  Verify DC-family launches enter and restore performance"
 	@echo "  make launch-core-pin-ipc-smoke  Verify a pending launch never changes its selected core"
 	@echo "  make launch-notice-test      Validate launch-notice set/expiry policy"
 	@echo "  make launch-notice-ui-test   Validate notice rendering and expiry wakes"

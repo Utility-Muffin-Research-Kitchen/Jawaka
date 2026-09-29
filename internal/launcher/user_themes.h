@@ -43,6 +43,7 @@ typedef struct {
     bool has_grid_icons;
     bool has_grid_labels;
     bool has_coverflow_icons;
+    bool has_shared_icons;                  /* icons/ at the theme root */
     bool has_wallpaper;
 
     /* theme.json "colors". Scoped to Grid View: a theme dresses the grid, it
@@ -77,6 +78,13 @@ int  jw_user_themes_find(const jw_user_theme_catalog *cat, const char *dir);
 bool jw_user_theme_icon_path(const jw_user_theme_catalog *cat, int idx,
                              const char *view, const char *system_code,
                              char *out, size_t out_size);
+/* <root>/<dir>/icons/<CODE>.png: one icon set for both views. A view's own
+   folder wins per system, so a theme can share most tiles and still override
+   a few; this is the next place either view looks. Same rules as a view icon,
+   including _apps for the Apps tile and never _default. */
+bool jw_user_theme_shared_icon_path(const jw_user_theme_catalog *cat, int idx,
+                                    const char *system_code,
+                                    char *out, size_t out_size);
 bool jw_user_theme_label_path(const jw_user_theme_catalog *cat, int idx,
                               const char *view, const char *system_code,
                               char *out, size_t out_size);
@@ -110,7 +118,7 @@ bool jw_user_theme_image_dims(const char *path, int *w, int *h);
 bool jw_user_theme_wallpaper_ok(const char *path);
 
 /* Validate one theme's grid tiles against the guidelines by scanning its
-   grid/icons folder. `present` is how many PNGs it holds, `flagged` how many
+   grid/icons folder and the shared icons/ folder, both of which Grid draws. `present` is how many PNGs it holds, `flagged` how many
    are not the documented square target (accepted, contain-fit). Returns how
    many exceed the hard cap or are not PNGs (rejected at load). The caller
    composes the user-facing text so it can be translated. */

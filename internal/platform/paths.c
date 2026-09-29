@@ -519,6 +519,13 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "video_threaded",
         "video_refresh_rate",
         "video_black_frame_insertion",
+        /* Frame pacing at 120 Hz. RetroArch's Auto swap interval is what makes
+           ~60 fps content hold each frame for two refreshes, and a persisted
+           manual 1 (RetroArch's default) would switch it off for good. The dark
+           frame count keeps Leaf's BFI toggle meaning one black frame: a saved
+           0 turns BFI into plain frame repetition. */
+        "video_bfi_dark_frames",
+        "video_swap_interval",
         "video_driver",
         "video_context_driver",
         "aspect_ratio_index",
@@ -1861,6 +1868,59 @@ static int jw__roster_user_count(const int player_joypad_indices[4]) {
 }
 #endif
 
+/* RetroArch's config parser (libretro-common/file/config_file.c,
+   config_file_extract_value) has no escape sequences at all. A value that
+   opens with '"' ends at the NEXT '"', with every byte in between taken
+   literally, backslashes included; any other value runs to the first byte
+   that is not isgraph(). Lines are split on '\n' before either rule applies,
+   and config_file_strip_comment cuts an unquoted value at '#'.
+
+   So a value has at most two exact spellings:
+     quoted  key = "value"   any value without '"', '\n' or '\r'
+     bare    key = value     non-empty printable ASCII with no '#' that does
+                             not start with '"' -- a '"' later on is literal
+   A value with a '"' that also needs quoting (a space, a '#', a non-ASCII
+   byte) cannot be written at all. The old writer backslash-escaped '"' and
+   '\', which RetroArch reads back as a truncated or doubled value.
+   paths_config_test.c checks both spellings against a vendored copy of the
+   real parser. */
+jw_ra_cfg_form jw_retroarch_cfg_value_form(const char *value) {
+    if (!value) {
+        return JW_RA_CFG_QUOTED;
+    }
+    if (!strpbrk(value, "\"\n\r")) {
+        return JW_RA_CFG_QUOTED;
+    }
+    if (value[0] == '"') {
+        return JW_RA_CFG_UNWRITABLE;
+    }
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+        if (*p < 0x21 || *p > 0x7e || *p == '#') {
+            return JW_RA_CFG_UNWRITABLE;
+        }
+    }
+    return JW_RA_CFG_BARE;
+}
+
+/* Write one key in whichever spelling RetroArch reads back exactly. An
+   unwritable value is left out rather than written wrong; only the key is
+   logged, because values can be credentials. Returns false when omitted. */
+static bool jw__retroarch_cfg_string(FILE *fp, const char *key, const char *value) {
+    switch (jw_retroarch_cfg_value_form(value)) {
+        case JW_RA_CFG_QUOTED:
+            fprintf(fp, "%s = \"%s\"\n", key, value ? value : "");
+            return true;
+        case JW_RA_CFG_BARE:
+            fprintf(fp, "%s = %s\n", key, value);
+            return true;
+        case JW_RA_CFG_UNWRITABLE:
+        default:
+            jw_log_warn("retroarch config: %s value cannot be written so "
+                        "RetroArch reads it back intact; key left out", key);
+            return false;
+    }
+}
+
 /* Write input_max_users plus one joypad index per roster member.
    RetroArch keeps these indices in an unsigned array and uses them to index
    its pad state, so writing a "-1" sentinel for an unused player wraps to a
@@ -1868,17 +1928,6 @@ static int jw__roster_user_count(const int player_joypad_indices[4]) {
    the roster instead and emit indices only for players that have a pad: the
    child's private /dev/input already guarantees no other joystick exists, so
    there is nothing left for a phantom player to bind to. */
-static void jw__retroarch_cfg_string(FILE *fp, const char *key, const char *value) {
-    fprintf(fp, "%s = \"", key);
-    for (const char *p = value; p && *p; p++) {
-        if (*p == '\\' || *p == '"') {
-            fputc('\\', fp);
-        }
-        fputc(*p, fp);
-    }
-    fprintf(fp, "\"\n");
-}
-
 #ifdef PLATFORM_MLP1
 static void jw__retroarch_cfg_max_users(FILE *fp,
                                         const int player_joypad_indices[4]) {
@@ -2101,6 +2150,254 @@ static char *jw__default_retroarch_config_dir(const char *sdcard_root) {
         return NULL;
     }
     return jw__dup_realpath_or_literal(path);
+}
+
+/* ---- FlyCast Fast UMRK first-launch option seed --------------------------
+ *
+ * The Fast core ships with a tuned profile that has to be on disk before the
+ * core initializes. RetroArch creates its per-core .opt file from the core's
+ * own option table the first time it saves, so a launch with no seeded file
+ * silently runs the new core on stock Flycast defaults -- exactly the settings
+ * the tuned profile exists to replace. Nothing else in the tree seeds a core
+ * option file, and only one core needs it, so this is deliberately a single
+ * case rather than a profile framework.
+ *
+ * RetroArch reads per-core options from
+ *   <config dir>/<library_name>/<library_name>.opt
+ * (runloop.c: validate_per_core_options), with <config dir> the HOME-based
+ * RetroArch config directory the rest of the launcher uses. The template is the
+ * release-owned copy under
+ *   $UMRK_PLATFORM_PATH/defaults/retroarch/core-options/<folder>/<folder>.opt
+ * and it is copied byte for byte: the profile is the artifact that was
+ * qualified, so nothing here normalizes or re-derives a value.
+ *
+ * The versioned stamp is what makes "only if absent" mean what it says. Without
+ * it, a user who deliberately deletes the file -- or who is relying on a
+ * per-game override -- would have the profile resurrected on the next launch,
+ * and every launch would touch a file that is theirs. Once the stamp exists
+ * this function reads it and returns. */
+#define JW_RETROARCH_CORE_OPTIONS_SEED_ID "flycast_fast_umrk"
+/* The catalog's config_folder for that core, spelled exactly as the release
+   metadata does. The seed refuses anything else. */
+#define JW_RETROARCH_CORE_OPTIONS_SEED_FOLDER "FlyCast Fast UMRK"
+/* A template orders of magnitude larger than the shipped profile is not the
+   file we packaged; refuse it rather than copying whatever happens to be there. */
+#define JW_CORE_OPTIONS_TEMPLATE_MAX (64u * 1024u)
+
+static bool jw__retroarch_core_options_seed_stamp(char *out, size_t out_size,
+                                                  const char *ra_home) {
+    return jw__format_string(out, out_size, "%s/.leaf-core-options-seed-%s-v1",
+                             ra_home, JW_RETROARCH_CORE_OPTIONS_SEED_ID);
+}
+
+/* Preferred root first, then the two compatibility roots, in the same order as
+   jw__platform_defaults_path and jw__default_autoconfig_dir. The first existing
+   root wins even when the template is absent inside it, so a staging mistake is
+   reported against the path the payload was supposed to own instead of an
+   unrelated fallback. */
+static bool jw__retroarch_core_option_template_path(char *out, size_t out_size,
+                                                    const char *sdcard_root,
+                                                    const char *folder) {
+    char relative[PATH_MAX];
+    if (!jw__format_string(relative, sizeof(relative),
+                           "defaults/retroarch/core-options/%s/%s.opt",
+                           folder, folder)) {
+        return false;
+    }
+
+    const char *platform_root = jw__env_value("UMRK_PLATFORM_PATH");
+    if (platform_root && jw__is_directory(platform_root) &&
+        jw__format_string(out, out_size, "%s/%s", platform_root, relative)) {
+        return true;
+    }
+
+    const char *system_root = jw__env_value("SYSTEM_PATH");
+    if (system_root && jw__is_directory(system_root) &&
+        jw__format_string(out, out_size, "%s/%s", system_root, relative)) {
+        return true;
+    }
+
+    return jw__format_default_system_child(out, out_size, sdcard_root, relative);
+}
+
+/* Publish the template through a temp file in the destination directory.
+   fclose only reaches the page cache and vfat has no journal, so a hard
+   power-off between the write and the rename would otherwise leave a truncated
+   .opt that RetroArch then reads as the user's saved settings. */
+static int jw__copy_core_options_atomic(const char *src, const char *dst,
+                                        char *error, size_t error_size) {
+    char detail[PATH_MAX + 64];
+    char tmp[PATH_MAX];
+    if (!jw__format_string(tmp, sizeof(tmp), "%s.tmp", dst)) {
+        jw__set_error(error, error_size, "core option destination path too long");
+        return -1;
+    }
+
+    FILE *in = fopen(src, "rb");
+    if (!in) {
+        snprintf(detail, sizeof(detail), "core option template unreadable: %s", src);
+        jw__set_error(error, error_size, detail);
+        return -1;
+    }
+    FILE *out = fopen(tmp, "wb");
+    if (!out) {
+        fclose(in);
+        unlink(tmp);
+        snprintf(detail, sizeof(detail), "core option destination not writable: %s", tmp);
+        jw__set_error(error, error_size, detail);
+        return -1;
+    }
+
+    char buffer[8192];
+    bool failed = false;
+    size_t n;
+    while ((n = fread(buffer, 1u, sizeof(buffer), in)) > 0) {
+        if (fwrite(buffer, 1u, n, out) != n) {
+            failed = true;
+            break;
+        }
+    }
+    if (ferror(in)) {
+        failed = true;
+    }
+    if (!failed && (fflush(out) != 0 || fsync(fileno(out)) != 0)) {
+        failed = true;
+    }
+    if (fclose(out) != 0) {
+        failed = true;
+    }
+    fclose(in);
+
+    if (failed || rename(tmp, dst) != 0) {
+        unlink(tmp);
+        snprintf(detail, sizeof(detail), "could not install core options at %s", dst);
+        jw__set_error(error, error_size, detail);
+        return -1;
+    }
+    return 0;
+}
+
+int jw_retroarch_seed_core_options(const char *ra_home, const char *sdcard_root,
+                                   const char *core_id,
+                                   const char *core_config_folder,
+                                   char *error, size_t error_size) {
+    if (error && error_size > 0) {
+        error[0] = '\0';
+    }
+    if (!core_id || strcmp(core_id, JW_RETROARCH_CORE_OPTIONS_SEED_ID) != 0) {
+        return 0;   /* the overwhelmingly common path: no seeded core */
+    }
+    /* The folder lands verbatim in a path under the user's RetroArch config
+       dir, so it gets the same refusal the catalog gives its own folders -- and
+       it has to be this core's folder. A catalog that pointed flycast_fast_umrk
+       at another name would plant the Fast profile in that core's settings,
+       which is exactly the contamination this seed exists to avoid. */
+    if (!core_config_folder || !jw_ra_core_folder_is_safe(core_config_folder) ||
+        strcmp(core_config_folder, JW_RETROARCH_CORE_OPTIONS_SEED_FOLDER) != 0) {
+        jw__set_error(error, error_size,
+                      "core option seed needs the FlyCast Fast UMRK config folder");
+        return -1;
+    }
+    if (!ra_home || !ra_home[0]) {
+        jw__set_error(error, error_size,
+                      "core option seed needs the RetroArch HOME directory");
+        return -1;
+    }
+
+    char stamp[PATH_MAX];
+    if (!jw__retroarch_core_options_seed_stamp(stamp, sizeof(stamp), ra_home)) {
+        jw__set_error(error, error_size, "core option stamp path too long");
+        return -1;
+    }
+    struct stat stamp_stat;
+    if (stat(stamp, &stamp_stat) == 0) {
+        if (!S_ISREG(stamp_stat.st_mode)) {
+            jw__set_error(error, error_size,
+                          "core option completion stamp is not a regular file");
+            return -1;
+        }
+        return 0;   /* seeded once; the file (or its absence) is the user's now */
+    }
+    if (errno != ENOENT) {
+        jw__set_error(error, error_size,
+                      "core option completion stamp could not be inspected");
+        return -1;
+    }
+
+    char *config_dir = jw__default_retroarch_config_dir(sdcard_root);
+    if (!config_dir) {
+        jw__set_error(error, error_size,
+                      "could not resolve the RetroArch config directory");
+        return -1;
+    }
+
+    char folder_dir[PATH_MAX];
+    char dest[PATH_MAX];
+    bool paths_ok =
+        jw__format_string(folder_dir, sizeof(folder_dir), "%s/%s",
+                          config_dir, core_config_folder) &&
+        jw__format_string(dest, sizeof(dest), "%s/%s.opt",
+                          folder_dir, core_config_folder);
+    free(config_dir);
+    if (!paths_ok) {
+        jw__set_error(error, error_size, "core option destination path too long");
+        return -1;
+    }
+
+    if (jw__path_exists(dest)) {
+        /* The user (or an earlier seed, or a per-game save) already decided what
+           this file says. Preserving it byte-for-byte is the whole contract. */
+        jw_log_info("core options: %s already present; kept unchanged", dest);
+    } else {
+        char template[PATH_MAX];
+        if (!jw__retroarch_core_option_template_path(template, sizeof(template),
+                                                     sdcard_root,
+                                                     core_config_folder)) {
+            jw__set_error(error, error_size, "core option template path too long");
+            return -1;
+        }
+        struct stat template_stat;
+        if (stat(template, &template_stat) != 0 ||
+            !S_ISREG(template_stat.st_mode) ||
+            template_stat.st_size <= 0 ||
+            (unsigned long long)template_stat.st_size > JW_CORE_OPTIONS_TEMPLATE_MAX) {
+            char detail[PATH_MAX + 64];
+            snprintf(detail, sizeof(detail),
+                     "core option template missing or unusable: %s", template);
+            jw__set_error(error, error_size, detail);
+            return -1;
+        }
+        if (jw__mkdir_p(folder_dir, 0755) != 0) {
+            char detail[PATH_MAX + 64];
+            snprintf(detail, sizeof(detail),
+                     "could not create core option directory: %s", folder_dir);
+            jw__set_error(error, error_size, detail);
+            return -1;
+        }
+        if (jw__copy_core_options_atomic(template, dest, error, error_size) != 0) {
+            return -1;
+        }
+        jw_log_info("core options: seeded %s for %s", dest, core_id);
+    }
+
+    /* Completion is recorded only now, once the file is freshly in place or was
+       already there. A missing stamp means "not yet done"; an existing one means
+       the file belongs to the user from here on. A stamp write failure costs
+       nothing but a retry next launch, because the destination already exists. */
+    FILE *stamp_file = fopen(stamp, "wb");
+    bool stamp_failed = !stamp_file;
+    if (stamp_file) {
+        stamp_failed = fflush(stamp_file) != 0 || fsync(fileno(stamp_file)) != 0;
+        if (fclose(stamp_file) != 0) {
+            stamp_failed = true;
+        }
+    }
+    if (stamp_failed) {
+        jw__set_error(error, error_size,
+                      "could not record core option seed completion");
+        return -1;
+    }
+    return 0;
 }
 
 /* The durable leaf-recommended directory: the only place the in-game picker may
@@ -2520,7 +2817,13 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
         const char *bfi = jw__env_value("JAWAKA_BFI");
         jw__retroarch_cfg_string(fp, "video_black_frame_insertion",
                                  (bfi && bfi[0] == '1') ? "1" : "0");
+        /* Inert while BFI is off. */
+        jw__retroarch_cfg_string(fp, "video_bfi_dark_frames", "1");
     }
+    /* Auto. At 120 Hz RetroArch picks interval 2 for ~60 fps content, and the
+       patched SDL context emulates it with two swaps of one frame; 60 Hz, BFI
+       and PAL-at-120 all resolve to 1. */
+    jw__retroarch_cfg_string(fp, "video_swap_interval", "0");
     jw__retroarch_cfg_string(fp, "menu_show_load_content_animation", "false");
     /* The MLP1 is a Nintendo-style layout (A=East confirms) that reports
        Xbox-style SDL button indices, so RetroArch's OK/Cancel default lands on
@@ -2608,13 +2911,26 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_player_indices(fp, player_joypad_indices);
 
     /* RetroAchievements: jawakad exports the credentials stored under
-       Settings > Accounts; RetroArch validates them with the service at
+       Settings > Games > Accounts; RetroArch validates them with the service at
        launch. Absent env = don't touch whatever the user set up inside
        RetroArch itself. The session config lives in the runtime dir, so the
        password never lands in the persistent shared config. */
     const char *cheevos_user = jw__env_value("JAWAKA_CHEEVOS_USERNAME");
     const char *cheevos_pass = jw__env_value("JAWAKA_CHEEVOS_PASSWORD");
-    if (cheevos_user && cheevos_user[0] && cheevos_pass && cheevos_pass[0]) {
+    if (cheevos_user && cheevos_user[0] && cheevos_pass && cheevos_pass[0] &&
+        (jw_retroarch_cfg_value_form(cheevos_user) == JW_RA_CFG_UNWRITABLE ||
+         jw_retroarch_cfg_value_form(cheevos_pass) == JW_RA_CFG_UNWRITABLE)) {
+        /* Settings refuses to store such credentials, so this is an older
+           saved account. Signing in with a mangled password would only earn a
+           login failure, so leave all three keys out: they are protected from
+           the merge, so the session simply runs without achievements. The
+           Accounts row tells the user to sign in again. Never log the values. */
+        jw_log_warn("RetroAchievements: saved %s has no exact spelling in "
+                    "retroarch.cfg; not signing in this session",
+                    jw_retroarch_cfg_value_form(cheevos_user) ==
+                            JW_RA_CFG_UNWRITABLE
+                        ? "username" : "password");
+    } else if (cheevos_user && cheevos_user[0] && cheevos_pass && cheevos_pass[0]) {
         jw__retroarch_cfg_string(fp, "cheevos_enable", "true");
         jw__retroarch_cfg_string(fp, "cheevos_username", cheevos_user);
         jw__retroarch_cfg_string(fp, "cheevos_password", cheevos_pass);

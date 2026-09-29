@@ -7,9 +7,16 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
+#include <stdint.h>
+#include <drm/drm.h>
+#include <linux/fs.h>
+#include <drm/drm_mode.h>
 #include <linux/netlink.h>
 #include <linux/input.h>
+#include <sys/inotify.h>
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
 #include <dlfcn.h>
 #include <dirent.h>
 #include <signal.h>
@@ -17,7 +24,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <sys/reboot.h>
+#include "internal/platform/power_request.h"
+#include "internal/platform/weston_initd.h"
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -64,6 +72,7 @@
 #define JW_MLP1_BACKLIGHT_MAX JW_MLP1_BACKLIGHT_DIR "/max_brightness"
 
 #define JW_MLP1_CPUFREQ_POLICY "/sys/devices/system/cpu/cpufreq/policy0"
+#define JW_MLP1_SCHEDUTIL_RATE_LIMIT_US 50000
 #define JW_MLP1_GPU_DEVFREQ "/sys/devices/platform/fde60000.gpu/devfreq/fde60000.gpu"
 #define JW_MLP1_DMC_DEVFREQ "/sys/devices/platform/dmc/devfreq/dmc"
 #define JW_MLP1_SOC_TEMP "/sys/class/thermal/thermal_zone0/temp"
@@ -92,8 +101,6 @@
 #define JW_MLP1_PACTL_USB_SINK "usb_out"
 #define JW_MLP1_PACTL_SET_DEFAULT_USB \
     "pactl set-default-sink usb_out 2>/dev/null"
-/* Card index of the first USB-Audio class device, or empty if none is attached. */
-#define JW_MLP1_USB_CARD_CMD "awk '/USB-Audio/{print $1; exit}' /proc/asound/cards"
 #define JW_MLP1_PLAYBACK_PATH_CMD "amixer -c 1 cget numid=13 2>/dev/null"
 #define JW_MLP1_PLAYBACK_PATH_SPK "amixer -c 1 cset numid=13 2 >/dev/null 2>&1"
 #define JW_MLP1_PLAYBACK_PATH_HP  "amixer -c 1 cset numid=13 3 >/dev/null 2>&1"
@@ -103,6 +110,16 @@
 #define JW_MLP1_PLAYBACK_PATH_OFF "amixer -c 1 cset numid=13 0 >/dev/null 2>&1"
 #define JW_MLP1_HP_JACK_CMD "amixer -c 1 cget numid=1 2>/dev/null"
 #define JW_MLP1_HDMI_STATUS "/sys/class/drm/card0-HDMI-A-1/status"
+/* External speaker amp enable (0 = off, 1 = on). Stock loong_service drives it;
+   in Leaf mode jawakad does (see jw__mlp1_speaker_gate_sync). */
+#define JW_MLP1_SPK_CTL "/sys/kernel/powerCtrl/spk_ctl"
+#define JW_MLP1_RK817_PCM_STATUS "/proc/asound/card1/pcm0p/sub0/status"
+/* Every rk817 player opens this node, and inotify reports each open and close
+   (devtmpfs delivers the events). The speaker gate follows them. */
+#define JW_MLP1_RK817_PCM_DEV "/dev/snd/pcmC1D0p"
+/* Without a watch (the node missing), poll the PCM state this often instead
+   and try to arm the watch again. */
+#define JW_MLP1_SPK_GATE_FALLBACK_POLL_MS 1000
 
 /* The rk817 DAC (ALSA numid=16) is the dominant hardware loudness control and is
    pinned to a fixed level at boot (platform.d/00-audio-init.sh). The user-facing
@@ -131,10 +148,12 @@
    register level, so it cannot power the amp down. Instead power down just the
    analog headphone stage over i2c (bus 0, addr 0x20): AHP_CFG0 0x3d=0xe0 and its
    charge pump AHP_CP 0x3f=0x09 — the same values the codec driver uses, so it is
-   pop-free. Crucially this touches ONLY the headphone amp, not the shared DAC
-   (DDAC_MUTE_MIXCTL/ADAC_CFG1): the DAC stays live so PulseAudio's open device is
-   never disturbed (muting it under a live sink crashed PA) and the speaker path
-   (same DAC) is unaffected. The two register values are read and restored on
+   pop-free. It touches ONLY the headphone amp, not the shared DAC
+   (DDAC_MUTE_MIXCTL/ADAC_CFG1), so the speaker path (same DAC) is unaffected.
+   An earlier attempt muted the DAC in this path and lost PulseAudio, but that
+   was the wake-time RLIMIT_RTTIME kill (the refill after resume ran at sleep
+   clocks), not the mute: muting the DAC under a live stream leaves PulseAudio's
+   realtime thread at ~110 ms of its budget (measured 2026-09-28). The two register values are read and restored on
    resume (see the SLEEP action). */
 #define JW_MLP1_HP_POWERDOWN \
     "i2cset -f -y 0 0x20 0x3d 0xe0 >/dev/null 2>&1; " \
@@ -237,6 +256,8 @@ static int jw__mlp1_jack_input_state(void);
 static bool jw__mlp1_bt_audio_present(void);
 static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi);
 static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx);
+static void jw__mlp1_pcm_watch_arm(void);
+static void jw__mlp1_speaker_gate_sync(bool force);
 static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reason);
 
 /* The user's Refresh Rate setting (60/100/120), cached when set so the HDMI apply
@@ -247,6 +268,13 @@ static int s_mlp1_target_refresh_hz = -1;
 /* HDMI output mode (0 off / 1 4:3 / 2 stretch); last applied, -1 until set. */
 enum { JW_MLP1_HDMI_OFF = 0, JW_MLP1_HDMI_4_3 = 1, JW_MLP1_HDMI_STRETCH = 2 };
 static int s_mlp1_hdmi_mode = -1;
+
+/* Color-temperature target in K, last value we programmed into the CRTC gamma
+   LUT. -1 until set. The LUT survives Weston restarts (see the color
+   temperature section below) but a cold power cycle clears it, so jawakad
+   replays the persisted value at startup; this cache just answers
+   platform-status without re-reading the ramp. */
+static int s_mlp1_color_temp_k = -1;
 
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
@@ -590,7 +618,10 @@ static int jw__mlp1_init(jw_platform_context *ctx) {
     return 0;
 }
 
+static void jw__mlp1_bt_monitor_stop(void);
+
 static void jw__mlp1_shutdown(jw_platform_context *ctx) {
+    jw__mlp1_bt_monitor_stop();
     jw_mlp1_platform_data *data = ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
     if (data) {
         if (data->uevent_fd >= 0) {
@@ -812,6 +843,26 @@ static void jw__mlp1_get_performance_status(jw_platform_context *ctx,
              out->supported ? "performance ready" : "performance partially unavailable");
 }
 
+/* schedutil's default 10 ms rate limit lets it step the CPU clock up to 100
+   times a second, and on this board every step is a VDD write to the tcs4525
+   regulator over the i2c bus it shares with the rk817 PMIC and codec. At idle
+   that measured 45-67 steps/s with the sugov:0 kthread near 4% CPU; 50 ms
+   brings it under 20/s. The tunable lives in the governor's directory, which
+   the kernel recreates at its default whenever schedutil is selected again,
+   so it is written after every governor write, not once at boot. */
+static void jw__mlp1_tune_schedutil(const char *base) {
+    char path[PATH_MAX];
+    if (jw__join_sysfs_path(path, sizeof(path), base,
+                            "schedutil/rate_limit_us") != 0 ||
+        access(path, W_OK) != 0) {
+        return;
+    }
+    if (jw__write_int_file(path, JW_MLP1_SCHEDUTIL_RATE_LIMIT_US) != 0) {
+        jw_log_warn("performance: schedutil rate limit write failed: %s",
+                    strerror(errno));
+    }
+}
+
 static int jw__mlp1_apply_perf_domain(jw_platform_perf_domain domain,
                                       const jw_platform_perf_domain_request *request,
                                       char *message,
@@ -859,6 +910,10 @@ static int jw__mlp1_apply_perf_domain(jw_platform_perf_domain domain,
         snprintf(message, message_size, "%s governor write failed: %s",
                  status.name, strerror(errno));
         return -1;
+    }
+    if (domain == JW_PLATFORM_PERF_DOMAIN_CPU &&
+        strcmp(request->governor, "schedutil") == 0) {
+        jw__mlp1_tune_schedutil(base);
     }
 
     if (request->frequency >= 0) {
@@ -972,7 +1027,35 @@ static int jw__parse_percent_from_stream(FILE *fp) {
     return percent;
 }
 
+/* The volume percent last read or set on the current output. The launcher's
+   status poll asks every 5 s, and a fresh read is three popens (Playback Path,
+   default sink, sink volume). jawakad makes every volume change itself, so its
+   own sets keep this right; a route change drops it, and it is re-read at
+   least once a minute in case something else moved the sink. */
+#define JW_MLP1_VOLUME_CACHE_MS 60000
+static int s_mlp1_volume_cache = -1;
+static long long s_mlp1_volume_cache_ms = 0;
+
+static void jw__mlp1_volume_cache_set(int percent) {
+    s_mlp1_volume_cache = percent;
+    s_mlp1_volume_cache_ms = jw__monotonic_ms();
+}
+
+static int jw__mlp1_read_volume_percent(void);
+
 static int jw__mlp1_get_volume_percent(void) {
+    if (s_mlp1_volume_cache >= 0 &&
+        jw__monotonic_ms() - s_mlp1_volume_cache_ms < JW_MLP1_VOLUME_CACHE_MS) {
+        return s_mlp1_volume_cache;
+    }
+    int percent = jw__mlp1_read_volume_percent();
+    if (percent >= 0) {
+        jw__mlp1_volume_cache_set(percent);
+    }
+    return percent;
+}
+
+static int jw__mlp1_read_volume_percent(void) {
     jw_platform_audio_output output = jw__mlp1_get_audio_output();
     if (output == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH) {
         int bt_percent = jw__mlp1_get_bluealsa_volume_percent();
@@ -1018,6 +1101,7 @@ static int jw__mlp1_set_volume_percent(int percent) {
         rc = jw__mlp1_set_bluealsa_volume_percent(percent);
         if (rc == 0) {
             jw__mlp1_sync_sound_volume(output, percent);
+            jw__mlp1_volume_cache_set(percent);
         }
         return rc == 0 ? 0 : -1;
     }
@@ -1034,6 +1118,7 @@ static int jw__mlp1_set_volume_percent(int percent) {
 
     if (rc == 0) {
         jw__mlp1_sync_sound_volume(output, percent);
+        jw__mlp1_volume_cache_set(percent);
     }
     return rc == 0 ? 0 : -1;
 }
@@ -1091,56 +1176,6 @@ static void jw__loong_load(void) {
     }
 }
 
-
-/* Reboot or power off via the reboot(2) syscall directly.
-   The stock busybox reboot/poweroff applets signal PID 1, but in Leaf mode init
-   is blocked in rcS (the umrk-leaf-session supervisor holds the boot), so those
-   signals are never serviced and nothing happens. Magic SysRq is also disabled
-   by default (/proc/sys/kernel/sysrq = 0). reboot(2) goes straight to the kernel
-   and works regardless of init state (we run as root with CAP_SYS_BOOT).
-   Done in a forked child after a short delay so the IPC reply reaches the menu
-   before the system goes down. cmd is RB_AUTOBOOT or RB_POWER_OFF. */
-static int jw__mlp1_power_transition_async(int cmd) {
-    pid_t pid = fork();
-    if (pid < 0) {
-        return -1;
-    }
-    if (pid == 0) {
-        /* Double-fork: the grandchild reparents to init and is auto-reaped, so
-           the long-lived daemon leaves no zombie. The intermediate child exits
-           immediately and the original parent reaps only it (below). */
-        pid_t grandchild = fork();
-        if (grandchild == 0) {
-            usleep(250000);   /* let the IPC reply flush and the menu close */
-
-            /* Take the filesystems down cleanly before the abrupt reboot(2). The SD
-               is FAT32 and busy — our own binary executes from it and the library DB
-               is open — so `mount -o remount,ro` returns EBUSY. The kernel's
-               emergency remount-ro (magic SysRq 'u') forces every mounted fs
-               read-only regardless of open files, flushing the FAT and directory
-               entries so an immediate reboot/power-off can't corrupt the card.
-               Without this, repeated reboots have produced FAT32 corruption.
-               Sequence mirrors REISUB's tail: enable sysrq, Sync, Unmount(ro), Sync. */
-            (void)jw__write_text_file("/proc/sys/kernel/sysrq", "1\n");
-            sync();
-            (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");   /* sync */
-            (void)jw__write_text_file("/proc/sysrq-trigger", "u\n");   /* remount-ro all */
-            (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");   /* sync */
-            usleep(400000);   /* let the emergency remount-ro and flush settle */
-
-            reboot(cmd);
-            /* reboot(2) only returns on failure; fall back to a magic SysRq reboot. */
-            sleep(1);
-            (void)jw__write_text_file("/proc/sysrq-trigger",
-                                      cmd == RB_POWER_OFF ? "o\n" : "b\n");
-            _exit(0);
-        }
-        _exit(0);   /* intermediate child exits immediately; grandchild reparents to init */
-    }
-    int status = 0;
-    waitpid(pid, &status, 0);   /* reap the intermediate child only */
-    return 0;
-}
 
 static char *jw__read_text_file(const char *path, long max_bytes) {
     FILE *fp = fopen(path, "rb");
@@ -1369,28 +1404,6 @@ static void jw__mlp1_weston_mode_line(int hz, char *buf, size_t n) {
              "mode=%.2f 720 735 749 769 960 990 998 1018 -hsync -vsync\n", clk);
 }
 
-static int jw__mlp1_get_refresh_hz(void) {
-    FILE *fp = fopen("/sys/kernel/debug/dri/0/summary", "r");
-    if (!fp) {
-        return -1;
-    }
-    int hz = -1;
-    char line[256];
-    while (fgets(line, sizeof(line), fp)) {
-        const char *p = strstr(line, "Display mode:");
-        if (!p) {
-            continue;
-        }
-        int dw, dh, dr;
-        if (sscanf(p, "Display mode: %dx%dp%d", &dw, &dh, &dr) == 3) {
-            hz = dr;
-            break;
-        }
-    }
-    fclose(fp);
-    return hz;
-}
-
 /* Build the override from the stock config: copy it verbatim, drop any
    pre-existing `mode=` line (so re-toggling never duplicates), and append the
    modeline for the target rate. [output] is the stock file's last section, so
@@ -1447,6 +1460,200 @@ static int jw__mlp1_write_weston_override(int hz) {
     return 0;
 }
 
+/* ── Color temperature (DRM CRTC gamma LUT) ─────────────────────────────
+   The RK3566 VOP2 exposes a per-CRTC GAMMA_LUT (1024 entries here). We found no
+   sysfs knob for it and no vendor color-temperature control; the legacy
+   DRM_IOCTL_MODE_SETGAMMA path programs it directly. On this vendor kernel
+   (5.10) SETGAMMA is not gated on DRM master, so a fresh, non-master fd
+   succeeds while Weston holds master -- root does not bypass that check on
+   mainline, so this is not portable. Verified on hardware: the ramp takes
+   effect live with no compositor restart (unlike refresh rate).
+   The LUT stays programmed across a Weston restart, an HDMI connector switch
+   and the direct-DRM handoff (all observed on hardware); a cold power-off and
+   power-on clears it (also observed: the panel came up neutral with a daemon
+   that never touches it), so jawakad replays the persisted value at startup
+   (jw__apply_color_temp). A warm reboot has not been tried.
+
+   The kernel uapi headers (<drm/drm.h>) provide the ioctl structs, so there is
+   no libdrm header/link dependency in the cross build. */
+#define JW_MLP1_DRM_CARD "/dev/dri/card0"
+
+/* Tanner Helland black-body approximation: kelvin -> per-channel linear scale in
+   [0,1]. Above ~6600 K red (and a little green) is pulled down: cooler. Below it
+   blue is pulled down instead: warmer. */
+static void jw__mlp1_kelvin_to_rgb(int kelvin, double *r, double *g, double *b) {
+    double t = kelvin / 100.0;
+    double red, grn, blu;
+    if (t <= 66.0) {
+        red = 255.0;
+        grn = 99.4708025861 * log(t) - 161.1195681661;
+    } else {
+        red = 329.698727446 * pow(t - 60.0, -0.1332047592);
+        grn = 288.1221695283 * pow(t - 60.0, -0.0755148492);
+    }
+    if (t >= 66.0) {
+        blu = 255.0;
+    } else if (t <= 19.0) {
+        blu = 0.0;
+    } else {
+        blu = 138.5177312231 * log(t - 10.0) - 305.0447927307;
+    }
+    *r = (red < 0 ? 0 : red > 255 ? 255 : red) / 255.0;
+    *g = (grn < 0 ? 0 : grn > 255 ? 255 : grn) / 255.0;
+    *b = (blu < 0 ? 0 : blu > 255 ? 255 : blu) / 255.0;
+}
+
+/* Find the CRTC that has a valid mode and copy its state (the core GETCRTC ioctl)
+   to *out. MLP1 exposes a single CRTC that DSI and HDMI share. Returns 0, or -1
+   when none has a valid mode. */
+static int jw__mlp1_drm_active_crtc(int fd, struct drm_mode_crtc *out) {
+    struct drm_mode_card_res res;
+    memset(&res, 0, sizeof(res));
+    if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) != 0 || res.count_crtcs == 0) {
+        return -1;
+    }
+    uint32_t n = res.count_crtcs;
+    uint32_t *ids = calloc(n, sizeof(*ids));
+    if (!ids) {
+        return -1;
+    }
+    memset(&res, 0, sizeof(res));
+    res.crtc_id_ptr = (uint64_t)(uintptr_t)ids;
+    res.count_crtcs = n;
+    int rc = -1;
+    if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) == 0) {
+        uint32_t got = res.count_crtcs < n ? res.count_crtcs : n;
+        for (uint32_t i = 0; i < got; i++) {
+            struct drm_mode_crtc c;
+            memset(&c, 0, sizeof(c));
+            c.crtc_id = ids[i];
+            if (ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &c) != 0) {
+                continue;
+            }
+            if (c.mode_valid) {
+                *out = c;
+                rc = 0;
+                break;
+            }
+        }
+    }
+    free(ids);
+    return rc;
+}
+
+/* Pick the CRTC to program: the active one, with a gamma table of at least two
+   entries (the ramp writer divides by size - 1). Only an active CRTC is used on
+   purpose: the gamma LUT is not written while the CRTC has no mode (cable pulled,
+   restart in flight). Returns 0 and fills *crtc_id / *gamma_size, -1 otherwise. */
+static int jw__mlp1_drm_pick_crtc(int fd, uint32_t *crtc_id, uint32_t *gamma_size) {
+    struct drm_mode_crtc c;
+    if (jw__mlp1_drm_active_crtc(fd, &c) != 0 || c.gamma_size < 2) {
+        return -1;
+    }
+    *crtc_id = c.crtc_id;
+    *gamma_size = c.gamma_size;
+    return 0;
+}
+
+/* Current mode of the active output, from the DRM core. This deliberately does not
+   read /sys/kernel/debug/dri/0/summary: on this vendor kernel the summary dump
+   (vop2_crtc_debugfs_dump) dereferences NULL when it runs during a CRTC state
+   change, which oopsed the kernel and left the display dead until a hard reset
+   (the daemon read it every second). */
+static int jw__mlp1_get_display_mode(jw_platform_context *ctx, int *width, int *height,
+                                     int *hz) {
+    (void)ctx;
+    int fd = open(JW_MLP1_DRM_CARD, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    struct drm_mode_crtc c;
+    int rc = jw__mlp1_drm_active_crtc(fd, &c);
+    close(fd);
+    if (rc != 0) {
+        return -1;
+    }
+    if (width) *width = (int)c.mode.hdisplay;
+    if (height) *height = (int)c.mode.vdisplay;
+    if (hz) *hz = (int)c.mode.vrefresh;
+    return 0;
+}
+
+/* Current refresh rate in Hz, or -1 when there is no active mode. */
+static int jw__mlp1_get_refresh_hz(void) {
+    int hz = -1;
+    return jw__mlp1_get_display_mode(NULL, NULL, NULL, &hz) == 0 ? hz : -1;
+}
+
+/* Write a linear ramp scaled by the given per-channel factors (1.0 each =
+   identity) to the CRTC's gamma LUT. Only touches the hardware; callers own any
+   bookkeeping. Returns 0 on success. */
+static int jw__mlp1_write_gamma_ramp(double rf, double gf, double bf) {
+    int fd = open(JW_MLP1_DRM_CARD, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        jw_log_warn("color-temp: open %s: %s", JW_MLP1_DRM_CARD, strerror(errno));
+        return -1;
+    }
+
+    uint32_t crtc_id = 0, gamma_size = 0;
+    int rc = -1;
+    if (jw__mlp1_drm_pick_crtc(fd, &crtc_id, &gamma_size) != 0) {
+        jw_log_warn("color-temp: no gamma-capable CRTC");
+        close(fd);
+        return -1;
+    }
+
+    uint16_t *r = malloc(gamma_size * sizeof(*r));
+    uint16_t *g = malloc(gamma_size * sizeof(*g));
+    uint16_t *b = malloc(gamma_size * sizeof(*b));
+    if (r && g && b) {
+        for (uint32_t i = 0; i < gamma_size; i++) {
+            double base = (double)i / (double)(gamma_size - 1); /* 0..1 */
+            double rv = base * rf, gv = base * gf, bv = base * bf;
+            r[i] = (uint16_t)lround((rv < 0 ? 0 : rv > 1 ? 1 : rv) * 65535.0);
+            g[i] = (uint16_t)lround((gv < 0 ? 0 : gv > 1 ? 1 : gv) * 65535.0);
+            b[i] = (uint16_t)lround((bv < 0 ? 0 : bv > 1 ? 1 : bv) * 65535.0);
+        }
+        struct drm_mode_crtc_lut lut;
+        memset(&lut, 0, sizeof(lut));
+        lut.crtc_id = crtc_id;
+        lut.gamma_size = gamma_size;
+        lut.red = (uint64_t)(uintptr_t)r;
+        lut.green = (uint64_t)(uintptr_t)g;
+        lut.blue = (uint64_t)(uintptr_t)b;
+        if (ioctl(fd, DRM_IOCTL_MODE_SETGAMMA, &lut) == 0) {
+            rc = 0;
+        } else {
+            jw_log_warn("color-temp: SETGAMMA crtc %u: %s", crtc_id, strerror(errno));
+        }
+    }
+    free(r);
+    free(g);
+    free(b);
+    close(fd);
+    return rc;
+}
+
+/* Program the CRTC gamma LUT for the given color-temperature target and, on
+   success, record it as the applied panel value. NEUTRAL_K writes an identity
+   ramp (no correction). Returns 0 on success. */
+static int jw__mlp1_set_color_temp(int kelvin) {
+    kelvin = jw_platform_clamp_color_temp_k(kelvin);
+    double rf = 1.0, gf = 1.0, bf = 1.0;
+    if (kelvin != JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
+        jw__mlp1_kelvin_to_rgb(kelvin, &rf, &gf, &bf);
+    }
+    int rc = jw__mlp1_write_gamma_ramp(rf, gf, bf);
+    if (rc == 0) {
+        s_mlp1_color_temp_k = kelvin;
+    }
+    return rc;
+}
+
+static int jw__mlp1_get_color_temp(void) {
+    return s_mlp1_color_temp_k;
+}
+
 static int jw__mlp1_set_refresh_rate(int hz) {
     s_mlp1_target_refresh_hz = hz;
     /* Persist the panel modeline regardless, so the internal screen uses this
@@ -1473,28 +1680,9 @@ static int jw__mlp1_set_refresh_rate(int hz) {
        restart — the old OSD survives the kill of Weston but never redraws).
        Detached child so the action returns to the caller immediately. Double-fork
        so the grandchild reparents to init and is auto-reaped (no zombie). */
-    pid_t pid = fork();
-    if (pid == 0) {
-        pid_t grandchild = fork();
-        if (grandchild == 0) {
-            setsid();
-            int devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
-            if (devnull >= 0) {
-                dup2(devnull, STDOUT_FILENO);
-                dup2(devnull, STDERR_FILENO);
-            }
-            execl("/bin/sh", "sh", "-c",
-                  "/etc/init.d/S49weston restart; sleep 1; "
-                  "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
-                  (char *)NULL);
-            _exit(127);
-        }
-        _exit(0);   /* intermediate child exits immediately; grandchild reparents to init */
-    }
-    if (pid > 0) {
-        int status = 0;
-        waitpid(pid, &status, 0);   /* reap the intermediate child only */
-    }
+    (void)jw_weston_initd_spawn_detached(
+        JW_WESTON_INITD("restart") "; sleep 1; "
+        "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null");
     return 0;
 }
 
@@ -1541,8 +1729,8 @@ static int jw__mlp1_set_hdmi_output(int mode) {
     if (mode == JW_MLP1_HDMI_OFF) {
         snprintf(script, sizeof(script),
             "rm -f /tmp/.weston_drm.conf %s; "
-            "export WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=DSI-1; "
-            "/etc/init.d/S49weston restart; sleep 1; "
+            JW_WESTON_ROOTFS_ENV " WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=DSI-1 "
+            JW_WESTON_INITD_SCRIPT " restart; sleep 1; "
             "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
             JW_MLP1_WESTON_OVERRIDE_INI);
     } else {
@@ -1559,34 +1747,28 @@ static int jw__mlp1_set_hdmi_output(int mode) {
         snprintf(script, sizeof(script),
             "rm -f %s; "
             "printf 'output:HDMI-A-1:mode=%s\\n%soutput:HDMI-A-1:primary\\n' > /tmp/.weston_drm.conf; "
-            "export WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=HDMI-A-1 WESTON_DRM_VIRTUAL_SIZE=960x720 WESTON_DRM_CONFIG=/tmp/.weston_drm.conf; "
-            "/etc/init.d/S49weston restart; sleep 1; "
+            JW_WESTON_ROOTFS_ENV " WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=HDMI-A-1 "
+            "WESTON_DRM_VIRTUAL_SIZE=960x720 WESTON_DRM_CONFIG=/tmp/.weston_drm.conf "
+            JW_WESTON_INITD_SCRIPT " restart; sleep 1; "
             "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
             JW_MLP1_WESTON_OVERRIDE_INI, modestr, rectline);
     }
 
-    /* Double-fork so the grandchild reparents to init and is auto-reaped (no
-       zombie); the original parent reaps only the intermediate child. */
-    pid_t pid = fork();
-    if (pid == 0) {
-        pid_t grandchild = fork();
-        if (grandchild == 0) {
-            setsid();
-            int devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
-            if (devnull >= 0) {
-                dup2(devnull, STDOUT_FILENO);
-                dup2(devnull, STDERR_FILENO);
-            }
-            execl("/bin/sh", "sh", "-c", script, (char *)NULL);
-            _exit(127);
-        }
-        _exit(0);   /* intermediate child exits immediately; grandchild reparents to init */
-    }
-    if (pid < 0) {
+    /* The color-temperature LUT stays programmed on the (shared) CRTC across the
+       Weston restart and the connector switch, so it would tint the TV. It is
+       deliberately NOT swapped here: on hardware, LUT writes made during an HDMI
+       switch were followed by kernel oopses in the vendor's debugfs display dump
+       (which Jawaka no longer reads, see jw__mlp1_get_display_mode). jawakad swaps
+       the LUT from its HDMI poll instead, once the link has been quiet for a
+       couple of seconds and the display has a mode again, so it does not race the
+       mode change (see jw__tick_hdmi): identity for a TV, the panel value again
+       when the panel is back. */
+
+    /* Detached (double-fork) so the action returns at once; see
+       jw_weston_initd_spawn_detached. */
+    if (jw_weston_initd_spawn_detached(script) != 0) {
         return -1;
     }
-    int status = 0;
-    waitpid(pid, &status, 0);   /* reap the intermediate child only */
     s_mlp1_hdmi_mode = mode;
     return 0;
 }
@@ -1607,21 +1789,17 @@ static bool jw__mlp1_usb_config_is_adb(void) {
     return result;
 }
 
+/* The same flag lsattr prints as 'i', read with the ioctl lsattr itself uses;
+   this runs on every 5 s platform-status. */
 static bool jw__mlp1_usb_config_is_immutable(void) {
-    FILE *fp = popen("lsattr " JW_MLP1_USB_CONFIG " 2>/dev/null", "r");
-    if (!fp) {
+    int fd = open(JW_MLP1_USB_CONFIG, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) {
         return false;
     }
-
-    char line[128];
-    bool immutable = false;
-    if (fgets(line, sizeof(line), fp)) {
-        char attrs[64];
-        if (sscanf(line, "%63s", attrs) == 1 && strchr(attrs, 'i')) {
-            immutable = true;
-        }
-    }
-    pclose(fp);
+    int attrs = 0;
+    bool immutable = ioctl(fd, FS_IOC_GETFLAGS, &attrs) == 0 &&
+                     (attrs & FS_IMMUTABLE_FL) != 0;
+    close(fd);
     return immutable;
 }
 
@@ -2244,21 +2422,27 @@ static void jw__mlp1_hdmi_audio_off(void) {
    All that's missing is telling pulse, which has no udev-detect here. */
 static int s_mlp1_usb_audio_module = -1;
 
-/* ALSA card index of an attached USB audio device, or -1 when none. */
+/* ALSA card index of an attached USB audio device, or -1 when none: the first
+   /proc/asound/cards line naming the USB-Audio driver. Read directly, since
+   the audio tick asks once a second. */
 static int jw__mlp1_usb_audio_card(void) {
-    char buf[32];
-    if (jw__read_command_line(JW_MLP1_USB_CARD_CMD, buf, sizeof(buf)) != 0) {
+    FILE *fp = fopen("/proc/asound/cards", "r");
+    if (!fp) {
         return -1;
     }
-    if (!buf[0]) {
-        return -1;
+    char line[256];
+    int idx = -1;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, "USB-Audio")) {
+            int n = -1;
+            if (sscanf(line, " %d", &n) == 1 && n >= 0 && n <= 31) {
+                idx = n;
+            }
+            break;
+        }
     }
-    char *end = NULL;
-    long idx = strtol(buf, &end, 10);
-    if (end == buf || idx < 0 || idx > 31) {
-        return -1;
-    }
-    return (int)idx;
+    fclose(fp);
+    return idx;
 }
 
 static bool jw__mlp1_usb_audio_present(void) {
@@ -2362,6 +2546,109 @@ static void jw__mlp1_shell_squote(const char *in, char *out, size_t out_size) {
     out[o] = '\0';
 }
 
+/* BlueALSA presence without polling. A long-lived dbus-monitor child prints
+   whenever org.bluealsa signals (PCMAdded/PCMRemoved) or the service starts or
+   stops. Its stdout sits in jawakad's poll set, and the control name cached
+   below is probed again with amixer only after it has said something. Before,
+   the audio tick forked amixer every 1.5 s, and each probe also cost
+   dbus-daemon a new connection and a GetManagedObjects. Without dbus-monitor
+   (or while it restarts) every call probes, as before. */
+#define JW_MLP1_BT_MONITOR "/usr/bin/dbus-monitor"
+static pid_t s_mlp1_bt_monitor_pid = -1;
+static int s_mlp1_bt_monitor_fd = -1;
+static long long s_mlp1_bt_monitor_retry_ms = 0;
+/* Probes until then: dbus-monitor needs a moment to subscribe, and a PCM that
+   appears in that window would otherwise never be seen. */
+static long long s_mlp1_bt_cache_trust_ms = 0;
+static bool s_mlp1_bt_cache_valid = false;
+static char s_mlp1_bt_cache_ctl[128];
+
+static void jw__mlp1_bt_monitor_stop(void) {
+    if (s_mlp1_bt_monitor_fd >= 0) {
+        close(s_mlp1_bt_monitor_fd);
+        s_mlp1_bt_monitor_fd = -1;
+    }
+    if (s_mlp1_bt_monitor_pid > 0) {
+        kill(s_mlp1_bt_monitor_pid, SIGKILL);
+        (void)waitpid(s_mlp1_bt_monitor_pid, NULL, 0);
+        s_mlp1_bt_monitor_pid = -1;
+    }
+    s_mlp1_bt_cache_valid = false;
+}
+
+static void jw__mlp1_bt_monitor_start(void) {
+    long long now = jw__monotonic_ms();
+    if (s_mlp1_bt_monitor_pid > 0 || now < s_mlp1_bt_monitor_retry_ms) {
+        return;
+    }
+    s_mlp1_bt_monitor_retry_ms = now + 5000;
+    if (access(JW_MLP1_BT_MONITOR, X_OK) != 0) {
+        return;
+    }
+    int fds[2];
+    if (pipe(fds) != 0) {
+        return;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+    if (pid == 0) {
+        (void)prctl(PR_SET_PDEATHSIG, SIGTERM);
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDERR_FILENO);
+        }
+        dup2(fds[1], STDOUT_FILENO);
+        close(fds[0]);
+        close(fds[1]);
+        execl(JW_MLP1_BT_MONITOR, "dbus-monitor", "--system",
+              "type='signal',sender='org.bluealsa'",
+              "type='signal',interface='org.freedesktop.DBus',"
+              "member='NameOwnerChanged',arg0='org.bluealsa'",
+              (char *)NULL);
+        _exit(127);
+    }
+    close(fds[1]);
+    (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    int flags = fcntl(fds[0], F_GETFL);
+    if (flags >= 0) {
+        (void)fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
+    }
+    s_mlp1_bt_monitor_pid = pid;
+    s_mlp1_bt_monitor_fd = fds[0];
+    s_mlp1_bt_cache_valid = false;
+    s_mlp1_bt_cache_trust_ms = now + 2000;
+}
+
+/* Any output means "look again"; end of file means the monitor died, and the
+   next start attempt replaces it. */
+static void jw__mlp1_bt_monitor_drain(void) {
+    if (s_mlp1_bt_monitor_fd < 0) {
+        return;
+    }
+    char buf[1024];
+    for (;;) {
+        ssize_t n = read(s_mlp1_bt_monitor_fd, buf, sizeof(buf));
+        if (n > 0) {
+            s_mlp1_bt_cache_valid = false;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return;
+        }
+        jw_log_warn("audio: bluealsa monitor exited; probing until it restarts");
+        jw__mlp1_bt_monitor_stop();
+        return;
+    }
+}
+
 /* Pick the BlueALSA mixer control to drive: prefer the A2DP (music) profile over
    SCO (call audio). Returns the raw control name; callers must shell-escape it
    with jw__mlp1_shell_squote since device names contain spaces/apostrophes. */
@@ -2370,6 +2657,14 @@ static bool jw__mlp1_bluealsa_control(char *out, size_t out_size) {
         return false;
     }
     out[0] = '\0';
+    jw__mlp1_bt_monitor_start();
+    jw__mlp1_bt_monitor_drain();
+    bool trusted = s_mlp1_bt_monitor_fd >= 0 &&
+                   jw__monotonic_ms() >= s_mlp1_bt_cache_trust_ms;
+    if (trusted && s_mlp1_bt_cache_valid) {
+        snprintf(out, out_size, "%s", s_mlp1_bt_cache_ctl);
+        return out[0] != '\0';
+    }
     FILE *fp = popen("amixer -D bluealsa scontrols 2>/dev/null", "r");
     if (!fp) {
         return false;
@@ -2395,6 +2690,8 @@ static bool jw__mlp1_bluealsa_control(char *out, size_t out_size) {
     if (!have_a2dp && first[0]) {
         snprintf(out, out_size, "%s", first);
     }
+    snprintf(s_mlp1_bt_cache_ctl, sizeof(s_mlp1_bt_cache_ctl), "%s", out);
+    s_mlp1_bt_cache_valid = trusted;
     return out[0] != '\0';
 }
 
@@ -2498,6 +2795,9 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
         return -1;
     }
 
+    /* Each output keeps its own level; the one cached belongs to the old route. */
+    s_mlp1_volume_cache = -1;
+
     unsigned available = jw__mlp1_get_audio_available_outputs();
     if ((available & JW_PLATFORM_AUDIO_OUTPUT_BIT(output)) == 0) {
         char message[JW_PLATFORM_MAX_MESSAGE];
@@ -2566,49 +2866,94 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
     return 0;
 }
 
-/* Read the headphone-jack switch straight from its input device (event3,
-   "rk817-codec Headphones") via EVIOCGSW — kernel state, no amixer fork. The fd
-   is opened once by name and cached. Returns 1 = plugged, 0 = unplugged,
-   -1 = no device. */
-static int jw__mlp1_jack_input_state(void) {
-    static int fd = -2;   /* -2 = not yet probed */
-    if (fd == -2) {
-        fd = -1;
-        for (int i = 0; i < 32; i++) {
-            char path[32];
-            snprintf(path, sizeof(path), "/dev/input/event%d", i);
-            int f = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-            if (f < 0) {
-                continue;
-            }
-            char name[128] = {0};
-            if (ioctl(f, EVIOCGNAME(sizeof(name)), name) >= 0 &&
-                strstr(name, "rk817-codec Headphones")) {
-                fd = f;
-                break;
-            }
-            close(f);
-        }
-        if (fd < 0) {
-            /* Found nothing (e.g. the codec input device hasn't appeared yet at
-               boot) — reset to the "not probed" sentinel so the next call
-               re-scans instead of caching the miss forever. */
-            fd = -2;
-            return -1;
-        }
+/* The headphone jack's input device (event3, "rk817-codec Headphones"). The fd
+   is opened once by name and sits in jawakad's poll set, so a plug or unplug
+   wakes the daemon; the state is kept from its EV_SW events rather than asked
+   for with an ioctl on every pass. -2 = not yet probed, -1 = no device. */
+static int s_mlp1_jack_fd = -2;
+static int s_mlp1_jack_state = -1;   /* 1 plugged, 0 unplugged, -1 unknown */
+
+static void jw__mlp1_jack_close(void) {
+    if (s_mlp1_jack_fd >= 0) {
+        close(s_mlp1_jack_fd);
     }
+    /* Back to the "not probed" sentinel so the next call re-scans (driver
+       rebind, suspend/resume, or a device that had not appeared at boot). */
+    s_mlp1_jack_fd = -2;
+    s_mlp1_jack_state = -1;
+}
+
+/* Re-read the switch with EVIOCGSW: on open, after SYN_DROPPED, and on wake,
+   when events may have been lost. */
+static void jw__mlp1_jack_resync(void) {
+    if (s_mlp1_jack_fd < 0) {
+        return;
+    }
+    unsigned long bits[2] = {0};   /* SW_HEADPHONE_INSERT (2) lives in word 0 */
+    if (ioctl(s_mlp1_jack_fd, EVIOCGSW(sizeof(bits)), bits) < 0) {
+        jw__mlp1_jack_close();
+        return;
+    }
+    s_mlp1_jack_state = (bits[0] >> SW_HEADPHONE_INSERT) & 1UL ? 1 : 0;
+}
+
+static int jw__mlp1_jack_fd(void) {
+    if (s_mlp1_jack_fd != -2) {
+        return s_mlp1_jack_fd;
+    }
+    for (int i = 0; i < 32; i++) {
+        char path[32];
+        snprintf(path, sizeof(path), "/dev/input/event%d", i);
+        int f = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (f < 0) {
+            continue;
+        }
+        char name[128] = {0};
+        if (ioctl(f, EVIOCGNAME(sizeof(name)), name) >= 0 &&
+            strstr(name, "rk817-codec Headphones")) {
+            s_mlp1_jack_fd = f;
+            jw__mlp1_jack_resync();
+            return s_mlp1_jack_fd;
+        }
+        close(f);
+    }
+    /* Nothing yet (the codec input device can appear after jawakad starts):
+       stay "not probed" so the next call scans again. */
+    return -1;
+}
+
+/* Returns 1 = plugged, 0 = unplugged, -1 = no device. Drains pending switch
+   events first; with nothing queued that is one read returning EAGAIN. */
+static int jw__mlp1_jack_input_state(void) {
+    int fd = jw__mlp1_jack_fd();
     if (fd < 0) {
         return -1;
     }
-    unsigned long bits[2] = {0};   /* SW_HEADPHONE_INSERT (2) lives in word 0 */
-    if (ioctl(fd, EVIOCGSW(sizeof(bits)), bits) < 0) {
-        /* The cached node went stale (driver rebind, suspend/resume) — drop it
-           and reset to the "not probed" sentinel so the next call re-probes. */
-        close(fd);
-        fd = -2;
+    struct input_event ev;
+    for (;;) {
+        ssize_t got = read(fd, &ev, sizeof(ev));
+        if (got == (ssize_t)sizeof(ev)) {
+            if (ev.type == EV_SW && ev.code == SW_HEADPHONE_INSERT) {
+                s_mlp1_jack_state = ev.value ? 1 : 0;
+            } else if (ev.type == EV_SYN && ev.code == SYN_DROPPED) {
+                jw__mlp1_jack_resync();
+                if (s_mlp1_jack_fd < 0) {
+                    return -1;
+                }
+            }
+            continue;
+        }
+        if (got < 0 && errno == EINTR) {
+            continue;
+        }
+        if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            break;
+        }
+        /* ENODEV or a short read: the node went stale. */
+        jw__mlp1_jack_close();
         return -1;
     }
-    return (bits[0] >> SW_HEADPHONE_INSERT) & 1UL ? 1 : 0;
+    return s_mlp1_jack_state;
 }
 
 /* Re-route audio when the headphone jack changes. On this hardware the rk817
@@ -2653,6 +2998,11 @@ static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi) {
 static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reason) {
     (void)ctx;
     const char *why = (reason && reason[0]) ? reason : "unknown";
+    /* Switch events can be lost across a suspend; take the kernel's word. Arm
+       the playback-node watch again too, and settle the gate from scratch. */
+    jw__mlp1_jack_resync();
+    jw__mlp1_pcm_watch_arm();
+    jw__mlp1_speaker_gate_sync(true);
     jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
     jw_platform_audio_output current = jw__mlp1_get_audio_output();
 
@@ -2682,13 +3032,175 @@ static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reaso
                 why, jw_platform_audio_output_label(target));
 }
 
-static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
+/* rk817 playback substream state: 1 = a stream is being opened, set up or
+   running (OPEN, SETUP, PREPARED, RUNNING), 0 = closed, -1 = anything else
+   (XRUN, DRAINING, PAUSED, SUSPENDED) or unreadable. OPEN counts because the
+   inotify IN_OPEN that triggers a sync arrives while the stream is in it, ~5 ms
+   before SETUP. */
+static int jw__mlp1_rk817_playback_state(void) {
+    int fd = open(JW_MLP1_RK817_PCM_STATUS, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    char buf[32];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        return -1;
+    }
+    buf[n] = '\0';
+    if (strncmp(buf, "state: RUNNING", 14) == 0 ||
+        strncmp(buf, "state: PREPARED", 15) == 0 ||
+        strncmp(buf, "state: SETUP", 12) == 0 ||
+        strncmp(buf, "state: OPEN", 11) == 0) {
+        return 1;
+    }
+    if (strncmp(buf, "closed", 6) == 0) {
+        return 0;
+    }
+    return -1;
+}
+
+/* Gate value for an active rk817 stream: off with wired headphones in. */
+static int jw__mlp1_speaker_gate_for_playback(void) {
+    int jack = jw__mlp1_jack_input_state();
+    if (jack < 0) {
+        jack = jw__mlp1_headphone_jack_present() ? 1 : 0;
+    }
+    return jack > 0 ? 0 : 1;
+}
+
+/* Own the external speaker amp gate. The rk817 feeds its DAC to the speaker amp
+   and the headphone jack at once (Playback Path is a register-level no-op), so
+   spk_ctl is both "speaker on" during playback and the only way to mute the
+   speaker for wired headphones.
+
+   Raise it (jack empty) as soon as a stream opens: OPEN and SETUP come ~150 ms
+   before the first samples reach the DAC, so the amp is on and settled before
+   the sound starts. Waiting for RUNNING clipped the start of every sound after
+   an idle gap (PulseAudio's suspend-on-idle closes the device after 1 s) and
+   switched the amp on under a live DAC. Drop it for headphones, and once the
+   device is closed, when DAPM has already powered the output stage down and
+   the drop cannot pop. XRUN, DRAINING and PAUSED leave the gate alone so a
+   hiccup never toggles the amp. HDMI, USB-C and Bluetooth never open this
+   substream, so they need no case of their own.
+
+   The sync runs when something happens: an open or close of the playback
+   node (inotify), a jack edge, a wake. Any player counts, PulseAudio or
+   straight ALSA, launched by jawakad or not, and an idle launcher costs
+   nothing. It replaced a platform.d shell loop that forked grep/sleep five
+   times a second, about 10 points of one core at idle. */
+static long long s_mlp1_gate_polled_ms = -1;
+static int s_mlp1_pcm_watch_fd = -1;
+static int s_mlp1_pcm_watch_wd = -1;
+
+/* (Re-)arm the watch. Adding it again for the same inode keeps the same watch;
+   a node recreated by a driver rebind gets a new one. */
+static void jw__mlp1_pcm_watch_arm(void) {
+    if (s_mlp1_pcm_watch_fd < 0) {
+        s_mlp1_pcm_watch_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+        if (s_mlp1_pcm_watch_fd < 0) {
+            return;
+        }
+    }
+    s_mlp1_pcm_watch_wd = inotify_add_watch(s_mlp1_pcm_watch_fd,
+                                            JW_MLP1_RK817_PCM_DEV,
+                                            IN_OPEN | IN_CLOSE);
+}
+
+/* True when the playback node was opened or closed since the last call, or
+   its watch went away (then it is re-armed on the fallback poll). */
+static bool jw__mlp1_pcm_watch_drain(void) {
+    if (s_mlp1_pcm_watch_fd < 0) {
+        return false;
+    }
+    char buf[1024] __attribute__((aligned(__alignof__(struct inotify_event))));
+    bool any = false;
+    for (;;) {
+        ssize_t n = read(s_mlp1_pcm_watch_fd, buf, sizeof(buf));
+        if (n <= 0) {
+            break;   /* EAGAIN: drained */
+        }
+        for (char *p = buf; p < buf + n;) {
+            const struct inotify_event *ev = (const struct inotify_event *)p;
+            if ((ev->mask & IN_IGNORED) && ev->wd == s_mlp1_pcm_watch_wd) {
+                s_mlp1_pcm_watch_wd = -1;
+            }
+            any = true;
+            p += sizeof(*ev) + ev->len;
+        }
+    }
+    return any;
+}
+
+static void jw__mlp1_speaker_gate_sync(bool force) {
+    long long now = jw__monotonic_ms();
+    bool changed = jw__mlp1_pcm_watch_drain();
+    if (s_mlp1_pcm_watch_wd < 0 &&
+        (s_mlp1_gate_polled_ms < 0 ||
+         now - s_mlp1_gate_polled_ms >= JW_MLP1_SPK_GATE_FALLBACK_POLL_MS)) {
+        jw__mlp1_pcm_watch_arm();
+        force = true;
+    }
+    if (!force && !changed) {
+        return;
+    }
+    s_mlp1_gate_polled_ms = now;
+
+    int playback = jw__mlp1_rk817_playback_state();
+    if (playback < 0) {
+        return;
+    }
+    int want = playback == 1 ? jw__mlp1_speaker_gate_for_playback() : 0;
+    int current = jw__read_int_file(JW_MLP1_SPK_CTL);
+    if (current == want) {
+        return;
+    }
+    static bool warned = false;
+    if (jw__write_int_file(JW_MLP1_SPK_CTL, want) != 0) {
+        if (!warned) {
+            warned = true;
+            jw_log_warn("audio: speaker gate write failed: %s", strerror(errno));
+        }
+        return;
+    }
+    warned = false;
+}
+
+/* Set by the SLEEP action when it suspended a playing sink; the sink is
+   resumed by jw__mlp1_wake_audio once the daemon has put the CPU, GPU and
+   DMC back on their wake profile. Resuming it inside the action ran the
+   refill of a 2 s buffer at 408 MHz CPU / 324 MHz DMC (~375 ms of one
+   realtime thread, past PulseAudio's old 200 ms RLIMIT_RTTIME). */
+static bool s_mlp1_sink_resume_pending = false;
+
+static void jw__mlp1_wake_audio(jw_platform_context *ctx) {
     (void)ctx;
+    /* Before the sink reopens the device, so its IN_OPEN cannot be missed. */
+    jw__mlp1_pcm_watch_arm();
+    if (!s_mlp1_sink_resume_pending) {
+        return;
+    }
+    s_mlp1_sink_resume_pending = false;
+    /* Raise the gate before the stream comes back rather than leaving it to
+       the audio tick, which only runs after the service rescan and the audio
+       reconcile: ~0.8 s of a game playing into a muted speaker. The DAC is
+       still idle here, so the amp comes up silent. */
+    (void)jw__write_int_file(JW_MLP1_SPK_CTL, jw__mlp1_speaker_gate_for_playback());
+    (void)jw__exec_shell(JW_MLP1_PA_RESUME_SINK);
+}
+
+static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
     unsigned events = 0;
+
+    /* A caller that performed SLEEP without jw_platform_wake_audio(). */
+    jw__mlp1_wake_audio(ctx);
 
     /* Reap the test-clip player if it finished on its own (keeps it from
        lingering as a zombie and keeps the play/stop state accurate). */
     (void)jw__mlp1_test_sound_active();
+
+    jw__mlp1_speaker_gate_sync(false);
 
     /* ── Headphone-jack edge (cheap kernel switch, checked every loop). ──
        On unplug, fall back to Bluetooth if a headset is still connected, not
@@ -2704,6 +3216,8 @@ static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
         jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
         jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
         jw__mlp1_set_audio_output(target, &res);
+        /* Mute or unmute the speaker now rather than on the next poll. */
+        jw__mlp1_speaker_gate_sync(true);
         events |= JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
         jw_log_info("audio: headphone jack %s, routed to %s",
                     present ? "inserted" : "removed",
@@ -2857,6 +3371,7 @@ static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *ou
     }
     out->boot_splash_enabled = jw__mlp1_boot_splash_enabled(ctx) ? 1 : 0;
     out->refresh_rate_hz = jw__mlp1_get_refresh_hz();
+    out->color_temp_kelvin = jw__mlp1_get_color_temp();
     out->hdmi_connected = jw__mlp1_hdmi_connected() ? 1 : 0;
     out->hdmi_output_mode = s_mlp1_hdmi_mode;
 }
@@ -3025,6 +3540,23 @@ static int jw__mlp1_read_codec_reg(int reg) {
     return (val >= 0 && val <= 0xff) ? val : -1;
 }
 
+/* True once jw__mlp1_sleep_audio has quiesced audio for the coming SLEEP. */
+static bool s_mlp1_sleep_audio_done = false;
+
+/* Suspend a playing sink while the daemon's clocks are still up: a refill
+   that the sleep profile's drop to 408 MHz catches mid-way ran 344 ms on
+   PulseAudio's realtime thread (measured), past the old 200 ms limit. */
+static void jw__mlp1_sleep_audio(jw_platform_context *ctx) {
+    (void)ctx;
+    bool playing = jw__mlp1_pa_sink_running();
+    if (playing) {
+        (void)jw__exec_shell(JW_MLP1_PA_SUSPEND_SINK);
+        usleep(200000);
+    }
+    s_mlp1_sink_resume_pending = playing;
+    s_mlp1_sleep_audio_done = true;
+}
+
 static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                     int value, jw_platform_result *out) {
     if (action == JW_PLATFORM_ACTION_PLAY_TEST_SOUND) {
@@ -3034,8 +3566,8 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
 
     if (action == JW_PLATFORM_ACTION_POWEROFF) {
         jw_log_info("platform: poweroff requested");
-        if (jw__mlp1_power_transition_async(RB_POWER_OFF) != 0) {
-            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "poweroff failed");
+        if (jw_power_request_publish("poweroff") != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "safe power handoff unavailable");
             return;
         }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "powering off");
@@ -3044,8 +3576,8 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
 
     if (action == JW_PLATFORM_ACTION_REBOOT) {
         jw_log_info("platform: reboot requested");
-        if (jw__mlp1_power_transition_async(RB_AUTOBOOT) != 0) {
-            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "reboot failed");
+        if (jw_power_request_publish("reboot") != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "safe power handoff unavailable");
             return;
         }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "rebooting");
@@ -3068,27 +3600,30 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
               close the device cleanly, and un-suspend on resume to continue it.
 
            2. Headphone hiss. The rk817 headphone amp has no external gate (the
-              speaker's spk_ctl is dropped at idle, so speaker sleeps are already
+              speaker's spk_ctl is dropped below, so speaker sleeps are already
               silent), so it stays biased through `echo mem` and hisses once the
               I2S clocks stop — whether or not anything was playing, and suspending
               the sink does NOT fix it (verified: it re-hisses through a real
               suspend). The Playback Path control is a register-level no-op. What
               works is powering the analog HP stage down over i2c (AHP_CFG0 + its
               charge pump) before suspend and restoring it on resume. This touches
-              ONLY the HP amp, never the shared DAC, so PulseAudio's open device is
-              undisturbed (muting the DAC under a live sink crashed PA) and the
-              speaker is unaffected. Done unconditionally — it is cheap and DAC-safe
+              ONLY the HP amp, never the shared DAC, so the speaker is
+              unaffected. Done unconditionally — it is cheap and DAC-safe
               — so a jack change during sleep can never leave a biased amp hissing.
               Snapshot the two registers first so the restore matches the live
               state (idle vs active playback). */
-        bool audio_playing = jw__mlp1_pa_sink_running();
+        /* Normally done already, before the sleep profile. */
+        if (!s_mlp1_sleep_audio_done) {
+            jw__mlp1_sleep_audio(ctx);
+        }
+        s_mlp1_sleep_audio_done = false;
         int hp_r3d = jw__mlp1_read_codec_reg(0x3d);
         int hp_r3f = jw__mlp1_read_codec_reg(0x3f);
-        if (audio_playing) {
-            (void)jw__exec_shell(JW_MLP1_PA_SUSPEND_SINK);
-            usleep(200000);
-        }
         (void)jw__exec_shell(JW_MLP1_HP_POWERDOWN);
+        /* Speaker amp off for the sleep. The sink is suspended or already idle,
+           so nothing is driving it. A stream that was playing gets the gate
+           back just before its sink resumes, below. */
+        (void)jw__write_int_file(JW_MLP1_SPK_CTL, 0);
         int sfd = open("/sys/power/state", O_WRONLY | O_CLOEXEC);
         int rc = -1;
         if (sfd >= 0) {
@@ -3163,8 +3698,8 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         }
         /* Resumed: restore the two HP-amp registers (charge pump then output
            stage), falling back to the codec's power-up defaults if a snapshot read
-           failed. Re-assert the DAC floor (PulseAudio can drift it low) and
-           un-suspend the sink if we suspended it so a live stream continues. */
+           failed. Re-assert the DAC floor (PulseAudio can drift it low). A
+           sink suspended above is resumed later, by jw__mlp1_wake_audio. */
         char hp_restore[160];
         snprintf(hp_restore, sizeof(hp_restore),
                  "i2cset -f -y 0 0x20 0x3f 0x%02x >/dev/null 2>&1; "
@@ -3172,9 +3707,9 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
                  hp_r3f >= 0 ? hp_r3f : 0x11, hp_r3d >= 0 ? hp_r3d : 0x80);
         (void)jw__exec_shell(hp_restore);
         (void)jw__exec_shell(JW_MLP1_ENSURE_DAC_FLOOR);
-        if (audio_playing) {
-            (void)jw__exec_shell(JW_MLP1_PA_RESUME_SINK);
-        }
+        /* A sink suspended by jw__mlp1_sleep_audio comes back in
+           jw__mlp1_wake_audio, after the daemon has restored its wake
+           performance profile. */
         if (resume_data) {
             resume_data->resume_mount_repair_at_ms = jw__monotonic_ms() + 2500;
         }
@@ -3273,6 +3808,47 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         jw_log_info("display: refresh rate -> %d Hz", hz);
         char msg[32];
         snprintf(msg, sizeof(msg), "switching to %d Hz", hz);
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_SET_COLOR_TEMP) {
+        /* This LUT compensates for the internal panel's known warm cast; the
+           value has no meaning on an external TV, and DSI and HDMI share the
+           one CRTC on this device, so applying it while HDMI is active would
+           just tint whatever the TV is showing. While HDMI is the active
+           output only a neutral request is honoured: it writes an identity ramp
+           so the TV isn't tinted, and leaves the tracked panel value alone.
+           Anything else is refused; jawakad sends the neutral request, and the
+           panel value again once the panel is back (see jw__tick_hdmi). */
+        if (jw__mlp1_hdmi_tv_active()) {
+            if (jw_platform_clamp_color_temp_k(value) != JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
+                jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
+                                       "Color temperature unavailable while HDMI is active");
+                return;
+            }
+            if (jw__mlp1_write_gamma_ramp(1.0, 1.0, 1.0) != 0) {
+                jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                       "Color temperature reset for the external display failed");
+                return;
+            }
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                                   "Color temperature neutral for the external display");
+            return;
+        }
+        int kelvin = jw_platform_clamp_color_temp_k(value);
+        if (jw__mlp1_set_color_temp(kelvin) != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                   "Color temperature change failed");
+            return;
+        }
+        jw_log_info("display: color temperature -> %d K", kelvin);
+        char msg[40];
+        if (kelvin == JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
+            snprintf(msg, sizeof(msg), "Color temperature neutral");
+        } else {
+            snprintf(msg, sizeof(msg), "Color temperature %d K", kelvin);
+        }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
     }
@@ -3469,6 +4045,56 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
     return changed;
 }
 
+/* The hotplug netlink socket, the headphone jack, the BlueALSA monitor and
+   the playback-node watch. Everything else the audio and storage ticks watch is either a timer
+   (next_deadline_ms) or a periodic check that runs on whatever pass comes
+   next. */
+static int jw__mlp1_poll_fds(jw_platform_context *ctx, int *fds, int max) {
+    jw_mlp1_platform_data *data = ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
+    int count = 0;
+    if (data && data->uevent_fd >= 0 && count < max) {
+        fds[count++] = data->uevent_fd;
+    }
+    int jack = jw__mlp1_jack_fd();
+    if (jack >= 0 && count < max) {
+        fds[count++] = jack;
+    }
+    if (s_mlp1_bt_monitor_fd >= 0 && count < max) {
+        fds[count++] = s_mlp1_bt_monitor_fd;
+    }
+    if (s_mlp1_pcm_watch_fd >= 0 && count < max) {
+        fds[count++] = s_mlp1_pcm_watch_fd;
+    }
+    return count;
+}
+
+static void jw__mlp1_deadline_min(long long *best, long long at) {
+    if (*best < 0 || at < *best) {
+        *best = at;
+    }
+}
+
+/* Timed work in the audio and storage ticks. Left out on purpose, because a
+   second of lateness is harmless and the daemon wakes at least once a second:
+   the 400 ms charger poll (charger uevents never arrive on this device, see
+   the storage tick), the 1 s USB-audio and 1.5 s Bluetooth-audio probes, and
+   the speaker-gate fallback poll used only while the playback node cannot be
+   watched. */
+static long long jw__mlp1_next_deadline_ms(jw_platform_context *ctx, long long now_ms) {
+    jw_mlp1_platform_data *data = ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
+    long long best = -1;
+    if (data && data->resume_mount_repair_pending) {
+        jw__mlp1_deadline_min(&best, data->resume_mount_repair_at_ms);
+    }
+    if (data && data->pending_storage_event) {
+        jw__mlp1_deadline_min(&best, data->debounce_until_ms);
+    }
+    if (data && data->pending_charge_event) {
+        jw__mlp1_deadline_min(&best, data->charge_settle_until_ms);
+    }
+    return best;
+}
+
 static void jw__mlp1_get_storage_status(jw_platform_context *ctx,
                                         const char *source_id,
                                         jw_platform_storage_status *out) {
@@ -3550,6 +4176,8 @@ static void jw__mlp1_storage_repair_capability(jw_platform_context *ctx,
         reason = "write-protected";
     } else if (access(JW_MLP1_FSCK_FAT, X_OK) != 0) {
         reason = "tool-missing";
+    } else if (!jw_power_request_available()) {
+        reason = "power-handoff-missing";
     } else if (access(JW_STORAGE_MLP1_REPAIR_TOOL, X_OK) != 0) {
         reason = "repair-runner-missing";
     }
@@ -3644,6 +4272,16 @@ static int jw__mlp1_spawn_loong_power(void) {
                 snprintf(ld, sizeof(ld), "%s", "./");
             }
             setenv("LD_LIBRARY_PATH", ld, 1);
+            /* The supervisor resolves loong_power's low-battery "poweroff" to our
+               power handoff; a restarted daemon must keep that PATH entry. */
+            const char *handoff = getenv("UMRK_LOONG_POWER_HANDOFF_DIR");
+            if (handoff && handoff[0] == '/') {
+                const char *old_path = getenv("PATH");
+                char path[768];
+                snprintf(path, sizeof(path), "%s:%s", handoff,
+                         old_path && old_path[0] ? old_path : "/usr/bin:/usr/sbin");
+                setenv("PATH", path, 1);
+            }
             execl("/loong/loong_power", "loong_power", JW_MLP1_POWER_CFG, (char *)NULL);
             _exit(127);
         }
@@ -3735,6 +4373,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .adb = true,
             .boot_splash = true,
             .refresh_rate = true,
+            .color_temperature = true,
             .hdmi_output = true,
             .led = true,
             .performance = true,
@@ -3744,6 +4383,10 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .get_status = jw__mlp1_get_status,
         .get_audio_status = jw__mlp1_get_audio_status,
         .audio_tick = jw__mlp1_audio_tick,
+        .poll_fds = jw__mlp1_poll_fds,
+        .next_deadline_ms = jw__mlp1_next_deadline_ms,
+        .sleep_audio = jw__mlp1_sleep_audio,
+        .wake_audio = jw__mlp1_wake_audio,
         .audio_reconcile = jw__mlp1_audio_reconcile,
         .frontend_ready = jw__mlp1_frontend_ready,
         .perform_action = jw__mlp1_perform_action,
@@ -3755,6 +4398,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .storage_repair_capability = jw__mlp1_storage_repair_capability,
         .safe_unmount_storage = jw__mlp1_safe_unmount_storage,
         .set_led = jw__mlp1_set_led,
+        .get_display_mode = jw__mlp1_get_display_mode,
     };
     return &backend;
 }

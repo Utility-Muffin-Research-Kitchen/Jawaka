@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-life1-game.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
@@ -31,10 +32,7 @@ CTL="$ROOT_DIR/$BUILD_REL/bin/jawaka-platformctl"
 cleanup() {
     status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || status=1
     if [ "$status" -ne 0 ] && [ -f "$LOG" ]; then cat "$LOG" >&2; fi
     rm -rf "$TMP_DIR"
     exit "$status"
@@ -65,8 +63,7 @@ printf '%s\n' \
   '{"version":2,"platform":"mac","systems":[{"id":"N64","name":"Nintendo 64","patterns":["N64"],"extensions":["n64"],"archive_extensions":[],"archive_inner_extensions":["n64"],"archive_mode":"pass_through","file_names":[],"ignore_file_names":[],"playlist_extensions":[],"m3u_generation":"none","default_core":"writer_fixture","alternate_cores":[],"rom_root":"Roms/N64","image_root":"Images/N64","bios_notes":[]}]}' \
   >"$DEFAULTS/systems.json"
 
-(
-    cd "$ROOT_DIR"
+smoke_daemon_start "$ROOT_DIR" "$LOG" \
     PLATFORM=mac \
     SDCARD_PATH="$PRIMARY" \
     APPS_PATH="$PRIMARY/Apps" \
@@ -81,9 +78,7 @@ printf '%s\n' \
     JAWAKA_SDCARD_ROOT="$PRIMARY" \
     UMRK_LIFE1_FIXTURE_SERVICE_ID="$SERVICE_ID" \
     UMRK_LIFE1_FIXTURE_SCENARIO="$SCENARIO" \
-        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-) &
-DAEMON_PID=$!
+    "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
 for _ in $(seq 1 300); do
     [ -S "$SOCKET" ] && break
     kill -0 "$DAEMON_PID" 2>/dev/null || exit 1
@@ -216,8 +211,13 @@ else
 fi
 grep -F 'life1: writer started' "$LOG" >/dev/null
 grep -F 'life1: game.finish' "$LOG" >/dev/null
-! grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null
-if [ "$UNMANAGED_SCENARIO" -eq 1 ]; then
-    ! grep -F 'life1: launch status stage=' "$LOG" >/dev/null
+if grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null; then
+    echo "launch status showed stage=starting" >&2
+    exit 1
+fi
+if [ "$UNMANAGED_SCENARIO" -eq 1 ] &&
+   grep -F 'life1: launch status stage=' "$LOG" >/dev/null; then
+    echo "unmanaged launch showed a launch status stage" >&2
+    exit 1
 fi
 echo "PASS life1-game-ipc-smoke ($SCENARIO launch_to_writer_ms=$LAUNCH_TO_WRITER_MS)"

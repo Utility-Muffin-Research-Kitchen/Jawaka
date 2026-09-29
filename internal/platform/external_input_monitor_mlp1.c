@@ -12,7 +12,7 @@
 #include <unistd.h>
 #include <linux/input.h>
 
-#define JW__EXT_SCAN_MAX 64
+#define JW__EXT_SCAN_MAX JW_EXT_INPUT_SCAN_NODES
 #define JW__EXT_RESCAN_MS 2000
 /* Past this, a stick deflection counts as user activity; below it, wireless
    axis noise is ignored so it cannot hold the device awake. */
@@ -93,6 +93,22 @@ static void jw__ext_drop(jw_external_input_monitor *monitor, int slot,
     monitor->paths[slot][0] = '\0';
 }
 
+static bool jw__ext_seen_matches(const jw_ext_input_seen *seen,
+                                 const struct stat *st) {
+    return seen->valid && seen->rdev == (unsigned long long)st->st_rdev &&
+           seen->ino == (unsigned long long)st->st_ino &&
+           seen->ctime_ns == (long long)st->st_ctim.tv_sec * 1000000000LL +
+                                 st->st_ctim.tv_nsec;
+}
+
+static void jw__ext_seen_set(jw_ext_input_seen *seen, const struct stat *st) {
+    seen->rdev = (unsigned long long)st->st_rdev;
+    seen->ino = (unsigned long long)st->st_ino;
+    seen->ctime_ns = (long long)st->st_ctim.tv_sec * 1000000000LL +
+                     st->st_ctim.tv_nsec;
+    seen->valid = true;
+}
+
 static void jw__ext_rescan(jw_external_input_monitor *monitor,
                            jw_input_proxy *proxy, uint64_t now_ms) {
     monitor->next_rescan_ms = now_ms + JW__EXT_RESCAN_MS;
@@ -115,7 +131,16 @@ static void jw__ext_rescan(jw_external_input_monitor *monitor,
                        pad_count < JW_EXT_INPUT_MAX_PADS; index++) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", index);
-        if (access(path, F_OK) != 0 ||
+        struct stat st;
+        if (stat(path, &st) != 0) {
+            monitor->not_gamepad[index].valid = false;
+            continue;
+        }
+        /* Probing a node means opening and closing it, and closing an evdev
+           fd waits for an RCU grace period: 10-160 ms of the daemon loop in
+           D state on this board, for every node, every rescan. A node already
+           found not to be a gamepad is skipped until it changes. */
+        if (jw__ext_seen_matches(&monitor->not_gamepad[index], &st) ||
             jw__ext_is_loong_path(proxy, path)) {
             continue;
         }
@@ -127,9 +152,14 @@ static void jw__ext_rescan(jw_external_input_monitor *monitor,
                 break;
             }
         }
-        if (already || !jw_input_device_is_gamepad(path)) {
+        if (already) {
             continue;
         }
+        if (!jw_input_device_is_gamepad(path)) {
+            jw__ext_seen_set(&monitor->not_gamepad[index], &st);
+            continue;
+        }
+        monitor->not_gamepad[index].valid = false;
 
         int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) {

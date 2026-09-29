@@ -80,12 +80,16 @@ typedef struct {
     bool warning_pending;         /* a newly observed read-only state not yet acknowledged */
     int health_generation;
     bool external_power;
+    int battery_percent;          /* -1 if unknown */
     bool last_repair_valid;
     bool last_repair_acknowledged;
     char last_repair_request_id[64];
     char last_repair_outcome[32];
     char last_repair_mount_state[32];
     char last_repair_mode[16];
+    char last_repair_origin[32];
+    char last_repair_trigger[32];
+    char hold_trigger[32];        /* why a held card is held, e.g. paused-shutdown */
     bool last_repair_changes_complete;
     int last_repair_reported_changes;
 } jw_ipc_storage_status_info;
@@ -98,6 +102,9 @@ typedef struct {
     char scan_reason[96];
     char scan_error[160];
     int storage_health_generation;   /* -1 when the daemon does not report it */
+    /* The scraper's state ("idle", "running", "paused-quota",
+       "paused-storage"), or "" when the daemon does not report it. */
+    char scrape_state[16];
 } jw_ipc_library_status_info;
 
 typedef struct {
@@ -213,6 +220,8 @@ typedef struct {
     char message[256];
     int selected_option;
     int option_count;
+    bool options_complete;   /* every release in the list has been read */
+    bool options_loading;    /* a release-list load is running */
     jw_ipc_update_option_info options[JW_IPC_UPDATE_MAX_OPTIONS];
 } jw_ipc_update_status_info;
 
@@ -220,6 +229,9 @@ typedef struct {
  * role: "launcher" or "menu".
  * Returns 0 on success, -1 on failure. */
 int jw_ipc_hello(const char *socket_path, const char *role);
+/* hello, also telling jawakad this process handles SIGUSR2 as "the volume
+   changed, re-read it" (the launcher's status bar). */
+int jw_ipc_hello_levels_signal(const char *socket_path, const char *role);
 
 /* Request a library rescan. Populates status[status_len] with a human-readable
  * result message. Returns 0 on success, -1 on failure. */
@@ -236,7 +248,8 @@ int jw_ipc_storage_warning_ack(const char *socket_path, const char *source);
 /* Commit a reboot repair (mode "repair") or offline check (mode "check") for
    source and restart the device. status receives the daemon's refusal text. */
 int jw_ipc_storage_repair_request(const char *socket_path, const char *source,
-                                  const char *mode, char *status, int status_len);
+                                  const char *mode, bool allow_battery,
+                                  char *status, int status_len);
 /* Mark a repair result as seen so it is shown once. */
 int jw_ipc_storage_repair_result_ack(const char *socket_path, const char *request_id);
 
@@ -361,7 +374,22 @@ int jw_ipc_frontend_ready(const char *socket_path, const char *role);
  * Returns 0 on success. */
 int jw_ipc_platform_action(const char *socket_path, const char *action, int value);
 
+/* Brightness and volume from jawakad's cache (platform-levels), cheap enough to
+ * poll: platform-status re-reads the audio route and volume with several
+ * process spawns. jw_ipc_platform_brightness() and jw_ipc_platform_volume() are
+ * the one-value forms. Either output may be NULL; -1 means unknown. */
+int jw_ipc_platform_levels(const char *socket_path, int *out_brightness,
+                           int *out_volume);
+/* The same, plus the seconds left on an armed HDMI 1080p120 revert (0 = none;
+   -1 = the daemon does not say, ask jw_ipc_hdmi_revert_status). */
+int jw_ipc_platform_levels_full(const char *socket_path, int *out_brightness,
+                                int *out_volume, int *out_hdmi_revert_seconds);
 int jw_ipc_platform_brightness(const char *socket_path, int *out_percent);
+/* platform-status's battery, charging, volume and HDMI revert seconds in one
+   request; each -1 when unknown. Any output may be NULL. */
+int jw_ipc_platform_power_status_full(const char *socket_path, int *out_battery_percent,
+                                      int *out_charging, int *out_volume_percent,
+                                      int *out_hdmi_revert_seconds);
 int jw_ipc_platform_power_status(const char *socket_path,
                                  int *out_battery_percent,
                                  int *out_charging);
@@ -401,6 +429,13 @@ int jw_ipc_update_check(const char *socket_path,
                         const char *manifest_path,
                         jw_ipc_update_status_info *out,
                         char *status, int status_len);
+/* Load every release in the list for the picker (the routine check only reads
+   the newest). Returns at once; poll status until options_loading clears.
+   refresh reloads a list that is already complete. */
+int jw_ipc_update_releases(const char *socket_path,
+                           bool refresh,
+                           jw_ipc_update_status_info *out,
+                           char *status, int status_len);
 int jw_ipc_update_select(const char *socket_path,
                          int option_index,
                          jw_ipc_update_status_info *out,
@@ -430,8 +465,27 @@ int jw_ipc_set_boot_splash(const char *socket_path, int enabled,
                            char *status, int status_len);
 int jw_ipc_get_refresh_rate(const char *socket_path, int *out_hz,
                             bool *out_supported);
+
+/* The rows jw_ipc_get_refresh_rate(), jw_ipc_get_color_temp() and
+ * jw_ipc_get_hdmi_status() each answer, from one platform-status round trip
+ * instead of three. Returns 0 when the daemon answered; unknown values stay
+ * -1 / false. */
+typedef struct {
+    int  refresh_rate_hz;
+    bool refresh_rate_supported;
+    int  color_temp_kelvin;
+    bool color_temp_supported;
+    int  hdmi_connected;
+    int  hdmi_output_mode;
+    bool hdmi_supported;
+} jw_ipc_display_status;
+int jw_ipc_get_display_status(const char *socket_path, jw_ipc_display_status *out);
 int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
                             char *status, int status_len);
+int jw_ipc_get_color_temp(const char *socket_path, int *out_kelvin,
+                          bool *out_supported);
+int jw_ipc_set_color_temp(const char *socket_path, int kelvin,
+                          char *status, int status_len);
 /* UI language. The daemon persists it and restarts the launcher, which comes
    back with the matching font and string table -- there is no live switch, and
    no getter, because the launcher reads the setting itself at startup. */

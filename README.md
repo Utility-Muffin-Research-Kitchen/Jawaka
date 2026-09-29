@@ -8,6 +8,19 @@ control, process handoff, and the IPC socket. The foreground UI processes are
 Primary target today is the Miniloong Pocket 1 (MLP1). macOS remains the fast
 local preview loop with a generated mock SD-card tree.
 
+## Translations
+
+[![中文](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FUtility-Muffin-Research-Kitchen%2FJawaka%2Fmain%2Fi18n%2Fcoverage.json&query=%24.languages.zh_CN.percent&suffix=%25&label=%E4%B8%AD%E6%96%87&color=blue)](i18n/) [![Français](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FUtility-Muffin-Research-Kitchen%2FJawaka%2Fmain%2Fi18n%2Fcoverage.json&query=%24.languages.fr_FR.percent&suffix=%25&label=Fran%C3%A7ais&color=blue)](i18n/) [![Español](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FUtility-Muffin-Research-Kitchen%2FJawaka%2Fmain%2Fi18n%2Fcoverage.json&query=%24.languages.es_MX.percent&suffix=%25&label=Espa%C3%B1ol&color=blue)](i18n/)
+
+Live from [`i18n/coverage.json`](i18n/coverage.json), which `make i18n-check`
+keeps in step with the committed translations, so a badge cannot claim coverage
+the repo does not have. Percentages are of every extracted key, so they fall when
+newly reachable strings are added rather than when a translation regresses.
+
+Starting a language, or finishing one, is [documented for
+translators](https://leaf.game/guide/translating/): take `i18n/leaf.pot`, fill in
+the `msgstr` lines, and test it on the device before sending it in.
+
 ## What Exists
 
 - `jawakad` daemon with Unix-domain-socket, length-prefixed JSON IPC.

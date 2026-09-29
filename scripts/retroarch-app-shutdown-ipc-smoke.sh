@@ -9,6 +9,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 CTL="$ROOT_DIR/$BUILD_REL/bin/jawaka-platformctl"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-ra-app.XXXXXX")"
@@ -16,7 +17,7 @@ TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-ra-app.XXXXXX")"
 cleanup() {
     status=$?
     set +e
-    [ -n "${DAEMON_PID:-}" ] && kill -KILL "$DAEMON_PID" 2>/dev/null
+    smoke_daemon_stop || status=1
     pkill -f "$TMP_DIR" 2>/dev/null
     if [ "$status" -ne 0 ]; then
         for log in "$TMP_DIR"/*.log; do [ -f "$log" ] && cat "$log" >&2; done
@@ -62,18 +63,14 @@ run_case() {
     LOG="$TMP_DIR/$case_name.log"
     mkdir -p "$RUNTIME"
 
-    # exec, so $! is jawakad itself: this test signals the daemon and reads
+    # DAEMON_PID is jawakad itself: this test signals the daemon and reads
     # what its shutdown path does, which a surviving subshell would hide.
-    (
-        cd "$ROOT_DIR"
-        exec env PLATFORM=mac SDCARD_PATH="$PRIMARY" APPS_PATH="$PRIMARY/Apps" \
-            USERDATA_PATH="$USERDATA" LOGS_PATH="$LOGS" \
-            UMRK_RUNTIME_PATH="$RUNTIME" UMRK_DAEMON_SOCKET="$SOCKET" \
-            UMRK_INTERNAL_DATA_PATH="$STATE" JAWAKA_SDCARD_ROOT="$PRIMARY" \
-            JAWAKA_OSD=0 \
-            "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-    ) &
-    DAEMON_PID=$!
+    smoke_daemon_start "$ROOT_DIR" "$LOG" \
+        PLATFORM=mac SDCARD_PATH="$PRIMARY" APPS_PATH="$PRIMARY/Apps" \
+        USERDATA_PATH="$USERDATA" LOGS_PATH="$LOGS" \
+        UMRK_RUNTIME_PATH="$RUNTIME" UMRK_DAEMON_SOCKET="$SOCKET" \
+        UMRK_INTERNAL_DATA_PATH="$STATE" JAWAKA_SDCARD_ROOT="$PRIMARY" \
+        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only
 
     for _ in $(seq 1 500); do
         [ -S "$SOCKET" ] && break

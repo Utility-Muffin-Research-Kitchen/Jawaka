@@ -29,6 +29,12 @@
 #define JW_MLP1_BRIGHTNESS_REPEAT_MS 120u
 #define JW_MLP1_MENU_TAP_MS 80u
 #define JW_MLP1_POWER_EDGE_MAX 8   /* pending press/release edges (4 full taps) */
+/* The forwarding thread re-checks an overdue Menu deadline at this cadence, the
+   daemon loop's old one, while the deadline waits on state rather than time. */
+#define JW_MLP1_IO_RECHECK_MS 50
+/* A jump this large in BOOTTIME - MONOTONIC means the device slept. Same
+   threshold as jawakad's own resume check. */
+#define JW_MLP1_RESUME_GAP_MS 2000LL
 /* Force-feedback slots the virtual pad offers. SDL only ever holds one rumble
    effect per joystick, but a client may re-upload before erasing the old one, so
    leave headroom rather than making a re-upload fail. */
@@ -39,6 +45,23 @@
 #define input_event_sec  time.tv_sec
 #define input_event_usec time.tv_usec
 #endif
+
+/* A daemon callback the forwarding thread hands to the thread that runs
+   jawakad's main loop (see jw__proxy_call_run). */
+typedef enum {
+    JW__PROXY_CALL_MENU_TAP,
+    JW__PROXY_CALL_SHORTCUT,
+    JW__PROXY_CALL_MENU_ESCAPE,
+    JW__PROXY_CALL_VOLUME,
+    JW__PROXY_CALL_BRIGHTNESS,
+} jw__proxy_call_kind;
+
+typedef struct {
+    jw__proxy_call_kind kind;
+    int      value;       /* shortcut button, or percent delta */
+    uint64_t hold_id;     /* menu escape */
+    bool     threshold;   /* menu escape */
+} jw__proxy_call;
 
 typedef struct {
     int input_fd;
@@ -107,7 +130,34 @@ typedef struct {
     pthread_t ff_thread;
     bool      ff_thread_running;
     int       ff_quit_pipe[2];
+    /* Forwarding thread (jw_input_proxy_start). While it runs it alone reads
+       the pad and the power key, and `lock` guards everything above except the
+       force-feedback fields, which stay the FF thread's. Recursive so a daemon
+       callback run inline under it (menu_escape, from a flush) may call back
+       in; the forwarding thread itself only ever holds it once, which its
+       pthread_cond_wait on call_cond relies on. */
+    pthread_t       io_thread;
+    bool            io_thread_running;   /* written by the daemon thread only */
+    bool            io_quit;
+    pthread_mutex_t lock;
+    int             io_kick_pipe[2];     /* daemon -> io thread: re-check, or quit */
+    int             main_wake_pipe[2];   /* io thread -> daemon: call pending, power edge */
+    long long       io_sleep_ref_ms;     /* BOOTTIME - MONOTONIC at the last check */
+    bool            input_fd_failed;
+    bool            power_fd_failed;
+    uint64_t        generation;          /* tells a replaced proxy from this one */
+    uint64_t        input_generation;    /* flush/screen-off invalidates in-flight input */
+    /* The one callback the forwarding thread is blocked on, served by
+       jw_input_proxy_tick() on the daemon thread. */
+    pthread_cond_t  call_cond;
+    jw__proxy_call  call;
+    bool            call_pending;
+    bool            call_taken;
+    bool            call_result;
 } jw_mlp1_input_proxy_data;
+
+/* Stamped on each proxy at init; see jw_input_proxy_tick(). */
+static uint64_t s_proxy_generation;
 
 static bool jw__bit_is_set(const unsigned char *bits, int bit) {
     return (bits[bit / 8] & (1u << (bit % 8))) != 0;
@@ -136,6 +186,124 @@ static uint64_t jw__monotonic_ms(void) {
         return 0;
     }
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+/* Time spent asleep so far: BOOTTIME keeps counting through suspend,
+   MONOTONIC does not. */
+static long long jw__slept_ms(void) {
+    struct timespec mono, boot;
+    if (clock_gettime(CLOCK_MONOTONIC, &mono) != 0 ||
+        clock_gettime(CLOCK_BOOTTIME, &boot) != 0) {
+        return 0;
+    }
+    return ((long long)boot.tv_sec - (long long)mono.tv_sec) * 1000LL +
+           ((long long)boot.tv_nsec - (long long)mono.tv_nsec) / 1000000LL;
+}
+
+/* Both pipes are nonblocking: a kick into a full pipe is already pending. */
+static void jw__pipe_kick(int fd) {
+    if (fd >= 0) {
+        ssize_t ignored = write(fd, "k", 1);
+        (void)ignored;
+    }
+}
+
+static void jw__pipe_drain(int fd) {
+    char buf[64];
+    while (fd >= 0 && read(fd, buf, sizeof(buf)) > 0) {
+    }
+}
+
+/* Called under the proxy lock. An already-dispatched callback must finish
+   before its waiter resumes; otherwise its completion could answer a newer
+   call. Both cases invalidate the input that was waiting for the answer. */
+static void jw__invalidate_input(jw_mlp1_input_proxy_data *data) {
+    data->input_generation++;
+    if (data->io_thread_running && data->call_pending && !data->call_taken) {
+        data->call_result = false;
+        data->call_pending = false;
+        pthread_cond_signal(&data->call_cond);
+    }
+}
+
+static bool jw__proxy_call_dispatch(jw_input_proxy *proxy, const jw__proxy_call *call) {
+    switch (call->kind) {
+    case JW__PROXY_CALL_MENU_TAP:
+        return proxy->menu_tap && proxy->menu_tap(proxy->userdata);
+    case JW__PROXY_CALL_SHORTCUT:
+        return proxy->shortcut &&
+               proxy->shortcut(proxy->userdata, (jw_input_shortcut_button)call->value);
+    case JW__PROXY_CALL_MENU_ESCAPE:
+        if (proxy->menu_escape)
+            proxy->menu_escape(proxy->userdata, call->hold_id, call->threshold);
+        return false;
+    case JW__PROXY_CALL_VOLUME:
+        if (proxy->volume_delta) proxy->volume_delta(proxy->userdata, call->value);
+        return false;
+    case JW__PROXY_CALL_BRIGHTNESS:
+        if (proxy->brightness_delta) proxy->brightness_delta(proxy->userdata, call->value);
+        return false;
+    }
+    return false;
+}
+
+/* Run a daemon callback. jawakad's callbacks read and change state only its
+ * main loop may touch, so from the forwarding thread the call is handed to
+ * jw_input_proxy_tick() and waited for, with `lock` released for the wait:
+ * that is what lets the callback call back into the proxy, as it could when
+ * everything ran on one thread. Everywhere else it runs inline. A call still
+ * waiting when the proxy shuts down answers false, i.e. not handled.
+ *
+ * Input that follows waits too, so a Menu gesture or hotkey still costs a trip
+ * through the daemon loop. Plain buttons and the D-pad never make one. */
+static bool jw__proxy_call_run(jw_input_proxy *proxy, jw__proxy_call call) {
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    if (!data->io_thread_running || !pthread_equal(pthread_self(), data->io_thread)) {
+        return jw__proxy_call_dispatch(proxy, &call);
+    }
+    if (data->io_quit) {
+        return false;
+    }
+    data->call = call;
+    data->call_pending = true;
+    data->call_taken = false;
+    data->call_result = false;
+    jw__pipe_kick(data->main_wake_pipe[1]);
+    while (data->call_pending && !data->io_quit) {
+        pthread_cond_wait(&data->call_cond, &data->lock);
+    }
+    bool result = !data->call_pending && data->call_result;
+    data->call_pending = false;
+    return result;
+}
+
+/* Public entry points run on the daemon thread and take `lock` while the
+   forwarding thread runs; the proxy's own code calls the unlocked jw__ forms
+   below them, since it already holds it. */
+static jw_mlp1_input_proxy_data *jw__api_lock(const jw_input_proxy *proxy) {
+    jw_mlp1_input_proxy_data *data = proxy ? proxy->backend_data : NULL;
+    if (data && data->io_thread_running) {
+        pthread_mutex_lock(&data->lock);
+    }
+    return data;
+}
+
+/* Kicks the forwarding thread as well: the call may have armed a timer (a
+   deferred Menu release) that its current poll timeout knows nothing about. */
+static void jw__api_unlock(jw_mlp1_input_proxy_data *data) {
+    if (data && data->io_thread_running) {
+        pthread_mutex_unlock(&data->lock);
+        jw__pipe_kick(data->io_kick_pipe[1]);
+    }
+}
+
+/* For calls that only read state or pop the power-edge queue, which arm no
+   timer. jawakad makes those on every loop pass, and a kick each time woke
+   the forwarding thread for nothing. */
+static void jw__api_unlock_quiet(jw_mlp1_input_proxy_data *data) {
+    if (data && data->io_thread_running) {
+        pthread_mutex_unlock(&data->lock);
+    }
 }
 
 static bool jw__event_name_matches(int fd, const char *expected) {
@@ -581,16 +749,26 @@ static void jw__read_physical_state(jw_mlp1_input_proxy_data *data) {
 static void jw__menu_end(jw_input_proxy *proxy) {
     jw_mlp1_input_proxy_data *data = proxy->backend_data;
     if (data->menu_held && proxy->menu_config.escape_enabled && proxy->menu_escape)
-        proxy->menu_escape(proxy->userdata, data->menu_hold_id, false);
+        jw__proxy_call_run(proxy, (jw__proxy_call){
+            .kind = JW__PROXY_CALL_MENU_ESCAPE, .hold_id = data->menu_hold_id,
+            .threshold = false });
+}
+
+static void jw__cancel_menu(jw_input_proxy *proxy) {
+    if (!proxy || !proxy->backend_data || !proxy->menu_config.tap_only) return;
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    uint64_t generation = data->input_generation;
+    if (data->menu_held && !data->chord_active) {
+        jw__menu_end(proxy);
+        if (generation != data->input_generation) return;
+        data->chord_active = true;
+    }
 }
 
 void jw_input_proxy_cancel_menu(jw_input_proxy *proxy) {
-    if (!proxy || !proxy->backend_data || !proxy->menu_config.tap_only) return;
-    jw_mlp1_input_proxy_data *data = proxy->backend_data;
-    if (data->menu_held && !data->chord_active) {
-        jw__menu_end(proxy);
-        data->chord_active = true;
-    }
+    jw_mlp1_input_proxy_data *data = jw__api_lock(proxy);
+    jw__cancel_menu(proxy);
+    jw__api_unlock(data);
 }
 
 /* Never infer a live hold from an event's read time. A lost input clock or
@@ -604,7 +782,9 @@ static void jw__menu_deadline(jw_input_proxy *proxy, uint64_t now) {
         now - data->menu_down_ms >= proxy->menu_config.escape_ms) {
         data->menu_escape_reported = true;
         if (proxy->menu_escape)
-            proxy->menu_escape(proxy->userdata, data->menu_hold_id, true);
+            jw__proxy_call_run(proxy, (jw__proxy_call){
+                .kind = JW__PROXY_CALL_MENU_ESCAPE, .hold_id = data->menu_hold_id,
+                .threshold = true });
     }
 }
 
@@ -614,7 +794,8 @@ static void jw__handle_volume_key(jw_input_proxy *proxy, uint16_t code, int32_t 
     }
 
     int delta = (code == KEY_VOLUMEUP) ? 5 : -5;
-    proxy->volume_delta(proxy->userdata, delta);
+    jw__proxy_call_run(proxy, (jw__proxy_call){ .kind = JW__PROXY_CALL_VOLUME,
+                                                .value = delta });
 }
 
 static void jw__handle_brightness_key(jw_input_proxy *proxy, uint16_t code, int32_t value) {
@@ -631,11 +812,13 @@ static void jw__handle_brightness_key(jw_input_proxy *proxy, uint16_t code, int3
 
     data->last_brightness_ms = now;
     int delta = (code == KEY_VOLUMEUP) ? 5 : -5;
-    proxy->brightness_delta(proxy->userdata, delta);
+    jw__proxy_call_run(proxy, (jw__proxy_call){ .kind = JW__PROXY_CALL_BRIGHTNESS,
+                                                .value = delta });
 }
 
 static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) {
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    uint64_t generation = data->input_generation;
 
     if (ev->code == BTN_MODE) {
         if (proxy->menu_config.tap_only && ev->value == 2) return;
@@ -656,7 +839,7 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
                 data->menu_escape_reported = false;
                 jw__release_deferred_menu_tap(data, true);
                 if (!jw__menu_alone(data))
-                    jw_input_proxy_cancel_menu(proxy);
+                    jw__cancel_menu(proxy);
             }
             return;
         }
@@ -681,12 +864,16 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
                     jw__forward_event(data, ev);
                 }
             } else if (!data->chord_active && !data->menu_escape_reported) {
-                bool handled = proxy->menu_tap && proxy->menu_tap(proxy->userdata);
+                bool handled = proxy->menu_tap &&
+                               jw__proxy_call_run(proxy, (jw__proxy_call){
+                                   .kind = JW__PROXY_CALL_MENU_TAP });
+                if (generation != data->input_generation) return;
                 if (!handled) {
                     jw__emit_deferred_menu_tap(data);
                 }
             }
             jw__menu_end(proxy);
+            if (generation != data->input_generation) return;
             data->menu_held = false;
             data->menu_forwarded = false;
             data->chord_active = false;
@@ -696,7 +883,8 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
     }
 
     if (ev->value > 0) {
-        jw_input_proxy_cancel_menu(proxy);
+        jw__cancel_menu(proxy);
+        if (generation != data->input_generation) return;
     }
 
     /* Menu + a bindable button: the user's configured Leaf action.
@@ -730,7 +918,10 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
         if (ev->value == 1 && data->menu_held && !data->menu_forwarded &&
             data->uinput_fd >= 0) {
             bool handled = proxy->shortcut &&
-                           proxy->shortcut(proxy->userdata, chord_button);
+                           jw__proxy_call_run(proxy, (jw__proxy_call){
+                               .kind = JW__PROXY_CALL_SHORTCUT,
+                               .value = (int)chord_button });
+            if (generation != data->input_generation) return;
             if (handled) {
                 data->chord_active = true;   /* suppress the Menu tap */
                 jw__bit_set(data->chord_consumed_keys, ev->code);
@@ -1027,6 +1218,9 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
     data->uinput_fd = -1;
     data->power_fd = -1;
     data->ff_quit_pipe[0] = data->ff_quit_pipe[1] = -1;
+    data->io_kick_pipe[0] = data->io_kick_pipe[1] = -1;
+    data->main_wake_pipe[0] = data->main_wake_pipe[1] = -1;
+    data->generation = ++s_proxy_generation;
     /* Explicit: calloc leaves this 0, which would read as "effect 0 is playing"
        and let a stray stop for effect 0 through before anything was ever sent. */
     data->ff_playing_id = -1;
@@ -1188,21 +1382,33 @@ int jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy) {
     return -1;
 }
 
+bool jw_input_proxy_needs_tick_cadence(const jw_input_proxy *proxy) {
+    if (!proxy || !proxy->enabled || !proxy->backend_data) {
+        return false;
+    }
+    const jw_mlp1_input_proxy_data *data =
+        (const jw_mlp1_input_proxy_data *)proxy->backend_data;
+    return !data->io_thread_running;
+}
+
 int jw_input_proxy_poll_fd(const jw_input_proxy *proxy) {
     if (!proxy || !proxy->enabled || !proxy->backend_data) {
         return -1;
     }
     const jw_mlp1_input_proxy_data *data =
         (const jw_mlp1_input_proxy_data *)proxy->backend_data;
-    return data->input_fd;
+    /* Threaded, the pad is the forwarding thread's to read; the daemon only
+       needs waking for a callback or a power edge. */
+    return data->io_thread_running ? data->main_wake_pipe[0] : data->input_fd;
 }
 
 static void jw__handle_input(jw_input_proxy *proxy, const struct input_event *ev) {
     jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    uint64_t generation = data->input_generation;
     if (ev->type == EV_SYN && ev->code == SYN_DROPPED) {
-        jw__reset_chord_state(proxy);
         data->physical_state_valid = false;
         data->input_dropped = true;
+        jw__reset_chord_state(proxy);
         return;
     }
     if (data->input_dropped) {
@@ -1217,14 +1423,23 @@ static void jw__handle_input(jw_input_proxy *proxy, const struct input_event *ev
         else jw__bit_clear(data->physical_keys, ev->code);
     } else if (ev->type == EV_ABS && ev->code < ABS_CNT) {
         data->abs_value[ev->code] = ev->value;
-        if (jw__axis_active(data, ev->code)) jw_input_proxy_cancel_menu(proxy);
+        if (jw__axis_active(data, ev->code)) jw__cancel_menu(proxy);
     }
+    if (generation != data->input_generation) return;
 
-    if (ev->type == EV_KEY ||
+    bool activity = ev->type == EV_KEY ||
         (ev->type == EV_ABS &&
-         (ev->code == ABS_HAT0X || ev->code == ABS_HAT0Y) && ev->value != 0))
+         (ev->code == ABS_HAT0X || ev->code == ABS_HAT0Y) && ev->value != 0);
+    if (activity)
         data->last_activity_ms = jw__monotonic_ms();
-    if (data->swallow) return;
+    if (data->swallow) {
+        /* Swallowed input is how a screen-off standby wakes. jawakad sleeps
+           up to a second between passes when idle, so tell it now rather than
+           leave the press for its next pass to notice. */
+        if (activity && data->io_thread_running)
+            jw__pipe_kick(data->main_wake_pipe[1]);
+        return;
+    }
     if (ev->type == EV_KEY) jw__handle_key(proxy, ev);
     else if (ev->type == EV_ABS && (ev->code == ABS_X || ev->code == ABS_Y))
         jw__forward_stick_abs(data, ev);
@@ -1233,14 +1448,17 @@ static void jw__handle_input(jw_input_proxy *proxy, const struct input_event *ev
 
 static void jw__handle_power(jw_input_proxy *proxy, const struct input_event *ev) {
     jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    uint64_t generation = data->input_generation;
     if (ev->type == EV_SYN && ev->code == SYN_DROPPED) {
-        jw_input_proxy_cancel_menu(proxy);
+        jw__cancel_menu(proxy);
+        if (generation != data->input_generation) return;
         jw__read_physical_state(data);
     }
     if (ev->type != EV_KEY || ev->code != KEY_POWER ||
         (ev->value != 0 && ev->value != 1)) return;
     data->power_held = ev->value == 1;
-    jw_input_proxy_cancel_menu(proxy);
+    jw__cancel_menu(proxy);
+    if (generation != data->input_generation) return;
     if (data->power_edge_count == JW_MLP1_POWER_EDGE_MAX) {
         data->power_edge_head = (data->power_edge_head + 1) % JW_MLP1_POWER_EDGE_MAX;
         data->power_edge_count--;
@@ -1251,6 +1469,9 @@ static void jw__handle_power(jw_input_proxy *proxy, const struct input_event *ev
         ? (uint64_t)ev->input_event_sec * 1000u + (uint64_t)ev->input_event_usec / 1000u
         : jw__monotonic_ms();
     data->power_edge_count++;
+    if (data->io_thread_running) {
+        jw__pipe_kick(data->main_wake_pipe[1]);   /* jawakad routes the edge */
+    }
 }
 
 static bool jw__read_input_edge(jw_input_proxy *proxy, int fd, struct input_event *ev) {
@@ -1261,12 +1482,14 @@ static bool jw__read_input_edge(jw_input_proxy *proxy, int fd, struct input_even
     if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return false;
     jw_mlp1_input_proxy_data *data = proxy->backend_data;
     data->physical_state_valid = false;
-    jw_input_proxy_cancel_menu(proxy);
+    jw__cancel_menu(proxy);
     return false;
 }
 
-void jw_input_proxy_tick(jw_input_proxy *proxy) {
-    if (!proxy || !proxy->enabled || !proxy->backend_data) return;
+/* Read and route everything queued on the pad and the power key, then run the
+   timers. On the forwarding thread when there is one, else from
+   jw_input_proxy_tick(). */
+static void jw__process(jw_input_proxy *proxy) {
     jw_mlp1_input_proxy_data *data = proxy->backend_data;
     jw__release_deferred_menu_tap(data, false);
 
@@ -1275,9 +1498,20 @@ void jw_input_proxy_tick(jw_input_proxy *proxy) {
        separate Power press; draining it last could leak a queued Menu+Power tap. */
     struct input_event input, power;
     bool have_input = false, have_power = false;
+    uint64_t generation = data->input_generation;
     for (;;) {
-        if (!have_input) have_input = jw__read_input_edge(proxy, data->input_fd, &input);
-        if (!have_power) have_power = jw__read_input_edge(proxy, data->power_fd, &power);
+        if (data->io_quit) break;   /* shutting down: leave the rest unread */
+        if (generation != data->input_generation) {
+            /* Either stream may already have a prefetched edge whose release
+               the daemon flushed while a callback was waiting. */
+            have_input = have_power = false;
+            generation = data->input_generation;
+        }
+        if (!have_input && !data->input_fd_failed)
+            have_input = jw__read_input_edge(proxy, data->input_fd, &input);
+        if (!have_power && !data->power_fd_failed)
+            have_power = jw__read_input_edge(proxy, data->power_fd, &power);
+        if (generation != data->input_generation) continue;
         if (!have_input && !have_power) break;
         bool power_first = !have_input || (have_power &&
             (power.input_event_sec < input.input_event_sec ||
@@ -1295,29 +1529,65 @@ void jw_input_proxy_tick(jw_input_proxy *proxy) {
     jw__menu_deadline(proxy, jw__monotonic_ms());
 }
 
+void jw_input_proxy_tick(jw_input_proxy *proxy) {
+    if (!proxy || !proxy->enabled || !proxy->backend_data) return;
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    if (!data->io_thread_running) {
+        jw__process(proxy);
+        return;
+    }
+
+    /* Threaded: the forwarding thread reads and forwards on its own; this side
+       serves the callback it is waiting on, if any. */
+    jw__pipe_drain(data->main_wake_pipe[0]);
+    pthread_mutex_lock(&data->lock);
+    if (!data->call_pending || data->call_taken) {
+        pthread_mutex_unlock(&data->lock);
+        return;
+    }
+    jw__proxy_call call = data->call;
+    data->call_taken = true;
+    uint64_t generation = data->generation;
+    pthread_mutex_unlock(&data->lock);
+
+    bool result = jw__proxy_call_dispatch(proxy, &call);
+
+    /* The callback may have shut this proxy down, or replaced it; then there
+       is no one left waiting on the answer. */
+    if (proxy->backend_data != data || data->generation != generation) return;
+    pthread_mutex_lock(&data->lock);
+    data->call_result = result;
+    data->call_pending = false;
+    data->call_taken = false;
+    pthread_cond_signal(&data->call_cond);
+    pthread_mutex_unlock(&data->lock);
+}
+
 uint64_t jw_input_proxy_idle_ms(const jw_input_proxy *proxy) {
     if (!proxy || !proxy->backend_data) {
         return 0;
     }
-    const jw_mlp1_input_proxy_data *data =
-        (const jw_mlp1_input_proxy_data *)proxy->backend_data;
+    jw_mlp1_input_proxy_data *data = jw__api_lock(proxy);
     uint64_t now = jw__monotonic_ms();
-    return (now > data->last_activity_ms) ? (now - data->last_activity_ms) : 0;
+    uint64_t idle = (now > data->last_activity_ms) ? (now - data->last_activity_ms) : 0;
+    jw__api_unlock_quiet(data);
+    return idle;
 }
 
 void jw_input_proxy_mark_activity(jw_input_proxy *proxy) {
     if (!proxy || !proxy->backend_data) {
         return;
     }
-    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    jw_mlp1_input_proxy_data *data = jw__api_lock(proxy);
     data->last_activity_ms = jw__monotonic_ms();
+    jw__api_unlock(data);
 }
 
 void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
     if (!proxy || !proxy->backend_data) {
         return;
     }
-    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    jw_mlp1_input_proxy_data *data = jw__api_lock(proxy);
     /* Entering the screen-off stage drops every event on the floor, including the
        releases the chord state machine is waiting on. Left set, a *_chord_consumed
        flag outlives the press it belongs to and eats the first real press of that
@@ -1330,26 +1600,27 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
            releases the chord machine is waiting on. Nothing is mid-gesture
            with the screen off, so put the machine back to rest rather than
            leaving it waiting for releases that are no longer coming. */
+        jw__invalidate_input(data);
         jw__reset_chord_state(proxy);
     }
     data->swallow = swallow;
+    jw__api_unlock(data);
 }
 
 void jw_input_proxy_emit_menu_tap(jw_input_proxy *proxy) {
     if (!proxy || !proxy->enabled || !proxy->backend_data) {
         return;
     }
-    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
-    if (data->uinput_fd < 0) {
-        return; /* watch-only mode: there is no virtual pad to emit onto */
+    jw_mlp1_input_proxy_data *data = jw__api_lock(proxy);
+    /* Watch-only has no virtual pad to emit onto, and a tap already in flight
+       must not stack a second press, which would double-toggle. */
+    if (data->uinput_fd >= 0 && !data->deferred_menu_release) {
+        jw__emit_deferred_menu_tap(data);
     }
-    if (data->deferred_menu_release) {
-        return; /* one already in flight; stacking presses would double-toggle */
-    }
-    jw__emit_deferred_menu_tap(data);
+    jw__api_unlock(data);
 }
 
-void jw_input_proxy_release_buttons(jw_input_proxy *proxy) {
+static void jw__release_buttons(jw_input_proxy *proxy) {
     if (!proxy || !proxy->backend_data) {
         return;
     }
@@ -1385,18 +1656,25 @@ void jw_input_proxy_release_buttons(jw_input_proxy *proxy) {
     jw__release_pending_menu_up(data, true);
 }
 
+void jw_input_proxy_release_buttons(jw_input_proxy *proxy) {
+    jw_mlp1_input_proxy_data *data = jw__api_lock(proxy);
+    jw__release_buttons(proxy);
+    jw__api_unlock(data);
+}
+
 bool jw_input_proxy_take_power_edge(jw_input_proxy *proxy, jw_power_edge *edge) {
     if (!proxy || !proxy->backend_data) {
         return false;
     }
-    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
-    if (data->power_edge_count == 0) {
-        return false;
+    jw_mlp1_input_proxy_data *data = jw__api_lock(proxy);
+    bool took = data->power_edge_count > 0;
+    if (took) {
+        if (edge) *edge = data->power_edges[data->power_edge_head];
+        data->power_edge_head = (data->power_edge_head + 1) % JW_MLP1_POWER_EDGE_MAX;
+        data->power_edge_count--;
     }
-    if (edge) *edge = data->power_edges[data->power_edge_head];
-    data->power_edge_head = (data->power_edge_head + 1) % JW_MLP1_POWER_EDGE_MAX;
-    data->power_edge_count--;
-    return true;
+    jw__api_unlock_quiet(data);
+    return took;
 }
 
 /* Put the chord state machine back to rest and let go of anything the virtual
@@ -1418,12 +1696,14 @@ static void jw__reset_chord_state(jw_input_proxy *proxy) {
     jw_mlp1_input_proxy_data *data =
         (jw_mlp1_input_proxy_data *)proxy->backend_data;
 
+    uint64_t generation = data->input_generation;
     jw__menu_end(proxy);
+    if (generation != data->input_generation) return;
     data->menu_escape_reported = false;
 
     /* Forwarded buttons and axes, plus any deferred Menu-up they were holding
        back. No-op in watch-only mode, where nothing was forwarded. */
-    jw_input_proxy_release_buttons(proxy);
+    jw__release_buttons(proxy);
 
     /* Forced: the un-forced form waits out a hold timer driven by a loop that
        may not run again. */
@@ -1446,11 +1726,12 @@ static void jw__reset_chord_state(jw_input_proxy *proxy) {
     data->chord_active   = false;
 }
 
-void jw_input_proxy_flush(jw_input_proxy *proxy) {
+static void jw__flush(jw_input_proxy *proxy) {
     if (!proxy || !proxy->enabled || !proxy->backend_data) {
         return;
     }
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    jw__invalidate_input(data);
     /* Drain the physical gamepad without forwarding — drops presses that queued
        while suspended so they don't replay into the launcher on wake. */
     struct input_event ev;
@@ -1470,13 +1751,219 @@ void jw_input_proxy_flush(jw_input_proxy *proxy) {
        Menu-up. Reset for the same reason screen-off does. */
     jw__reset_chord_state(proxy);
     jw__read_physical_state(data);
+    /* Whatever the sleep left queued is gone now, so the forwarding thread's
+       resume check must not fire on the next, real press. */
+    data->io_sleep_ref_ms = jw__slept_ms();
+}
+
+void jw_input_proxy_flush(jw_input_proxy *proxy) {
+    jw_mlp1_input_proxy_data *data = jw__api_lock(proxy);
+    jw__flush(proxy);
+    jw__api_unlock(data);
 }
 
 void jw_input_proxy_configure_menu(jw_input_proxy *proxy,
                                   jw_input_menu_config config) {
     if (!proxy) return;
-    jw_input_proxy_flush(proxy);
+    jw_mlp1_input_proxy_data *data = jw__api_lock(proxy);
+    jw__flush(proxy);
     proxy->menu_config = config;
+    jw__api_unlock(data);
+}
+
+/* ---- Forwarding thread ---------------------------------------------------
+ *
+ * jawakad's main loop answers IPC, supervises children and spawns platform
+ * helpers, and some of that blocks for hundreds of milliseconds. When that
+ * same loop also forwarded the pad, a D-pad release made during one of those
+ * stalls reached the launcher late, the launcher saw a long hold, and it
+ * repeated. This thread reads and forwards on its own, so a busy daemon can no
+ * longer stretch a tap into a hold. Daemon callbacks still run on the daemon
+ * thread (jw__proxy_call_run).
+ */
+
+/* The poll timeout that wakes the thread for its next timer: the release of a
+   deferred Menu tap, or the Menu-escape threshold. -1 when neither is armed. */
+static int jw__io_timeout_ms(jw_input_proxy *proxy) {
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    uint64_t due = UINT64_MAX;
+    if (data->deferred_menu_release) {
+        due = data->deferred_menu_release_at_ms;
+    }
+    if (proxy->menu_config.escape_enabled && data->menu_held &&
+        !data->chord_active && !data->menu_escape_reported) {
+        uint64_t escape_at = data->menu_down_ms + proxy->menu_config.escape_ms;
+        if (escape_at < due) due = escape_at;
+    }
+    if (due == UINT64_MAX) {
+        return -1;
+    }
+    uint64_t now = jw__monotonic_ms();
+    /* Overdue: the deadline is waiting on state (Menu not alone yet) rather
+       than on time. Recheck at the old loop cadence instead of spinning. */
+    if (due <= now) {
+        return JW_MLP1_IO_RECHECK_MS;
+    }
+    uint64_t wait = due - now;
+    return wait > (uint64_t)INT32_MAX ? INT32_MAX : (int)wait;
+}
+
+/* jawakad drops input that queued while the device slept, and it could do that
+   only because it read the pad itself, after checking. Reading here, this
+   thread would forward those presses before jawakad noticed the resume, so it
+   checks first too. The daemon's own flush on the same resume moves the
+   reference (jw__flush), so the two never both fire. */
+static void jw__io_check_resume(jw_input_proxy *proxy) {
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    long long slept = jw__slept_ms();
+    long long gap = slept - data->io_sleep_ref_ms;
+    data->io_sleep_ref_ms = slept;
+    if (gap > JW_MLP1_RESUME_GAP_MS) {
+        jw_log_info("input proxy: ~%lldms asleep, dropping queued input", gap);
+        jw__flush(proxy);
+        data->last_activity_ms = jw__monotonic_ms();
+    }
+}
+
+static void *jw__io_thread_main(void *arg) {
+    jw_input_proxy *proxy = (jw_input_proxy *)arg;
+    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+
+    /* Taken before anything else: jw_input_proxy_start() holds it across
+       pthread_create, so data->io_thread is set by the time this runs. */
+    pthread_mutex_lock(&data->lock);
+    while (!data->io_quit) {
+        struct pollfd fds[3] = {
+            { data->input_fd_failed ? -1 : data->input_fd, POLLIN, 0 },
+            { data->power_fd_failed ? -1 : data->power_fd, POLLIN, 0 },
+            { data->io_kick_pipe[0], POLLIN, 0 },
+        };
+        int timeout = jw__io_timeout_ms(proxy);
+        pthread_mutex_unlock(&data->lock);
+        int rc = poll(fds, 3, timeout);
+        int poll_errno = errno;
+        pthread_mutex_lock(&data->lock);
+        if (data->io_quit) {
+            break;
+        }
+        if (rc < 0 && poll_errno != EINTR) {
+            /* Transient (ENOMEM); losing the pad would be far worse than a
+               short pause, so back off and carry on. */
+            jw_log_warn("input proxy: poll failed: %s", strerror(poll_errno));
+            pthread_mutex_unlock(&data->lock);
+            usleep(JW_MLP1_IO_RECHECK_MS * 1000);
+            pthread_mutex_lock(&data->lock);
+            continue;
+        }
+        if (fds[2].revents) {
+            jw__pipe_drain(data->io_kick_pipe[0]);
+        }
+        /* A device that reports an error never becomes readable again; polling
+           it would return at once, every time, and spin. */
+        if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            jw_log_warn("input proxy: gamepad fd error (revents=0x%x); no longer reading it",
+                        (unsigned)fds[0].revents);
+            data->input_fd_failed = true;
+            data->physical_state_valid = false;
+            jw__cancel_menu(proxy);
+        }
+        if (fds[1].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            jw_log_warn("input proxy: power key fd error (revents=0x%x); no longer reading it",
+                        (unsigned)fds[1].revents);
+            data->power_fd_failed = true;
+        }
+        jw__io_check_resume(proxy);
+        jw__process(proxy);
+    }
+    pthread_mutex_unlock(&data->lock);
+    return NULL;
+}
+
+int jw_input_proxy_start(jw_input_proxy *proxy) {
+    if (!proxy || !proxy->enabled || !proxy->backend_data) {
+        return -1;
+    }
+    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    if (data->io_thread_running) {
+        return 0;
+    }
+
+    pthread_mutexattr_t attr;
+    if (pthread_mutexattr_init(&attr) != 0) {
+        return -1;
+    }
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    int rc = pthread_mutex_init(&data->lock, &attr);
+    pthread_mutexattr_destroy(&attr);
+    if (rc != 0) {
+        return -1;
+    }
+    if (pthread_cond_init(&data->call_cond, NULL) != 0) {
+        pthread_mutex_destroy(&data->lock);
+        return -1;
+    }
+    /* O_CLOEXEC for the same reason as the FF quit pipe: jawakad forks and
+       execs constantly. */
+    if (pipe2(data->io_kick_pipe, O_CLOEXEC | O_NONBLOCK) != 0 ||
+        pipe2(data->main_wake_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
+        jw_log_warn("input proxy: forwarding pipes failed: %s", strerror(errno));
+        for (int i = 0; i < 2; i++) {
+            if (data->io_kick_pipe[i] >= 0) close(data->io_kick_pipe[i]);
+            if (data->main_wake_pipe[i] >= 0) close(data->main_wake_pipe[i]);
+            data->io_kick_pipe[i] = data->main_wake_pipe[i] = -1;
+        }
+        pthread_cond_destroy(&data->call_cond);
+        pthread_mutex_destroy(&data->lock);
+        return -1;
+    }
+    data->io_sleep_ref_ms = jw__slept_ms();
+    data->io_quit = false;
+
+    pthread_mutex_lock(&data->lock);
+    data->io_thread_running = true;
+    rc = pthread_create(&data->io_thread, NULL, jw__io_thread_main, proxy);
+    if (rc != 0) {
+        data->io_thread_running = false;
+    }
+    pthread_mutex_unlock(&data->lock);
+    if (rc != 0) {
+        jw_log_warn("input proxy: forwarding thread failed to start; "
+                    "forwarding from the daemon loop");
+        for (int i = 0; i < 2; i++) {
+            close(data->io_kick_pipe[i]);
+            close(data->main_wake_pipe[i]);
+            data->io_kick_pipe[i] = data->main_wake_pipe[i] = -1;
+        }
+        pthread_cond_destroy(&data->call_cond);
+        pthread_mutex_destroy(&data->lock);
+        return -1;
+    }
+    jw_log_info("input proxy: forwarding on its own thread");
+    return 0;
+}
+
+/* Joined, not just signalled: the thread reads the fds and writes the virtual
+   pad that shutdown is about to close. A callback it is waiting on answers
+   false, including one this very shutdown is running inside of. */
+static void jw__io_thread_stop(jw_mlp1_input_proxy_data *data) {
+    if (!data->io_thread_running) {
+        return;
+    }
+    pthread_mutex_lock(&data->lock);
+    data->io_quit = true;
+    jw__invalidate_input(data);
+    pthread_cond_broadcast(&data->call_cond);
+    pthread_mutex_unlock(&data->lock);
+    jw__pipe_kick(data->io_kick_pipe[1]);
+    pthread_join(data->io_thread, NULL);
+    data->io_thread_running = false;
+    for (int i = 0; i < 2; i++) {
+        close(data->io_kick_pipe[i]);
+        close(data->main_wake_pipe[i]);
+        data->io_kick_pipe[i] = data->main_wake_pipe[i] = -1;
+    }
+    pthread_cond_destroy(&data->call_cond);
+    pthread_mutex_destroy(&data->lock);
 }
 
 void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
@@ -1487,6 +1974,7 @@ void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
     }
 
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    jw__io_thread_stop(data);
     jw__ff_thread_stop(data);
     jw__reset_chord_state(proxy);
 

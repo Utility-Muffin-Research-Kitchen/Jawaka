@@ -600,6 +600,14 @@ static void test_stale_generation_blocks_second_daemon(void) {
                                                sizeof(stuck)) == 0);
     CHECK(strcmp(stuck, "org.umrk.test.lease") == 0);
     CHECK(jw_svc_supervisor_stop_all(second) == 1);
+    /* The rootfs power supervisor proves absence through the lease; a stale
+     * generation has no pgid this daemon may signal. */
+    char described[1024];
+    CHECK(jw_svc_supervisor_describe_unverified(second, described, sizeof(described)) == 1);
+    CHECK(strncmp(described, "service=org.umrk.test.lease pgid=0 lease=", 41) == 0);
+    CHECK(strstr(described, "/services/org.umrk.test.lease/generation.lease\n") != NULL);
+    CHECK(jw_svc_supervisor_describe_unverified(first, described, sizeof(described)) == 0);
+    CHECK(described[0] == '\0');
 
     /* This test used game_launch_begin only to exercise the stale-generation
      * decision row. Release the synthetic active launch before exercising the

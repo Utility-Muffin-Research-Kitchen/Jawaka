@@ -23,6 +23,7 @@
 #pragma GCC diagnostic pop
 
 #include <math.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +61,7 @@ typedef struct {
     jw_osd_view view;
     bool visible;
     bool configured;
+    bool display_lost;            /* logged once; the fd is no longer watched */
 } jw_wayland_osd;
 
 static jw_wayland_osd s_osd;
@@ -697,8 +699,45 @@ void jw_osd_backend_hide_game_launch(void) {
     (void)jw__apply(jw_osd_view_hide_stage(&s_osd.view));
 }
 
+/* The main loop sleeps on the display fd, so compositor events (a ping, a
+   configure, a buffer release) are read here as they arrive instead of piling
+   up in the socket until the next roundtrip. Never blocks: when the fd has
+   nothing, the read is cancelled. */
+static void jw__read_events(void) {
+    struct wl_display *display = s_osd.display;
+    if (!display || wl_display_get_error(display) != 0) return;
+    while (wl_display_prepare_read(display) != 0) {
+        if (wl_display_dispatch_pending(display) < 0) return;
+    }
+    struct pollfd pfd = { .fd = wl_display_get_fd(display), .events = POLLIN };
+    if (poll(&pfd, 1, 0) > 0) {
+        (void)wl_display_read_events(display);
+    } else {
+        wl_display_cancel_read(display);
+    }
+}
+
+int jw_osd_backend_event_fd(void) {
+    if (!s_osd.display) return -1;
+    int error = wl_display_get_error(s_osd.display);
+    if (error != 0) {
+        /* A dead connection polls readable forever; stop watching it. */
+        if (!s_osd.display_lost) {
+            jw_log_warn("osd: lost the compositor connection: %s", strerror(error));
+            s_osd.display_lost = true;
+        }
+        return -1;
+    }
+    return wl_display_get_fd(s_osd.display);
+}
+
+int jw_osd_backend_timeout_ms(uint64_t now_ms) {
+    return jw_osd_view_timeout_ms(&s_osd.view, now_ms);
+}
+
 void jw_osd_backend_tick(uint64_t now_ms) {
     if (s_osd.display) {
+        jw__read_events();
         wl_display_dispatch_pending(s_osd.display);
         wl_display_flush(s_osd.display);
     }

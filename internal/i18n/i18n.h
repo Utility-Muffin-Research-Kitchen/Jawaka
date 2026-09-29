@@ -90,6 +90,16 @@ bool jw_i18n_language_is_cjk(const char *lang);
  * The Settings row is hidden when this returns 0: shipping a language picker
  * with nothing to pick reads as broken, and it means a translator can make the
  * row appear simply by dropping their .tsv on the card. */
+/* How many translations Leaf will list, English not counted, and the room for one
+ * language code. These are the only definitions: the scanner, the Settings list
+ * and the tests all size from them, so the two ends cannot disagree about
+ * capacity. They did while the numbers were written out by hand in six places --
+ * the scanner kept 8, the Settings list had room for 7 after English, and an
+ * eighth language simply never appeared. A language past the limit is logged,
+ * never dropped silently. */
+#define JW_I18N_MAX_LANGUAGES 32
+#define JW_I18N_CODE_MAX      16
+
 size_t jw_i18n_available(const char **out, size_t max);
 
 /* Entry count in the loaded table, 0 when none. For diagnostics and the

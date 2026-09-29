@@ -1,3 +1,4 @@
+#include "internal/platform/power_request.h"
 #include "cJSON.h"
 #include "internal/core/log.h"
 #include "internal/db/db.h"
@@ -13,6 +14,7 @@
 #include "internal/launcher/bios.h"
 #include "internal/launcher/core_selection.h"
 #include "internal/launcher/standalone_policy.h"
+#include "internal/launcher/ra_account.h"
 #include "internal/launcher/menu_escape.h"
 #include "internal/launcher/pico8.h"
 #include "cmd/jawakad/osd_client.h"
@@ -20,10 +22,14 @@
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
 #include "internal/platform/input_proxy.h"
+#include "internal/i18n/i18n.h"
 #include "internal/platform/input_shortcuts.h"
 #include "internal/platform/input_roster.h"
+#include "internal/platform/ledd_spawn.h"
 #include "internal/platform/paths.h"
+#include "internal/platform/perf_policy.h"
 #include "internal/platform/raofflineproxy.h"
+#include "internal/platform/weston_initd.h"
 #include "internal/platform/wifi.h"
 #include "internal/power/power_hold_save.h"
 #include "internal/power/power_hold_save_io.h"
@@ -90,6 +96,13 @@
 #define JW_RETROARCH_AUDIO_REINIT_TIMEOUT_MS 10000LL
 #define JW_RETROARCH_QUIT_GRACE_MS 700LL
 #define JW_RETROARCH_KILL_GRACE_MS 700LL
+/* platform-levels answers from the brightness/volume cache. jawakad writes
+   both values itself and caches what it wrote, so the cache is only re-read
+   from the hardware this often, which bounds how long a change jawakad did not
+   make (a Bluetooth headset's own buttons) can go unseen. An unknown value is
+   retried sooner. */
+#define JW_PLATFORM_LEVELS_TTL_MS 5000LL
+#define JW_PLATFORM_LEVELS_RETRY_MS 1000LL
 /* A quit the menu asked for that RetroArch never honors, seen when a savestate
    write stalls on a read-only card: it then ignores SIGTERM as well. */
 #define JW_RETROARCH_STUCK_QUIT_MS 15000LL
@@ -100,6 +113,17 @@
 #define JW_CONTENT_SETTING_PERFORMANCE_PROFILE "performance_profile"
 #define JW_STARTUP_MAINT_GRACE_MS 500LL    /* after frontend-ready */
 #define JW_STARTUP_MAINT_FALLBACK_MS 15000LL /* if frontend-ready never arrives */
+
+/* What library.db looked like on disk the last time a reader acted on it.
+   Idle readers compare this instead of opening the database: an open applies
+   the schema and takes ~60 fcntl locks, which on a 500 ms timer was nearly
+   all of the daemon's idle file I/O. */
+typedef struct {
+    bool valid;
+    long long db[4];        /* ino, size, mtime ns, ctime ns */
+    long long journal[2];   /* size, mtime ns (-1 when absent) */
+    long long wal[2];
+} jw_db_file_sig;
 
 typedef enum {
     JW_CHILD_NONE = 0,
@@ -176,6 +200,9 @@ typedef struct {
     /* Standalone targets only, resolved once from the catalog core by
        jw__try_path_core() before any eligibility check. */
     jw_standalone_policy standalone_policy;
+    /* Catalog provenance (Apps-relative, "" for release cores), retained for
+       account-target authorization; policy embeds no provider string. */
+    char provider[128];
     bool supports_menu;
     bool requires_direct_drm;
     bool native_pico8;
@@ -339,7 +366,7 @@ typedef struct {
     bool osd_ready;             /* fonts, backend and socket are all up */
     long long osd_spawned_ms;
     /* The appearance the running OSD opened its font with. */
-    char osd_language[16];
+    char osd_language[JW_I18N_CODE_MAX];
     char osd_font_path[256];
     char osd_font_bump[16];
     bool direct_drm_active;
@@ -347,6 +374,7 @@ typedef struct {
     pid_t ledd_pid;            /* jawaka-ledd custom LED effect engine, -1 when idle */
     int cached_brightness_percent;
     int cached_volume_percent;
+    long long platform_cache_read_ms;  /* last full hardware read, 0 = never */
     long long audio_reconcile_last_ms;
     jw_led_config cached_led;
     bool led_configured;       /* true once a user LED setting has been persisted/applied */
@@ -440,6 +468,9 @@ typedef struct {
     jw_suspend_policy    suspend_policy;
     int       hdmi_last_connected;        /* -1 unknown, 0/1; for hotplug edge detection */
     long long hdmi_next_poll_ms;          /* throttle for the HDMI hotplug poll */
+    long long lut_sync_not_before_ms;     /* 0 = idle; else swap the color-temp LUT for the current output once this passes */
+    long long lut_sync_deadline_ms;       /* ...and give up if it still fails after this */
+    bool      lut_sync_external;          /* the output to swap for: true = external display */
     long long hdmi_revert_deadline_ms;    /* 0 = none; auto-revert 1080p120 if not kept */
     int       hdmi_was_120;               /* live-1080p120 edge tracker */
     jw_platform_perf_profile perf_global_profile;
@@ -512,6 +543,14 @@ typedef struct {
     bool storage_scan_deferred;      /* a scan waits for the DB to be writable */
     bool storage_repair_rescan_done; /* post-repair rescan considered this run */
     bool storage_log_redirected;
+    jw_db_file_sig mutation_recovery_db_sig;  /* library.db when no uninstall was pending */
+    jw_db_file_sig autosleep_db_sig;          /* library.db when the setting was read */
+    /* The running launcher said in its hello that it handles SIGUSR2 as
+       "re-read platform-levels": the volume changed or an HDMI revert was
+       armed (see jw__notify_launcher_levels). */
+    bool launcher_levels_signal;
+    bool reap_by_signal;   /* the SIGCHLD pipe is installed */
+    bool sigchld_seen;     /* a SIGCHLD arrived since the last exit check */
 } jw_daemon_state;
 
 static void jw__scan_title_list_free(jw_scan_title_list *list) {
@@ -667,17 +706,40 @@ static void jw__scan_title_list_move(jw_scan_title_list *dest,
 }
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
+/* SIGCHLD self-pipe. The handler writes a byte; the read end sits in the
+   daemon's poll set, and the loop runs its child-exit handlers only after one
+   instead of calling waitpid on every tracked child on every pass. */
+static int g_sigchld_pipe[2] = {-1, -1};
 
-static void jw__request_power_transition(jw_daemon_state *state,
-                                         jw_platform_action action) {
+static bool jw__request_power_transition(jw_daemon_state *state,
+                                         jw_platform_action action,
+                                         const char *reason) {
     if (!state) {
-        return;
+        return false;
     }
+    if (state->power_transition_requested) return true;
+#ifdef PLATFORM_MLP1
+    /* Commit to this supervisor generation before cleanup or an IPC success.
+       Old supervisors cannot fall back to the former timed SysRq path. */
+    jw_platform_result result;
+    jw_platform_perform_action(&state->platform, action, 0, &result);
+    if (result.code != JW_PLATFORM_RESULT_OK) {
+        jw_log_error("power handoff refused: %s", result.message);
+        return false;
+    }
+    /* Informational only: the supervisor's screens and log. */
+    if (jw_power_request_reason(reason) != 0) {
+        jw_log_warn("power handoff: could not record reason %s", reason ? reason : "(none)");
+    }
+#else
+    (void)reason;
+#endif
     state->power_transition_requested = true;
     jw_input_proxy_cancel_menu(&state->input_proxy);
     jw_menu_escape_cancel(&state->menu_escape);
     state->power_transition_action = action;
     state->shutdown_requested = true;
+    return true;
 }
 
 static bool jw__has_retroarch_session(const jw_daemon_state *state) {
@@ -849,6 +911,54 @@ static long long jw__monotonic_ms(void) {
 static void jw__handle_signal(int signo) {
     (void)signo;
     g_shutdown_requested = 1;
+}
+
+static void jw__handle_sigchld(int signo) {
+    (void)signo;
+    int saved_errno = errno;
+    if (g_sigchld_pipe[1] >= 0) {
+        ssize_t ignored = write(g_sigchld_pipe[1], "c", 1);
+        (void)ignored;
+    }
+    errno = saved_errno;
+}
+
+/* Called before anything is spawned. On failure the loop falls back to
+   checking every child on every pass, as it did before the pipe. */
+static bool jw__install_sigchld_pipe(void) {
+    if (pipe(g_sigchld_pipe) != 0) {
+        g_sigchld_pipe[0] = g_sigchld_pipe[1] = -1;
+        return false;
+    }
+    for (int i = 0; i < 2; i++) {
+        (void)fcntl(g_sigchld_pipe[i], F_SETFD, FD_CLOEXEC);
+        int flags = fcntl(g_sigchld_pipe[i], F_GETFL);
+        if (flags >= 0) {
+            (void)fcntl(g_sigchld_pipe[i], F_SETFL, flags | O_NONBLOCK);
+        }
+    }
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = jw__handle_sigchld;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    if (sigaction(SIGCHLD, &sa, NULL) != 0) {
+        close(g_sigchld_pipe[0]);
+        close(g_sigchld_pipe[1]);
+        g_sigchld_pipe[0] = g_sigchld_pipe[1] = -1;
+        return false;
+    }
+    return true;
+}
+
+/* usleep that sleeps the whole time. With a SIGCHLD handler installed, a
+   child exiting mid-sleep ends a plain usleep early, which would shorten the
+   grace windows and "N tries" waits in this file. */
+static void jw__usleep(unsigned long usec) {
+    struct timespec left = { (time_t)(usec / 1000000UL),
+                             (long)(usec % 1000000UL) * 1000L };
+    while (nanosleep(&left, &left) != 0 && errno == EINTR) {
+    }
 }
 
 static int jw__path_exists(const char *path) {
@@ -1970,6 +2080,7 @@ static void jw__services_init(jw_daemon_state *state) {
         }
     }
     state->services = sup;
+    jw_svc_supervisor_set_exit_notify(sup, state->reap_by_signal);
     if (state->active_game.active) {
         jw_svc_supervisor_game_set_active(sup, true);
         jw_log_warn("services: game-sensitive starts suppressed by %s active-game record",
@@ -2045,6 +2156,18 @@ static int jw__reply_error(jw_ipc_client *client, const char *message) {
     return jw__reply_json(client, root);
 }
 
+/* Retry re-runs the same launch through every gate, so it is only offered
+   where the block is transient and re-checkable without a decision from the
+   user: RAOfflineProxy not ready yet. Every other block keeps its two-way
+   Cancel / Play Anyway contract. */
+static bool jw__game_launch_retry_allowed(const jw_daemon_state *state) {
+    return state && state->game_launch_blocked &&
+           !state->game_check_decision &&
+           !state->game_launch_blocked_requires_verified_stop &&
+           strcmp(state->game_launch_blocked_reason,
+                  "raofflineproxy-not-ready") == 0;
+}
+
 static int jw__reply_game_launch_blocked(jw_daemon_state *state,
                                          jw_ipc_client *client) {
     cJSON *root = cJSON_CreateObject();
@@ -2064,6 +2187,9 @@ static int jw__reply_game_launch_blocked(jw_daemon_state *state,
     cJSON_AddBoolToObject(root, "blocked", blocked);
     cJSON_AddBoolToObject(root, "override_allowed",
                           state->game_launch_blocked && !conservative_active);
+    cJSON_AddBoolToObject(root, "retry_allowed",
+                          jw__game_launch_retry_allowed(state) &&
+                              !conservative_active);
     cJSON_AddBoolToObject(
         root, "requires_verified_stop",
         state->game_launch_blocked_requires_verified_stop);
@@ -2120,6 +2246,7 @@ static cJSON *jw__platform_capabilities_json(const jw_platform_capabilities *cap
     cJSON_AddBoolToObject(root, "adb", cap && cap->adb);
     cJSON_AddBoolToObject(root, "boot_splash", cap && cap->boot_splash);
     cJSON_AddBoolToObject(root, "refresh_rate", cap && cap->refresh_rate);
+    cJSON_AddBoolToObject(root, "color_temperature", cap && cap->color_temperature);
     cJSON_AddBoolToObject(root, "hdmi_output", cap && cap->hdmi_output);
     cJSON_AddBoolToObject(root, "led", cap && cap->led);
     cJSON_AddBoolToObject(root, "performance", cap && cap->performance);
@@ -2176,6 +2303,7 @@ static cJSON *jw__platform_status_json(const jw_platform_status *status) {
     jw__json_add_int_or_null(root, "adb_intent_enabled", status->adb_intent_enabled);
     jw__json_add_int_or_null(root, "boot_splash_enabled", status->boot_splash_enabled);
     jw__json_add_int_or_null(root, "refresh_rate_hz", status->refresh_rate_hz);
+    jw__json_add_int_or_null(root, "color_temp_kelvin", status->color_temp_kelvin);
     jw__json_add_int_or_null(root, "hdmi_connected", status->hdmi_connected);
     jw__json_add_int_or_null(root, "hdmi_output_mode", status->hdmi_output_mode);
     return root;
@@ -2246,29 +2374,19 @@ static void jw__perf_request_for_profile(jw_platform_perf_profile profile,
     }
 }
 
-static bool jw__perf_system_prefers_performance(const char *system) {
-    if (!system || !system[0]) {
-        return false;
-    }
-    return strcasecmp(system, "N64") == 0 ||
-           strcasecmp(system, "PSP") == 0 ||
-           strcasecmp(system, "DC") == 0 ||
-           strcasecmp(system, "DREAMCAST") == 0 ||
-           strcasecmp(system, "SATURN") == 0 ||
-           strcasecmp(system, "NDS") == 0;
-}
-
 static jw_platform_perf_profile jw__perf_resolve_game_profile(
-        const jw_daemon_state *state,
+        jw_daemon_state *state,
         jw_platform_perf_profile profile,
         const char *system) {
-    (void)state;
-    if (profile != JW_PLATFORM_PERF_PROFILE_AUTO) {
-        return profile;
-    }
-    return jw__perf_system_prefers_performance(system)
-        ? JW_PLATFORM_PERF_PROFILE_PERFORMANCE
-        : JW_PLATFORM_PERF_PROFILE_BALANCED;
+    /* One owner for the whole rule (internal/platform/perf_policy.c): the AUTO
+       preference, and the Dreamcast-family contract that performance wins over
+       a session, game, system or global request for another profile. Every
+       Flycast choice on DC, NAOMI and ATOMISWAVE resolves through here, which
+       is why the rule is keyed on the system and not the core. The live
+       refresh rate feeds AUTO: above 60 Hz every game gets performance. */
+    jw_platform_status status;
+    jw_platform_get_status(&state->platform, &status);
+    return jw_platform_perf_game_profile(system, status.refresh_rate_hz, profile);
 }
 
 static jw_platform_perf_profile jw__perf_current_requested_profile(
@@ -2529,10 +2647,28 @@ static int jw__handle_performance_reset_session(jw_daemon_state *state,
 
 static void jw__platform_sleep_with_performance(jw_daemon_state *state,
                                                jw_platform_result *out) {
+    /* Audio first, while the clocks are still up: a stream refill caught by
+       the drop to sleep clocks can trip PulseAudio's realtime limit. */
+    jw_platform_sleep_audio(&state->platform);
     (void)jw__perf_apply_profile(state, JW_PLATFORM_PERF_PROFILE_SLEEP,
                                  NULL, "sleep");
     jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SLEEP, 0, out);
     (void)jw__perf_apply_current_context(state, "wake");
+    /* Only now, at wake clocks, may a stream suspended for the sleep refill
+       its buffer. */
+    jw_platform_wake_audio(&state->platform);
+}
+
+/* The launcher's status bar shows the volume, and the launcher puts up the
+   HDMI keep-or-revert prompt; it re-reads both from platform-levels when told
+   to, otherwise its status worker checks only every 5 s. Only a launcher whose
+   hello said it handles SIGUSR2 is told (the signal would kill one that does
+   not). */
+static void jw__notify_launcher_levels(jw_daemon_state *state) {
+    if (state && state->launcher_levels_signal && state->child_pid > 0 &&
+        state->child_kind == JW_CHILD_LAUNCHER) {
+        (void)kill(state->child_pid, SIGUSR2);
+    }
 }
 
 static void jw__cache_platform_status(jw_daemon_state *state,
@@ -2560,52 +2696,79 @@ static void jw__refresh_platform_cache(jw_daemon_state *state) {
     jw_platform_status status;
     jw_platform_get_status(&state->platform, &status);
     jw__cache_platform_status(state, &status);
+    state->platform_cache_read_ms = jw__monotonic_ms();
 }
 
-/* Stored RetroAchievements credentials (Settings > Accounts). Resolved from the
-   DB in the daemon parent, then applied to the environment of the forked
-   RetroArch child only — never the long-lived daemon — so the plaintext
-   password is not inherited by the launcher, OSD, ledd, or app-store apps. */
-typedef struct {
-    char user[64];
-    char pass[128];
-} jw_cheevos_creds;
+/* Stored RetroAchievements credentials (Settings > Games > Accounts). Resolved from the
+   DB in the daemon parent as one coherent account snapshot (state, validated
+   credentials, revision), then applied to the environment of the forked child
+   only — never the long-lived daemon — so the plaintext password is not
+   inherited by the launcher, OSD, ledd, or app-store apps. The same snapshot
+   drives two handoffs: the existing RetroArch per-launch config (JAWAKA_CHEEVOS_*)
+   and the standalone-ra-account-v1 child-only snapshot (UMRK_RA_ACCOUNT_*). */
+typedef jw_ra_account jw_cheevos_creds;
 
-/* Read the credentials from the DB. Opening SQLite happens in the parent before
-   fork(); the resulting struct is applied child-side via jw__cheevos_apply_env. */
+/* Read the account from the DB. Opening SQLite happens in the parent before
+   fork(); the resulting struct is applied child-side via jw__cheevos_apply_env
+   (RetroArch) or jw_ra_account_prepare_standalone_env (authorized
+   standalones). A legacy saved pair without a revision is initialized
+   exactly once here, in the parent, with the same checked write discipline
+   as an account save; if that cannot happen the snapshot is unreadable (or
+   invalid for malformed rows), never configured with a guessed revision. */
 static void jw__cheevos_resolve(jw_daemon_state *state, jw_cheevos_creds *creds) {
-    creds->user[0] = '\0';
-    creds->pass[0] = '\0';
-    if (state && state->db_path) {
-        (void)jw_db_get_setting(state->db_path, "retroachievements_user",
-                                creds->user, sizeof(creds->user));
-        (void)jw_db_get_setting(state->db_path, "retroachievements_pass",
-                                creds->pass, sizeof(creds->pass));
-    }
+    jw_db_resolve_ra_account_handoff(state ? state->db_path : NULL, creds);
 }
 
 /* Apply the credentials to the CURRENT process environment. The RetroArch
    session config writer (jw_prepare_retroarch_config) reads JAWAKA_CHEEVOS_* via
    getenv to put cheevos_username/password into the per-launch config that
-   RetroArch validates at launch. Empty credentials clear the vars, leaving
-   whatever the user configured inside RetroArch untouched. Because the writer
-   runs in the daemon parent, callers there must clear the env again right after
-   the config is written so the plaintext password does not persist. */
+   RetroArch validates at launch. Any account state that is not a complete
+   configured pair clears the vars, and the session config then carries no
+   account (cheevos_* are protected keys, never merged in from the shared
+   config). Because the writer runs in the daemon parent,
+   callers there must clear the env again right after the config is written
+   so the plaintext password does not persist. */
 static void jw__cheevos_apply_env(const jw_cheevos_creds *creds) {
-    if (creds->user[0] && creds->pass[0]) {
-        setenv("JAWAKA_CHEEVOS_USERNAME", creds->user, 1);
-        setenv("JAWAKA_CHEEVOS_PASSWORD", creds->pass, 1);
-    } else {
-        unsetenv("JAWAKA_CHEEVOS_USERNAME");
-        unsetenv("JAWAKA_CHEEVOS_PASSWORD");
-    }
+    jw_ra_account_apply_retroarch_env(creds);
 }
 
 /* Drop any cheevos credentials from the current process environment. Paired with
    jw__cheevos_apply_env around a config write in the parent. */
 static void jw__cheevos_clear_env(void) {
-    unsetenv("JAWAKA_CHEEVOS_USERNAME");
-    unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+    jw_ra_account_clear_retroarch_env();
+}
+
+/* Drop the standalone-ra-account-v1 snapshot from the current process
+   environment. Every standalone and app child starts from a cleared set; only
+   an authorized target gets a fresh snapshot applied right after. */
+static void jw__ra_account_clear_env(void) {
+    jw_ra_account_clear_env();
+}
+
+/* Drop the bundled-Flycast proxy route intent and Flycast's developer probe
+   channel from the CURRENT process environment. UMRK_FLYCAST_RA_ROUTE is
+   per-launch child state for one authorized target; FLYCAST_PROBE and
+   FLYCAST_CONFIG_OVERRIDES belong to explicit developer probes run outside
+   the daemon and must never ride along on a managed launch, where they could
+   inject an achievement host or Hardcore override. */
+static void jw__flycast_route_clear_env(void) {
+    unsetenv(JW_FLYCAST_RA_ROUTE_ENV);
+    unsetenv("FLYCAST_PROBE");
+    unsetenv("FLYCAST_CONFIG_OVERRIDES");
+}
+
+/* The RAOfflineProxy service is live when the supervisor holds a positive
+   PGID in RUNNING or STARTING for a present, valid pak; see
+   jw_raofflineproxy_entry_live, which the RetroArch gate
+   (jw__raofflineproxy_route) and the Flycast route intent share. */
+static bool jw__raofflineproxy_entry_live(const jw_svc_supervised *entry) {
+    return jw_raofflineproxy_entry_live(entry);
+}
+
+static bool jw__raofflineproxy_service_live(const jw_daemon_state *state) {
+    return state && state->services &&
+           jw__raofflineproxy_entry_live(
+               jw_svc_supervisor_find(state->services, JW_ROP_SERVICE_ID));
 }
 
 /* True when the pak dir refers to the bundled RetroArch app — the one app whose
@@ -2797,7 +2960,7 @@ static void jw__publish_language_env(jw_daemon_state *state) {
         unsetenv("JAWAKA_LANGUAGE");
         return;
     }
-    char lang[32] = "";
+    char lang[JW_I18N_CODE_MAX] = "";
     if (jw_db_get_setting(state->db_path, "language", lang, sizeof(lang)) == 0 &&
         lang[0]) {
         /* UMRK_LANGUAGE is canonical; JAWAKA_LANGUAGE is its indefinite
@@ -2851,10 +3014,22 @@ static void jw__publish_display_env(jw_daemon_state *state) {
     jw__publish_language_env(state);
 }
 
+/* Seconds left before an armed 1080p120 revert, 0 when none is armed. The
+   launcher's status worker reads it from platform-levels and platform-status,
+   so it does not have to ask hdmi-revert-status every second. */
+static int jw__hdmi_revert_seconds(const jw_daemon_state *state) {
+    long long now = jw__monotonic_ms();
+    if (state->hdmi_revert_deadline_ms == 0 || state->hdmi_revert_deadline_ms <= now) {
+        return 0;
+    }
+    return (int)((state->hdmi_revert_deadline_ms - now + 999) / 1000);
+}
+
 static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *client) {
     jw_platform_status status;
     jw_platform_get_status(&state->platform, &status);
     jw__cache_platform_status(state, &status);
+    state->platform_cache_read_ms = jw__monotonic_ms();
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "platform-status");
@@ -2876,6 +3051,31 @@ static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *clie
         cJSON_AddItemToObject(status_json, "led", led);
     }
     cJSON_AddItemToObject(root, "status", status_json);
+    cJSON_AddNumberToObject(root, "hdmi_revert_seconds", jw__hdmi_revert_seconds(state));
+    return jw__reply_json(client, root);
+}
+
+/* Brightness and volume alone, for the launcher's status-bar and Display &
+   Sound polls. platform-status carries the same two numbers but re-derives the
+   audio route and volume through three or four pactl/amixer spawns, ~100 ms on
+   this loop -- the loop that forwards the pad -- and the launcher asks every
+   second, or every 300 ms with Display & Sound open. Serve the cache instead
+   (see JW_PLATFORM_LEVELS_TTL_MS). */
+static int jw__reply_platform_levels(jw_daemon_state *state, jw_ipc_client *client) {
+    long long now = jw__monotonic_ms();
+    long long age = now - state->platform_cache_read_ms;
+    bool unknown = state->cached_brightness_percent < 0 ||
+                   state->cached_volume_percent < 0;
+    if (state->platform_cache_read_ms == 0 || age >= JW_PLATFORM_LEVELS_TTL_MS ||
+        (unknown && age >= JW_PLATFORM_LEVELS_RETRY_MS)) {
+        jw__refresh_platform_cache(state);
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "platform-levels");
+    cJSON_AddNumberToObject(root, "brightness_percent", state->cached_brightness_percent);
+    cJSON_AddNumberToObject(root, "volume_percent", state->cached_volume_percent);
+    cJSON_AddNumberToObject(root, "hdmi_revert_seconds", jw__hdmi_revert_seconds(state));
     return jw__reply_json(client, root);
 }
 
@@ -2936,17 +3136,19 @@ static int jw__reply_update_status(jw_daemon_state *state, jw_ipc_client *client
     return jw__reply_json(client, root);
 }
 
+static const char *jw__scrape_state_name(jw_scrape_state state) {
+    return state == JW_SCRAPE_RUNNING ? "running" :
+           state == JW_SCRAPE_PAUSED_QUOTA ? "paused-quota" :
+           state == JW_SCRAPE_PAUSED_STORAGE ? "paused-storage" : "idle";
+}
+
 static int jw__reply_scrape_status(jw_ipc_client *client, cJSON *request) {
     jw_scrape_status_info info;
     jw_scrape_status(&info);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "scrape-status");
-    const char *state_name =
-        info.state == JW_SCRAPE_RUNNING ? "running" :
-        info.state == JW_SCRAPE_PAUSED_QUOTA ? "paused-quota" :
-        info.state == JW_SCRAPE_PAUSED_STORAGE ? "paused-storage" : "idle";
-    cJSON_AddStringToObject(root, "state", state_name);
+    cJSON_AddStringToObject(root, "state", jw__scrape_state_name(info.state));
     cJSON_AddNumberToObject(root, "total", info.total);
     cJSON_AddNumberToObject(root, "done", info.done);
     cJSON_AddNumberToObject(root, "found", info.found);
@@ -3276,6 +3478,18 @@ static bool jw__update_check_busy(jw_daemon_state *state) {
     return state->update_check_job.active;
 }
 
+/* Update channel (Stable = Leaf repo, Beta = Leaf-beta repo) from the persisted
+   setting; default Stable. */
+static jw_update_channel jw__update_channel(jw_daemon_state *state) {
+    char chan[16] = "";
+    if (state->db_path[0] &&
+        jw_db_get_setting(state->db_path, "update_channel", chan, sizeof(chan)) == 0 &&
+        strcmp(chan, "beta") == 0) {
+        return JW_UPDATE_CHANNEL_BETA;
+    }
+    return JW_UPDATE_CHANNEL_STABLE;
+}
+
 static int jw__handle_update_check(jw_daemon_state *state,
                                    jw_ipc_client *client,
                                    cJSON *request) {
@@ -3311,25 +3525,47 @@ static int jw__handle_update_check(jw_daemon_state *state,
                                        state->platform.platform_id,
                                        manifest_path);
     } else {
-        /* Resolve the update channel (Stable = Leaf repo, Beta = Leaf-beta repo)
-           from the persisted setting; default Stable. */
-        jw_update_channel channel = JW_UPDATE_CHANNEL_STABLE;
-        char chan[16] = "";
-        if (state->db_path[0] &&
-            jw_db_get_setting(state->db_path, "update_channel", chan, sizeof(chan)) == 0 &&
-            strcmp(chan, "beta") == 0) {
-            channel = JW_UPDATE_CHANNEL_BETA;
-        }
         /* Run the GitHub release check on a worker thread so the blocking fetch
            doesn't freeze the launcher; reply immediately with state=checking and
            let the launcher's status poll pick up the result. */
         jw_update_check_start(&state->update_status,
                               &state->update_check_job,
                               state->state_dir,
-                              channel);
+                              jw__update_channel(state),
+                              JW_UPDATE_SCOPE_LATEST);
     }
     cJSON *root = jw_update_status_to_json(&state->update_status);
     return jw__reply_json(client, root);
+}
+
+/* Load every release in the list for the release picker. The routine check only
+   reads the newest one; this fills in the rest without touching the selected
+   candidate. "refresh": true reloads a list that is already complete. */
+static int jw__handle_update_releases(jw_daemon_state *state,
+                                      jw_ipc_client *client,
+                                      cJSON *request) {
+    jw_update_download_poll(&state->update_status, &state->update_download_job);
+    jw__poll_update_install(state);
+    jw__update_check_busy(state);
+    if (state->update_download_job.active || state->update_install_job.active) {
+        return jw__reply_update_status(state, client);
+    }
+
+    const char *manifest_env = getenv("JAWAKA_UPDATE_MANIFEST");
+    bool local_manifest = manifest_env && manifest_env[0];
+    bool refresh = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request, "refresh"));
+    if (!local_manifest &&
+        (refresh || !state->update_status.options_complete)) {
+        jw_update_check_start(&state->update_status,
+                              &state->update_check_job,
+                              state->state_dir,
+                              jw__update_channel(state),
+                              JW_UPDATE_SCOPE_ALL);
+    }
+    if (state->update_check_job.active) {
+        return jw__reply_update_status_raw(state, client);
+    }
+    return jw__reply_update_status(state, client);
 }
 
 static int jw__handle_update_download(jw_daemon_state *state,
@@ -3762,6 +3998,55 @@ static void jw__free_pending_uninstalls(jw_pakrat_pending_uninstall *items,
    source requires a later retry, and -1 on a recoverable local error. A daemon-
    owned lock is deliberately retained across nonzero returns so no service or
    foreground launch can race incomplete recovery. */
+static long long jw__stat_time_ns(const struct stat *st, bool change) {
+#if defined(__APPLE__)
+    const struct timespec *ts = change ? &st->st_ctimespec : &st->st_mtimespec;
+#else
+    const struct timespec *ts = change ? &st->st_ctim : &st->st_mtim;
+#endif
+    return (long long)ts->tv_sec * 1000000000LL + (long long)ts->tv_nsec;
+}
+
+static void jw__db_side_file_sig(const char *db_path, const char *suffix,
+                                 long long out[2]) {
+    char path[PATH_MAX];
+    struct stat st;
+    if (snprintf(path, sizeof(path), "%s%s", db_path, suffix) < (int)sizeof(path) &&
+        stat(path, &st) == 0) {
+        out[0] = (long long)st.st_size;
+        out[1] = jw__stat_time_ns(&st, false);
+    } else {
+        out[0] = out[1] = -1;
+    }
+}
+
+/* True when library.db (or its rollback journal or WAL) changed since *sig
+   was last taken, or on the first call; refreshes *sig. A failed stat counts
+   as a change so the caller falls back to reading. */
+static bool jw__db_file_changed(const char *db_path, jw_db_file_sig *sig) {
+    jw_db_file_sig now;
+    memset(&now, 0, sizeof(now));
+    struct stat st;
+    if (!db_path || stat(db_path, &st) != 0) {
+        sig->valid = false;
+        return true;
+    }
+    now.valid = true;
+    now.db[0] = (long long)st.st_ino;
+    now.db[1] = (long long)st.st_size;
+    now.db[2] = jw__stat_time_ns(&st, false);
+    now.db[3] = jw__stat_time_ns(&st, true);
+    jw__db_side_file_sig(db_path, "-journal", now.journal);
+    jw__db_side_file_sig(db_path, "-wal", now.wal);
+    bool changed = !sig->valid;
+    for (int i = 0; i < 4 && !changed; i++) changed = now.db[i] != sig->db[i];
+    for (int i = 0; i < 2 && !changed; i++) {
+        changed = now.journal[i] != sig->journal[i] || now.wal[i] != sig->wal[i];
+    }
+    *sig = now;
+    return changed;
+}
+
 static int jw__recover_package_mutations(jw_daemon_state *state) {
     if (!state || !state->services) {
         return -1;
@@ -3834,16 +4119,27 @@ static int jw__recover_package_mutations(jw_daemon_state *state) {
             continue;
         }
 
+        /* Pending uninstalls only appear through a library.db write. Take the
+           file's signature first, so a write that lands during the query is
+           seen as a change next time. */
+        jw_db_file_sig before = state->mutation_recovery_db_sig;
+        if (!jw__db_file_changed(state->db_path, &state->mutation_recovery_db_sig)) {
+            return 0;
+        }
         jw_pakrat_pending_uninstall *pending = NULL;
         int pending_count = 0;
         if (jw_pakrat_txn_pending_list(state->db_path, &pending,
                                        &pending_count) != 0) {
+            state->mutation_recovery_db_sig = before;
+            state->mutation_recovery_db_sig.valid = false;
             return -1;
         }
         if (pending_count == 0) {
             free(pending);
             return 0;
         }
+        /* Work to do: forget the signature so the pass after it re-checks. */
+        state->mutation_recovery_db_sig.valid = false;
 
         char operation_id[JW_SVC_PACKAGE_OPERATION_ID_MAX + 1];
         int operation_size = snprintf(
@@ -4235,7 +4531,7 @@ static void *jw__scan_job_main(void *arg) {
             char *end = NULL;
             long delay_ms = strtol(test_delay, &end, 10);
             if (end && *end == '\0' && delay_ms > 0 && delay_ms <= 5000)
-                usleep((useconds_t)delay_ms * 1000u);
+                jw__usleep((useconds_t)delay_ms * 1000u);
         }
         if (jw_scan_library(db, sdcard_root, &result) != 0) {
         snprintf(error, sizeof(error), "scan failed reason=%s",
@@ -4496,6 +4792,11 @@ static void jw__scan_job_shutdown(jw_daemon_state *state) {
 static int jw__reply_library_status(jw_daemon_state *state, jw_ipc_client *client) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "library-status");
+    /* The launcher's status worker asks for scrape-status only while this is
+       not "idle", so an idle status bar costs one request instead of two. */
+    jw_scrape_status_info scrape;
+    jw_scrape_status(&scrape);
+    cJSON_AddStringToObject(root, "scrape_state", jw__scrape_state_name(scrape.state));
     cJSON_AddNumberToObject(root, "generation", state ? state->library_generation : 0);
     cJSON_AddNumberToObject(root, "storage_health_generation",
                             state ? (double)state->storage_monitor.generation : 0);
@@ -4715,7 +5016,17 @@ static bool jw__reserve_game_process_group(pid_t pid) {
 }
 
 static int jw__game_child_set_own_group(void) {
-    return setpgid(0, 0);
+    /* The parent calls setpgid(pid, pid) concurrently. Darwin can refuse
+       this call with EPERM while the parent's is in flight, so accept the
+       group the parent made (the parent's own check, mirrored) and retry
+       briefly before failing closed. */
+    for (int attempt = 0; attempt < 20; attempt++) {
+        if (setpgid(0, 0) == 0 || getpgrp() == getpid()) {
+            return 0;
+        }
+        jw__usleep(1000);
+    }
+    return -1;
 }
 
 static int jw__signal_tracked_game_group(jw_daemon_state *state, int signal) {
@@ -5754,7 +6065,7 @@ static int jw__wait_for_retroarch_content(const jw_ra_client *ra,
                         result == JW_RA_OK ? content : "");
             return -1;
         }
-        usleep(50000);
+        jw__usleep(50000);
     }
 }
 
@@ -6154,6 +6465,8 @@ static bool jw__try_path_core(const jw_daemon_state *state,
     target->kind = JW_LAUNCH_TARGET_STANDALONE;
     snprintf(target->path, sizeof(target->path), "%s", exec_path);
     snprintf(target->core_id, sizeof(target->core_id), "%s", core->id ? core->id : "");
+    snprintf(target->provider, sizeof(target->provider), "%s",
+             core->provider ? core->provider : "");
     target->standalone_policy = policy;
     target->supports_menu = core->supports_menu;
     target->requires_direct_drm = core->requires_direct_drm;
@@ -6914,7 +7227,7 @@ static bool jw__wait_for_tracked_child_exit(jw_daemon_state *state, pid_t pid,
         if (now >= deadline) {
             return false;
         }
-        usleep(50000);
+        jw__usleep(50000);
     }
 }
 
@@ -6994,8 +7307,7 @@ static void jw__wait_for_savestate_write(const jw_daemon_state *state, int slot)
         return;
     }
     while (elapsed < timeout_ms) {
-        struct timespec ts = { poll_ms / 1000, (long)(poll_ms % 1000) * 1000000L };
-        nanosleep(&ts, NULL);
+        jw__usleep((unsigned long)poll_ms * 1000UL);
         elapsed += poll_ms;
 
         struct stat st;
@@ -7263,6 +7575,9 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         state->pending_launch = false;
         jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
+        /* The target's profile was applied before the switch attempt; the old
+           game is still running under the old system, so restore its mode. */
+        (void)jw__perf_apply_current_context(state, "switch-quit-failed");
         if (out_error) *out_error = "RetroArch quit failed";
         return -1;
     }
@@ -7273,6 +7588,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         state->pending_launch = false;
         jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
+        (void)jw__perf_apply_current_context(state, "switch-exit-failed");
         if (out_error) *out_error = "RetroArch exit failed";
         return -1;
     }
@@ -7386,7 +7702,7 @@ static void jw__stop_osd_child(jw_daemon_state *state) {
             state->osd_pid = -1;
             return;
         }
-        usleep(50000);
+        jw__usleep(50000);
     }
 
     kill(pid, SIGKILL);
@@ -7411,9 +7727,11 @@ static int jw__spawn_osd(jw_daemon_state *state) {
     }
 
     /* Resolve appearance from the DB here in the parent — opening SQLite between
-       fork() and execv() is not fork-safe on macOS (os_log landmine). */
+       fork() and execv() is not fork-safe on macOS (os_log landmine). The OSD
+       draws no status bar, so skip the Bluetooth snapshot: it shells out to
+       bluetoothctl on this loop, the one that forwards the D-pad. */
     jw_appearance_env appearance;
-    jw_appearance_resolve(state->db_path, &appearance);
+    jw_appearance_resolve_settings(state->db_path, &appearance);
 
     /* Close-on-exec on both ends so no other child inherits them; the OSD
        child clears it on the write end just before its own exec. */
@@ -7576,7 +7894,7 @@ static long long jw__osd_now_ms(void *ctx) {
 
 static void jw__osd_sleep_ms(void *ctx, int ms) {
     (void)ctx;
-    usleep((useconds_t)ms * 1000u);
+    jw__usleep((useconds_t)ms * 1000u);
 }
 
 /* A PICO-8 prompt may be on screen and even its hide went unanswered. The OSD
@@ -7616,7 +7934,7 @@ static void jw__osd_refresh_appearance(jw_daemon_state *state, const char *why) 
         return;
     }
     jw_appearance_env appearance;
-    jw_appearance_resolve(state->db_path, &appearance);
+    jw_appearance_resolve_settings(state->db_path, &appearance);
     const char *font_path = appearance.font_path ? appearance.font_path : "";
     if (strcmp(appearance.language, state->osd_language) == 0 &&
         strcmp(font_path, state->osd_font_path) == 0 &&
@@ -7768,6 +8086,77 @@ static void jw__apply_persisted_brightness(jw_daemon_state *state) {
     }
 }
 
+/* The color-temperature LUT lives in the CRTC, not in any config file, so unlike
+   the refresh-rate weston.ini override it has to be replayed at startup (a cold
+   power cycle clears it; see the color temperature section in
+   device_mlp1.c), and swapped whenever HDMI hands the CRTC to or from the
+   panel (jw__schedule_lut_sync). Key is "color_temp_k", written by the settings
+   UI; absent means "never set" -> leave the panel at its native white point.
+
+   With `external` set the external display is the active output, and the request
+   is for neutral instead (an identity ramp, so the panel's correction does not
+   tint it; the persisted value is left alone).
+
+   Returns true when there is nothing more to do (applied, nothing persisted, an
+   invalid value, or a platform without the feature) and false when the write
+   failed, so a caller that can retry knows it may. */
+static bool jw__apply_color_temp(jw_daemon_state *state, bool external) {
+    char value[32];
+    long parsed = JW_PLATFORM_COLOR_TEMP_NEUTRAL_K;
+    if (!external) {
+        if (!state || !state->db_path ||
+            jw_db_get_setting(state->db_path, "color_temp_k",
+                              value, sizeof(value)) != 0 ||
+            !value[0]) {
+            return true;
+        }
+
+        char *end = NULL;
+        parsed = strtol(value, &end, 10);
+        if (end == value || (end && *end != '\0')) {
+            jw_log_warn("ignoring invalid persisted color temperature: %s", value);
+            return true;
+        }
+    } else if (!state) {
+        return true;
+    }
+
+    jw_platform_result result;
+    jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SET_COLOR_TEMP,
+                               (int)parsed, &result);
+    if (result.code == JW_PLATFORM_RESULT_OK) {
+        jw_log_info("applied color temperature value=%ld K (%s)", parsed,
+                    external ? "external display" : "panel");
+        return true;
+    }
+    if (result.code == JW_PLATFORM_RESULT_UNSUPPORTED) {
+        return true;
+    }
+    jw_log_warn("color temperature apply failed: %s", result.message);
+    return false;
+}
+
+/* The color-temperature LUT is swapped for the current output this long after the
+   last HDMI event, and retried for JW_LUT_SYNC_WINDOW_MS if the display has no
+   valid mode yet. */
+#define JW_LUT_SETTLE_MS 2000
+#define JW_LUT_SYNC_WINDOW_MS 15000
+
+/* Swap the color-temperature LUT for the current output (external display or
+   panel) from the HDMI poll, once no HDMI event has happened for
+   JW_LUT_SETTLE_MS. It is not done inside the HDMI switch itself, so it does not
+   race the mode change (see jw__mlp1_set_hdmi_output). Every new HDMI event
+   restarts the wait. */
+static void jw__schedule_lut_sync(jw_daemon_state *state, bool external) {
+    if (!state) {
+        return;
+    }
+    long long now = jw__monotonic_ms();
+    state->lut_sync_external = external;
+    state->lut_sync_not_before_ms = now + JW_LUT_SETTLE_MS;
+    state->lut_sync_deadline_ms = state->lut_sync_not_before_ms + JW_LUT_SYNC_WINDOW_MS;
+}
+
 static void jw__persist_volume(jw_daemon_state *state, int percent) {
     if (!state || !state->db_path) {
         return;
@@ -7808,6 +8197,7 @@ static void jw__apply_persisted_volume(jw_daemon_state *state) {
         if (resolved < 0) resolved = 0;
         if (resolved > 100) resolved = 100;
         state->cached_volume_percent = resolved;
+        jw__notify_launcher_levels(state);
         jw_log_info("applied persisted volume value=%d", resolved);
     } else {
         jw_log_warn("persisted volume apply failed: %s", result.message);
@@ -7862,13 +8252,9 @@ static int jw__spawn_ledd(jw_daemon_state *state, const char *effect,
     snprintf(sb,  sizeof(sb),  "%d", b);
     snprintf(sbr, sizeof(sbr), "%d", brightness);
     snprintf(ssp, sizeof(ssp), "%d", speed);
-    pid_t pid = fork();
+    char *const argv[] = { path, (char *)effect, sr, sg, sb, sbr, ssp, NULL };
+    pid_t pid = jw_ledd_spawn(path, argv);
     if (pid < 0) { jw_log_warn("ledd fork failed: %s", strerror(errno)); return -1; }
-    if (pid == 0) {
-        char *const argv[] = { path, (char *)effect, sr, sg, sb, sbr, ssp, NULL };
-        execv(path, argv);
-        _exit(127);
-    }
     state->ledd_pid = pid;
     jw_log_info("spawned jawaka-ledd %s pid=%d", effect, (int)pid);
     return 0;
@@ -7989,6 +8375,7 @@ static void jw__input_volume_delta(void *userdata, int delta_percent) {
         if (resolved > 100) resolved = 100;
         state->cached_volume_percent = resolved;
         jw__persist_volume(state, resolved);
+        jw__notify_launcher_levels(state);
         /* No OSD over a kmsdrm standalone emulator: the Wayland overlay can
            only steal one stray frame from the emulator's page flips. The
            audible change is the feedback. */
@@ -8520,7 +8907,7 @@ static void *jw__screenshot_worker(void *arg) {
         char newest[PATH_MAX] = "";
         off_t prev_size = -1;
         for (int tries = 0; tries < 30; tries++) {   /* up to ~3s */
-            usleep(100000);   /* 100ms */
+            jw__usleep(100000);   /* 100ms */
             /* newest PNG that was NOT already present, with a non-zero size */
             time_t best_mt = 0;
             char  cand[PATH_MAX] = "";
@@ -8880,6 +9267,11 @@ static void jw__start_input_proxy(jw_daemon_state *state) {
             jw_input_proxy_configure_menu(&state->input_proxy, state->session_menu_config);
         state->input_proxy.shortcut = jw__on_shortcut_chord;
         state->input_proxy.rumble = jw__rumble_ff;
+        /* Forward from a thread of its own, now that every callback is in
+           place: this loop can block for hundreds of ms (IPC, spawns), and a
+           release it held back turned taps into holds. The watch-only proxy
+           forwards nothing, so it stays on this loop. */
+        (void)jw_input_proxy_start(&state->input_proxy);
         jw__publish_retroarch_input_env(state);
     }
 }
@@ -9150,6 +9542,7 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     }
 
     if (kind == JW_CHILD_LAUNCHER) state->launch_input_failed = false;
+    state->launcher_levels_signal = false;   /* until the new one says hello */
     state->child_pid = pid;
     state->child_kind = kind;
     jw_log_info("spawned %s pid=%d", name, (int)pid);
@@ -9395,7 +9788,12 @@ static int jw__spawn_app(jw_daemon_state *state) {
                         app_is_pico8 && use_roster);
         /* Only the RetroArch runner gets cheevos creds (it writes its own RA
            config); every other app has them explicitly cleared so the plaintext
-           password never reaches third-party app code. */
+           password never reaches third-party app code. The standalone account
+           snapshot (UMRK_RA_ACCOUNT_*) is never valid for any .pak app child:
+           RetroArch is not a standalone consumer and non-RetroArch app pak
+           launches are not authorized targets. */
+        jw__ra_account_clear_env();
+        jw__flycast_route_clear_env();
         if (app_is_retroarch) {
             jw__cheevos_apply_env(&cheevos);
         } else {
@@ -9623,14 +10021,49 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw_appearance_env appearance;
     jw_appearance_resolve(state->db_path, &appearance);
 
+    /* Resolve the RetroAchievements account and this target's authorization
+       for the standalone-ra-account-v1 handoff in the parent: opening SQLite
+       is not fork-safe post-fork, and the fresh snapshot applies child-side
+       only to an authorized target. */
+    jw_ra_account ra_account;
+    jw__cheevos_resolve(state, &ra_account);
+    char ra_platform_dir[PATH_MAX];
+    bool ra_account_authorized =
+        jw__platform_path(ra_platform_dir, sizeof(ra_platform_dir), state) == 0 &&
+        jw_ra_account_target_authorized(target->path, target->core_id,
+                                        &target->standalone_policy,
+                                        target->provider, ra_platform_dir);
+    /* Proxy plan P2: service intent for the bundled Flycast build that can
+       route. Jawaka neither probes health nor decides per-game eligibility
+       here; Flycast does both after loading its own per-game settings. */
+    bool flycast_route_authorized =
+        ra_account_authorized &&
+        jw_flycast_ra_route_target_authorized(target->path, target->core_id,
+                                              &target->standalone_policy,
+                                              target->provider,
+                                              ra_platform_dir);
+    bool flycast_route_live =
+        flycast_route_authorized && jw__raofflineproxy_service_live(state);
+    if (flycast_route_authorized) {
+        jw_log_info("RAOfflineProxy: Flycast route intent %s",
+                    jw_flycast_ra_route_value(flycast_route_live));
+    } else if (!target->standalone_policy.provider_bound &&
+               target->standalone_policy.release ==
+                   JW_STANDALONE_RELEASE_FLYCAST &&
+               jw__raofflineproxy_service_live(state)) {
+        jw_log_info("RAOfflineProxy: this Flycast build cannot route through "
+                    "the offline service; achievements stay direct until "
+                    "Flycast is updated");
+    }
+
     if (direct_drm) {
         jw_log_info("direct DRM handoff requested for core=%s rom=%s",
                     target->core_id, rom_abs);
         jw__stop_osd_child(state);
-        int stop_rc = system("/etc/init.d/S49weston stop </dev/null >/dev/null 2>&1; "
-                             "for i in 1 2 3 4 5 6 7 8 9 10; do "
-                             "pidof weston >/dev/null 2>&1 || exit 0; sleep .1; "
-                             "done; exit 0");
+        int stop_rc = jw_weston_initd_run(JW_WESTON_INITD("stop") " </dev/null >/dev/null 2>&1; "
+                                          "for i in 1 2 3 4 5 6 7 8 9 10; do "
+                                          "pidof weston >/dev/null 2>&1 || exit 0; sleep .1; "
+                                          "done; exit 0");
         if (stop_rc == -1) {
             jw_log_warn("direct DRM handoff: could not invoke Weston stop");
         }
@@ -9687,7 +10120,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         if (direct_drm) {
             state->direct_drm_active = false;
             if (state->direct_drm_weston_stopped) {
-                (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
                 state->direct_drm_weston_stopped = false;
                 jw__spawn_osd(state);
             }
@@ -9717,6 +10150,16 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         jw__publish_source_content_env(rom_source);
         jw_pico8_export(target->native_pico8 ? &pico8_paths : NULL,
                         target->native_pico8 && use_roster);
+        /* Standalone children never inherit the RetroArch credential channel
+           (JAWAKA_CHEEVOS_* is RetroArch's own per-launch config handoff) or
+           a stale account snapshot; only an authorized target receives the
+           fresh snapshot, applied over a cleared set. */
+        jw_ra_account_prepare_standalone_env(&ra_account, ra_account_authorized);
+        jw__flycast_route_clear_env();
+        if (flycast_route_authorized) {
+            setenv(JW_FLYCAST_RA_ROUTE_ENV,
+                   jw_flycast_ra_route_value(flycast_route_live), 1);
+        }
         setenv("JAWAKA_GAME_SYSTEM", state->pending_launch_system, 1);
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
         setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);
@@ -9777,7 +10220,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
             if (direct_drm) {
                 state->direct_drm_active = false;
                 if (state->direct_drm_weston_stopped) {
-                    (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                    (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
                     state->direct_drm_weston_stopped = false;
                     jw__spawn_osd(state);
                 }
@@ -9840,6 +10283,15 @@ static int jw__spawn_authorized_pending_game(jw_daemon_state *state) {
     int rc = target.kind == JW_LAUNCH_TARGET_STANDALONE
                  ? jw__spawn_standalone_emulator(state, &target)
                  : jw__spawn_retroarch(state, &target);
+    if (rc != 0) {
+        /* Both spawns apply the game's governor profile before the child runs,
+           so a handoff that never starts a writer would otherwise leave the
+           device in the game's mode with the launcher (or a still-running
+           previous game) on screen. Restore what the current context actually
+           asks for: a live session keeps its own profile, everything else
+           returns to the frontend profile. */
+        (void)jw__perf_apply_current_context(state, "launch-failed");
+    }
     /* Started or failed, this launch is over. */
     jw__pending_launch_forget_target(state);
     return rc;
@@ -9894,11 +10346,7 @@ static jw__rop_gate_result jw__raofflineproxy_route(
        may be a proxy to talk to", and it is true however the service got
        there. Everything else is direct with zero wait, which is exactly what
        the plan asks for: absent, invalid, disabled, or session-stopped. */
-    bool service_live = entry && entry->pgid > 0 &&
-                        (entry->state == JW_SVC_STATE_RUNNING ||
-                         entry->state == JW_SVC_STATE_STARTING);
-    if (!entry || !entry->pak_present || !entry->manifest_valid ||
-        !service_live) {
+    if (!jw__raofflineproxy_entry_live(entry)) {
         jw_log_info("RAOfflineProxy: direct launch (service %s)",
                     !entry ? "absent"
                     : !entry->pak_present || !entry->manifest_valid
@@ -9951,7 +10399,7 @@ static jw__rop_gate_result jw__raofflineproxy_route(
         if (jw__monotonic_ms() >= deadline_ms) {
             break;
         }
-        usleep(100 * 1000);
+        jw__usleep(100 * 1000);
     }
     jw_log_info("RAOfflineProxy: service not ready after %dms; blocking launch",
                 JW_ROP_ROUTING_BUDGET_MS);
@@ -10201,6 +10649,23 @@ static int jw__spawn_retroarch(jw_daemon_state *state,
        (PS1 wants a DualShock, or nothing can rumble). Must happen before the
        fork: RetroArch reads the remap during startup. */
     jw_retroarch_pin_core_device(ra_home, core_id, core_config_folder, rom_abs);
+
+    /* Seed the tuned option profile for cores that ship one, before RetroArch
+       initializes the core. Failing here is deliberate: a launch without the
+       installed profile would silently run the new core on stock defaults, so
+       "the profile is not on disk" has to be a failure rather than a quiet
+       downgrade. Already-seeded installs (and every other core) return without
+       touching anything. */
+    {
+        char seed_error[256];
+        if (jw_retroarch_seed_core_options(ra_home, state->sdcard_root, core_id,
+                                           core_config_folder, seed_error,
+                                           sizeof(seed_error)) != 0) {
+            jw_log_error("could not install the core option profile for %s: %s",
+                         core_id, seed_error[0] ? seed_error : "unknown error");
+            goto fail;
+        }
+    }
 
     /* Stop any UI pulse before the handoff, then resolve the duty endpoints
        the game will drive the motor with (if game rumble is on). A bare
@@ -10664,22 +11129,17 @@ static int jw__hdmi_connected_now(void) {
 }
 
 /* Is the live HDMI scanout 1080p120? 120Hz only exists at 1080p on this chain, so
-   the "1920x1080p120" mode string is unique to an HDMI 120Hz output. */
-static int jw__hdmi_live_is_1080p120(void) {
-    FILE *fp = fopen("/sys/kernel/debug/dri/0/summary", "r");
-    if (!fp) {
+   a 1920x1080 mode at ~120Hz is unique to an HDMI 120Hz output. */
+static int jw__hdmi_live_is_1080p120(jw_daemon_state *state) {
+    /* Asked from the platform (the DRM core), never from the DRM debugfs summary:
+       this runs every poll, and reading that file during a mode change crashed the
+       kernel (see jw__mlp1_get_display_mode). */
+    int width = 0, height = 0, hz = 0;
+    if (!state ||
+        jw_platform_get_display_mode(&state->platform, &width, &height, &hz) != 0) {
         return 0;
     }
-    char line[256];
-    int found = 0;
-    while (fgets(line, sizeof(line), fp)) {
-        if (strstr(line, "1920x1080p120")) {
-            found = 1;
-            break;
-        }
-    }
-    fclose(fp);
-    return found;
+    return width == 1920 && height == 1080 && hz >= 119;
 }
 
 static void jw__tick_hdmi(jw_daemon_state *state) {
@@ -10689,16 +11149,34 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
     }
     state->hdmi_next_poll_ms = now + JW_HDMI_POLL_MS;
 
+    /* Swap the color-temperature LUT for the output HDMI settled on. The write only
+       lands on an active CRTC, so while Weston is still switching it fails and is
+       retried each poll until the window runs out. */
+    if (state->lut_sync_not_before_ms != 0 && now >= state->lut_sync_not_before_ms) {
+        if (jw__apply_color_temp(state, state->lut_sync_external)) {
+            state->lut_sync_not_before_ms = 0;
+        } else if (now > state->lut_sync_deadline_ms) {
+            jw_log_warn("color temperature could not be swapped after the HDMI change; "
+                        "it applies on the next HDMI change or restart");
+            state->lut_sync_not_before_ms = 0;
+        }
+    }
+
     /* ── Auto-revert safety for 1080p120 ──
        A 1080p120 switch can black out a TV/cable that can't carry the 297MHz signal,
        stranding the user on a screen they can't see to navigate back. When 1080p120
        goes live by a deliberate change (skip the boot-apply window), arm a 15s
        deadline; the launcher's "keep" press clears it, otherwise revert to the safe,
        universal 720p60 and drop the saved rate to 60 so it sticks. */
-    int is120 = jw__hdmi_live_is_1080p120();
+    /* Only ask the display for its mode when a cable is in: 1080p120 exists only on
+       HDMI, and the query opens the DRM device, so a unit with nothing plugged in
+       should not do that every second. */
+    int cur = jw__hdmi_connected_now();
+    int is120 = cur == 1 ? jw__hdmi_live_is_1080p120(state) : 0;
     if (is120 && !state->hdmi_was_120 && now > 30000) {
         state->hdmi_revert_deadline_ms = now + 15000;
         jw_log_info("HDMI 1080p120 live -> auto-revert armed (15s)");
+        jw__notify_launcher_levels(state);   /* it shows the keep-or-revert prompt */
     } else if (!is120) {
         state->hdmi_revert_deadline_ms = 0;
     }
@@ -10715,7 +11193,6 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
         }
     }
 
-    int cur = jw__hdmi_connected_now();
     int prev = state->hdmi_last_connected;
     if (cur == prev) {
         return;
@@ -10740,11 +11217,13 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
         /* plugged in (incl. the first poll after boot) -> apply the chosen mode */
         jw_platform_perform_action(&state->platform,
                                    JW_PLATFORM_ACTION_SET_HDMI_OUTPUT, mode, &res);
+        jw__schedule_lut_sync(state, true);
         jw_log_info("HDMI hotplug: connected -> applying mode %d", mode);
     } else if (prev == 1) {
         /* was connected, now unplugged -> back to the panel */
         jw_platform_perform_action(&state->platform,
                                    JW_PLATFORM_ACTION_SET_HDMI_OUTPUT, 0, &res);
+        jw__schedule_lut_sync(state, false);
         jw_log_info("HDMI hotplug: disconnected -> reverting to panel");
     }
 }
@@ -11044,8 +11523,13 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
        hold path reads cached values. A skipped poll simply runs on release. */
     if (now >= state->autosleep_setting_next_ms && !state->power_held &&
         !state->shutdown_requested) {
-        jw__power_hold_save_refresh_setting(state);
-        state->autosleep_timeout_s = jw__autosleep_read_timeout_s(state);
+        /* 0 means "re-read now" (start-up and wake); otherwise only a
+           library.db write can have changed the setting. */
+        bool forced = state->autosleep_setting_next_ms == 0;
+        if (jw__db_file_changed(state->db_path, &state->autosleep_db_sig) || forced) {
+            state->autosleep_timeout_s = jw__autosleep_read_timeout_s(state);
+            jw__power_hold_save_refresh_setting(state);
+        }
         state->autosleep_setting_next_ms = now + JW_AUTOSLEEP_SETTING_POLL_MS;
         jw__autosleep_sync_platform(state);
     }
@@ -11994,12 +12478,6 @@ static int jw__storage_warning_ack_write(const jw_daemon_state *state,
     return rc;
 }
 
-static bool jw__storage_external_power(jw_daemon_state *state) {
-    jw_platform_status status;
-    jw_platform_get_status(&state->platform, &status);
-    return status.charging == 1;
-}
-
 static bool jw__storage_child_in_front(const jw_daemon_state *state) {
     return state->child_pid > 0 &&
            (state->child_kind == JW_CHILD_RETROARCH ||
@@ -12046,18 +12524,30 @@ static void jw__storage_status_add_health(jw_daemon_state *state, cJSON *root,
     cJSON_AddBoolToObject(root, "warning_pending",
                           h->mounted && h->access == JW_STORAGE_ACCESS_READ_ONLY &&
                               !jw__storage_warning_acked(state, h));
-    cJSON_AddBoolToObject(root, "external_power", jw__storage_external_power(state));
+    jw_platform_status power;
+    jw_platform_get_status(&state->platform, &power);
+    cJSON_AddBoolToObject(root, "external_power", power.charging == 1);
+    jw__json_add_int_or_null(root, "battery_percent", power.battery_percent);
 
     jw_storage_probe_env env;
     jw_storage_probe_env_default(&env);
+    char hold_trigger[32];
+    if (h->repair != JW_STORAGE_REPAIR_NONE &&
+        jw_storage_repair_hold_trigger(&env, h->uuid, hold_trigger, sizeof(hold_trigger))) {
+        cJSON_AddStringToObject(root, "hold_trigger", hold_trigger);
+    }
     jw_storage_repair_result result;
-    if (jw_storage_repair_last_result(&env, &result)) {
+    if (jw_storage_repair_last_result(&env, h->uuid, &result)) {
         cJSON *last = cJSON_AddObjectToObject(root, "last_repair");
         if (last) {
             cJSON_AddStringToObject(last, "request_id", result.request_id);
             cJSON_AddStringToObject(last, "outcome", result.outcome);
             cJSON_AddStringToObject(last, "mount_state", result.mount_state);
             cJSON_AddStringToObject(last, "mode", result.mode);
+            cJSON_AddStringToObject(last, "origin", result.origin);
+            if (result.trigger[0]) {
+                cJSON_AddStringToObject(last, "trigger", result.trigger);
+            }
             cJSON_AddBoolToObject(last, "changes_complete", result.changes_complete);
             cJSON_AddNumberToObject(last, "reported_changes", result.reported_change_count);
             cJSON_AddBoolToObject(last, "acknowledged", result.acknowledged);
@@ -12166,12 +12656,18 @@ static void jw__tick_storage_health(jw_daemon_state *state) {
         jw_storage_probe_env env;
         jw_storage_probe_env_default(&env);
         jw_storage_repair_result result;
-        if (jw_storage_repair_last_result(&env, &result) && !result.acknowledged &&
-            (strcmp(result.outcome, "repaired") == 0 ||
-             strcmp(result.outcome, "clean") == 0) &&
-            strcmp(result.mount_state, "read-write") == 0 &&
-            jw__start_scan_job(state, "after SD card repair") < 0) {
-            jw_log_warn("storage: post-repair library rescan could not start");
+        for (int i = 0; i < state->storage_monitor.count; i++) {
+            const jw_storage_health *health = &state->storage_monitor.slots[i].health;
+            if (jw_storage_repair_last_result(&env, health->uuid, &result) &&
+                !result.acknowledged && health->access == JW_STORAGE_ACCESS_READ_WRITE &&
+                health->repair == JW_STORAGE_REPAIR_NONE &&
+                (strcmp(result.outcome, "repaired") == 0 || strcmp(result.outcome, "clean") == 0) &&
+                strcmp(result.mount_state, "read-write") == 0) {
+                if (jw__start_scan_job(state, "after SD card check") < 0) {
+                    jw_log_warn("storage: post-check library rescan could not start");
+                }
+                break;
+            }
         }
     }
 }
@@ -12263,7 +12759,7 @@ static int jw__storage_run_repair_tool(char *const argv[], char *out, size_t out
         if (jw__monotonic_ms() >= deadline) {
             break;
         }
-        usleep(10000);
+        jw__usleep(10000);
     }
     (void)kill(pid, SIGKILL);
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
@@ -12277,12 +12773,18 @@ static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_clie
                                              cJSON *root) {
     cJSON *source_json = cJSON_GetObjectItemCaseSensitive(root, "source");
     cJSON *mode_json = cJSON_GetObjectItemCaseSensitive(root, "mode");
+    cJSON *battery_json = cJSON_GetObjectItemCaseSensitive(root, "allow_battery");
+    bool allow_battery = cJSON_IsTrue(battery_json);
     const char *source = cJSON_IsString(source_json) && source_json->valuestring
         ? source_json->valuestring : JW_PLATFORM_STORAGE_LAUNCHER_ID;
     const char *mode = cJSON_IsString(mode_json) && mode_json->valuestring
         ? mode_json->valuestring : "repair";
     if (strcmp(mode, "repair") != 0 && strcmp(mode, "check") != 0) {
         return jw__reply_error(client, "invalid repair mode");
+    }
+    if ((battery_json && !cJSON_IsBool(battery_json)) ||
+        (allow_battery && strcmp(mode, "repair") != 0)) {
+        return jw__reply_error(client, "invalid battery override");
     }
     const jw_storage_health_slot *slot = jw__storage_slot(state, source);
     /* An unmounted card qualifies only as a held card with a known identity. */
@@ -12301,8 +12803,13 @@ static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_clie
     if (state->active_game.active || jw__storage_child_in_front(state)) {
         return jw__reply_error(client, "busy");
     }
-    if (!jw__storage_external_power(state)) {
-        return jw__reply_error(client, "power-required");
+    if (strcmp(mode, "repair") == 0) {
+        jw_platform_status power;
+        jw_platform_get_status(&state->platform, &power);
+        if (power.charging != 1 &&
+            (!allow_battery || power.battery_percent < JW_STORAGE_REPAIR_MIN_BATTERY_PERCENT)) {
+            return jw__reply_error(client, "power-required");
+        }
     }
 #ifdef PLATFORM_MLP1
     char fs_type[JW_STORAGE_FS_TYPE_MAX];
@@ -12319,7 +12826,7 @@ static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_clie
         (char *)"umrk-storage-repair", (char *)"request",
         (char *)"--uuid", uuid, (char *)"--source", source_copy,
         (char *)"--fs-type", fs_type, (char *)"--device", device,
-        (char *)"--mode", mode_copy, NULL,
+        (char *)"--mode", mode_copy, allow_battery ? (char *)"--allow-battery" : NULL, NULL,
     };
     char output[256];
     int rc = jw__storage_run_repair_tool(argv, output, sizeof(output));
@@ -12331,7 +12838,9 @@ static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_clie
     }
     jw_log_warn("storage: %s request committed for %s uuid=%s; restarting", mode, source, uuid);
     state->storage_monitor.generation++;
-    jw__request_power_transition(state, JW_PLATFORM_ACTION_REBOOT);
+    if (!jw__request_power_transition(state, JW_PLATFORM_ACTION_REBOOT, "storage-check")) {
+        return jw__reply_error(client, "power-handoff-missing");
+    }
     return jw__reply_ok(client, "storage-repair-request", NULL);
 #else
     return jw__reply_error(client, "unsupported-platform");
@@ -13173,6 +13682,8 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         cJSON *role = cJSON_GetObjectItemCaseSensitive(root, "role");
         if (cJSON_IsString(role) && role->valuestring) {
             if (strcmp(role->valuestring, "launcher") == 0) {
+                state->launcher_levels_signal =
+                    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "levels_signal"));
                 jw_log_info("launcher hello");
             } else if (strcmp(role->valuestring, "menu") == 0) {
                 jw_log_info("menu hello");
@@ -13185,11 +13696,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
     }
 
     if (strcmp(type->valuestring, "hdmi-revert-status") == 0) {
-        long long n = jw__monotonic_ms();
-        int secs = 0;
-        if (state->hdmi_revert_deadline_ms != 0 && state->hdmi_revert_deadline_ms > n) {
-            secs = (int)((state->hdmi_revert_deadline_ms - n + 999) / 1000);
-        }
+        int secs = jw__hdmi_revert_seconds(state);
         cJSON_Delete(root);
         cJSON *reply = cJSON_CreateObject();
         cJSON_AddStringToObject(reply, "type", "ok");
@@ -13284,7 +13791,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
            of ../../something would read an arbitrary file as a string table. */
         const char *lang = lang_json->valuestring;
         size_t lang_len = strlen(lang);
-        if (lang_len >= 16) {
+        if (lang_len >= JW_I18N_CODE_MAX) {   /* same limit the scanner and launcher use */
             cJSON_Delete(root);
             return jw__reply_error(client, "language code too long");
         }
@@ -13298,7 +13805,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
             }
         }
 
-        char lang_buf[16];
+        char lang_buf[JW_I18N_CODE_MAX];
         snprintf(lang_buf, sizeof(lang_buf), "%s", lang);
 
         if (jw_db_set_setting(state->db_path, "language", lang_buf) != 0) {
@@ -13614,6 +14121,42 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         return jw__reply_ok(client, "game-launch-override", NULL);
     }
 
+    /* Retry answers the RAOfflineProxy prompt without bypassing anything: the
+       same pending launch runs again with no override and no skipped check,
+       so it takes the full coordination path and the same bounded (500 ms,
+       fail-closed) routing decision as a fresh launch. Healthy now means a
+       normal proxied launch; still not ready re-blocks with the same reason
+       and the replacement launcher shows the prompt again. One attempt per
+       request, never a loop. */
+    if (strcmp(type->valuestring, "game-launch-retry") == 0) {
+        if (!jw__game_launch_retry_allowed(state) ||
+            state->active_game.active || state->pending_launch_game_id <= 0) {
+            cJSON_Delete(root);
+            return jw__reply_error(client,
+                                   "blocked game launch is not retryable");
+        }
+        state->pending_launch = true;
+        state->pending_launch_resume_switcher =
+            state->game_launch_blocked_resume_switcher;
+        state->pending_launch_skip_check = false;
+        state->pending_launch_override_unverified = false;
+        state->game_launch_blocked = false;
+        state->game_launch_blocked_resume_switcher = false;
+        state->game_launch_blocked_requires_verified_stop = false;
+        state->game_launch_blocked_service_id[0] = '\0';
+        state->game_launch_blocked_reason[0] = '\0';
+        jw_log_info("life1: user chose Retry for blocked launch");
+        bool launch_now = state->child_pid <= 0;
+        cJSON_Delete(root);
+        if (launch_now && jw__spawn_pending_game(state) != 0) {
+            return jw__reply_error(client,
+                                   state->game_launch_blocked
+                                       ? "retried game launch still blocked"
+                                       : "retried game launch failed");
+        }
+        return jw__reply_ok(client, "game-launch-retry", NULL);
+    }
+
     if (strcmp(type->valuestring, "launch-app") == 0) {
         cJSON *pak_dir = cJSON_GetObjectItemCaseSensitive(root, "pak_dir");
         const char *error_message = NULL;
@@ -13675,6 +14218,11 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         return jw__reply_platform_audio_status(state, client);
     }
 
+    if (strcmp(type->valuestring, "platform-levels") == 0) {
+        cJSON_Delete(root);
+        return jw__reply_platform_levels(state, client);
+    }
+
     if (strcmp(type->valuestring, "performance-status") == 0) {
         cJSON_Delete(root);
         return jw__reply_performance_status(state, client);
@@ -13704,6 +14252,12 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
 
     if (strcmp(type->valuestring, "update-check") == 0) {
         int rc = jw__handle_update_check(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "update-releases") == 0) {
+        int rc = jw__handle_update_releases(state, client, root);
         cJSON_Delete(root);
         return rc;
     }
@@ -13781,11 +14335,21 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
                 state->cached_volume_percent = resolved;
                 jw__persist_volume(state, resolved);
                 jw__osd_show_volume(state, resolved);
+                jw__notify_launcher_levels(state);
             }
         } else if (action == JW_PLATFORM_ACTION_SET_AUDIO_OUTPUT) {
             jw_platform_perform_action(&state->platform, action, value, &result);
             if (result.code == JW_PLATFORM_RESULT_OK) {
                 jw__publish_audio_env(state);
+                /* Each output restores its own stored level, so the cached
+                   percent belongs to the output we just left. */
+                state->cached_volume_percent = -1;
+                jw__notify_launcher_levels(state);
+            }
+        } else if (action == JW_PLATFORM_ACTION_SET_HDMI_OUTPUT) {
+            jw_platform_perform_action(&state->platform, action, value, &result);
+            if (result.code == JW_PLATFORM_RESULT_OK) {
+                jw__schedule_lut_sync(state, value == 1 || value == 2);
             }
         } else if (action == JW_PLATFORM_ACTION_SLEEP) {
             bool inhibited = jw_suspend_inhibitor_count(&state->suspend_inhibitor) > 0;
@@ -13796,14 +14360,17 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
                      inhibited ? "sleep pending: suspend inhibited" : "sleep resumed");
         } else if (action == JW_PLATFORM_ACTION_POWEROFF ||
                    action == JW_PLATFORM_ACTION_REBOOT) {
-            /* A power transition must not race the supervisor's shutdown stop.
-             * Record the action now so the reply reaches the caller, then let the
-             * main loop stop the frontend and every service. jw__cleanup schedules
-             * the kernel transition only after the DB/socket/runtime cleanup. */
-            jw__request_power_transition(state, action);
+            /* The loong_power handoff shim sends reason=low-battery. */
+            cJSON *reason_json = cJSON_GetObjectItemCaseSensitive(root, "reason");
+            const char *reason = cJSON_IsString(reason_json) &&
+                                         jw_power_request_reason_valid(reason_json->valuestring)
+                                     ? reason_json->valuestring
+                                     : "menu";
+            bool accepted = jw__request_power_transition(state, action, reason);
             memset(&result, 0, sizeof(result));
-            result.code = JW_PLATFORM_RESULT_OK;
+            result.code = accepted ? JW_PLATFORM_RESULT_OK : JW_PLATFORM_RESULT_FAILED;
             snprintf(result.message, sizeof(result.message), "%s",
+                     !accepted ? "safe power handoff unavailable" :
                      action == JW_PLATFORM_ACTION_REBOOT ? "rebooting" : "powering off");
         } else if (action == JW_PLATFORM_ACTION_BLUETOOTH_ON ||
                    action == JW_PLATFORM_ACTION_BLUETOOTH_OFF) {
@@ -15058,12 +15625,110 @@ static void jw__ipc_accept_ready(jw_daemon_state *state) {
     }
 }
 
+/* A game or app is the foreground child: audio can start at any moment and
+   most of the in-game machinery below is live. The launcher and the Settings
+   menu are not content. */
+static bool jw__content_child_active(const jw_daemon_state *state) {
+    return state->child_pid > 0 &&
+           state->child_kind != JW_CHILD_NONE &&
+           state->child_kind != JW_CHILD_LAUNCHER &&
+           state->child_kind != JW_CHILD_MENU;
+}
+
+/* The daemon sleeps to its next deadline, at most JW_LOOP_IDLE_MAX_MS. Work
+   that is sub-second while it lasts keeps the old 50 ms cadence instead of
+   declaring a deadline; this is the complete list, so anything not named here
+   tolerates the idle heartbeat (the charger, HDMI, USB/Bluetooth audio and
+   storage-health polls, the auto-sleep setting and screen-off time, package
+   mutation recovery, the external-pad rescan, the IPC partial-frame timeout,
+   suspend-inhibitor liveness). Events wake the loop on their own: IPC, the
+   input proxy (power edges, callbacks, swallowed standby input), SIGCHLD, the
+   jack and storage/netlink fds, the OSD readiness pipe and external pads. */
+#define JW_LOOP_BUSY_MS 50
+#define JW_LOOP_IDLE_MAX_MS 1000
+
+static bool jw__loop_busy(const jw_daemon_state *state) {
+    /* Shutting down: the shutdown branch waits for every child to exit, so
+       each pass has to look for exits whether or not a SIGCHLD was seen. */
+    if (state->shutdown_requested) return true;
+    /* Game or app: speaker-gate SETUP window (~150 ms), rumble reclaim
+       (250 ms), switcher resume and warning retries (100 ms), menu prewarm,
+       shader poll (25 ms), menu escape, writer-group absence waits, standalone
+       and PICO-8 quit confirmation and the import timeout. */
+    if (jw__content_child_active(state)) return true;
+    /* No foreground child yet: respawn and pending launch decisions. */
+    if (!state->daemon_only && state->child_pid <= 0) return true;
+    if (state->child_stop_deadline_ms > 0 || state->child_group_wait_started_ms > 0) return true;
+    if (state->pending_menu || state->pending_launch || state->pending_app ||
+        state->launch_status_pending) return true;
+    if (state->post_launch_resume_pending || state->in_game_menu_prewarm_pending ||
+        state->advanced_shader_pending || state->retroarch_session.warning_pending) return true;
+    if (state->retroarch_audio_reinit_pending || state->rumble_reclaim_ms > 0 ||
+        state->retroarch_quit_deadline_ms > 0) return true;
+    if (state->menu_pid > 0 || state->menu_escape.pending) return true;
+    if (state->game_coordination_pending) return true;
+    /* Power held: the 2 s long-press threshold has no event of its own. */
+    if (state->power_held) return true;
+    /* OSD start-up: readiness is also noticed per pass. */
+    if (state->osd_pid > 0 && !state->osd_ready) return true;
+    /* Update progress polling, and the update-check and scan threads, which
+       finish by setting a flag nothing wakes the loop for. */
+    if (state->update_download_job.active || state->update_install_job.active ||
+        state->update_check_job.active || state->update_package_quiesce_active) return true;
+    if (state->scan_job.thread_started) return true;
+    /* Start-up maintenance runs 500 ms after frontend-ready. */
+    if (state->startup_maintenance_pending) return true;
+    /* An inline input proxy reads the power key and runs its Menu-tap (80 ms)
+       and escape timers only from its tick. */
+    if (jw_input_proxy_needs_tick_cadence(&state->input_proxy)) return true;
+    return false;
+}
+
+static int jw__loop_timeout_ms(jw_daemon_state *state) {
+    if (jw__loop_busy(state)) {
+        return JW_LOOP_BUSY_MS;
+    }
+    long long now = jw__monotonic_ms();
+    long long due = now + JW_LOOP_IDLE_MAX_MS;
+    long long at = jw_platform_next_deadline_ms(&state->platform, now);
+    if (at >= 0 && at < due) {
+        due = at;
+    }
+    if (state->services) {
+        at = jw_svc_supervisor_next_deadline_ms(state->services, now);
+        if (at >= 0 && at < due) {
+            due = at;
+        }
+    }
+    /* A deadline that is already due gets the old cadence rather than 0: if
+       its tick cannot act on it yet, 0 would spin. */
+    if (due <= now) {
+        return JW_LOOP_BUSY_MS;
+    }
+    return (int)(due - now);
+}
+
+/* Drained at the top of every pass rather than after the poll, because the
+   shutdown branch never reaches the poll. */
+static void jw__drain_sigchld(jw_daemon_state *state) {
+    if (g_sigchld_pipe[0] < 0) {
+        return;
+    }
+    char drain[64];
+    while (read(g_sigchld_pipe[0], drain, sizeof(drain)) > 0) {
+        state->sigchld_seen = true;
+    }
+}
+
 static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
-    struct pollfd poll_fds[JW_DAEMON_IPC_CONNECTION_MAX + 2];
-    int slot_for_poll[JW_DAEMON_IPC_CONNECTION_MAX + 2];
+    /* Listen socket, connections, then the wake-only fds below. */
+    enum { JW_POLL_EXTRA = 2 + 4 + JW_EXT_INPUT_MAX_PADS + 1 };
+    struct pollfd poll_fds[1 + JW_DAEMON_IPC_CONNECTION_MAX + JW_POLL_EXTRA];
+    int slot_for_poll[1 + JW_DAEMON_IPC_CONNECTION_MAX + JW_POLL_EXTRA];
+    const nfds_t poll_max = sizeof(poll_fds) / sizeof(poll_fds[0]);
     nfds_t count = 1;
     memset(poll_fds, 0, sizeof(poll_fds));
-    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX + 2; i++) {
+    for (nfds_t i = 0; i < poll_max; i++) {
         slot_for_poll[i] = -1;
     }
     poll_fds[0].fd = jw_ipc_server_fd(state->server);
@@ -15093,11 +15758,34 @@ static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
         count++;
     }
 
+    /* Wake-only fds: the next pass drains them (the SIGCHLD pipe at its top,
+       the rest in their ticks), so revents is not looked at here. */
+    int wake_fds[JW_POLL_EXTRA];
+    int wake_count = 0;
+    if (g_sigchld_pipe[0] >= 0) {
+        wake_fds[wake_count++] = g_sigchld_pipe[0];
+    }
+    wake_count += jw_platform_poll_fds(&state->platform, wake_fds + wake_count, 4);
+    for (int i = 0; i < JW_EXT_INPUT_MAX_PADS; i++) {
+        if (state->external_input.fds[i] >= 0) {
+            wake_fds[wake_count++] = state->external_input.fds[i];
+        }
+    }
+    if (!state->osd_ready && state->osd_ready_fd >= 0) {
+        wake_fds[wake_count++] = state->osd_ready_fd;
+    }
+    for (int i = 0; i < wake_count && count < poll_max; i++) {
+        poll_fds[count].fd = wake_fds[i];
+        poll_fds[count].events = POLLIN;
+        count++;
+    }
+
     int ready = poll(poll_fds, count, timeout_ms);
     if (ready < 0 && errno != EINTR) {
         jw_log_warn("ipc poll failed: %s", strerror(errno));
         return;
     }
+
     if (ready > 0 && (poll_fds[0].revents & POLLIN)) {
         jw__ipc_accept_ready(state);
     }
@@ -15209,7 +15897,7 @@ static void jw__terminate_menu_child(jw_daemon_state *state, bool force) {
             jw__clear_menu_tracking(state);
             return;
         }
-        usleep(50000);
+        jw__usleep(50000);
     }
 
     if (force) {
@@ -15320,7 +16008,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
             for (int i = 0; i < 25 && !absent; i++) {
                 absent = jw_svc_group_absent(pgid);
                 if (!absent) {
-                    usleep(20000);
+                    jw__usleep(20000);
                 }
             }
             bool shutting_down =
@@ -15428,8 +16116,14 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
             state->direct_drm_active = false;
             if (state->direct_drm_weston_stopped) {
                 jw_log_info("direct DRM handoff ended; restarting Weston");
-                (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
-                sleep(1);
+                /* From / and with the rootfs environment, not jawakad's
+                   card working directory and launcher LD_LIBRARY_PATH:
+                   Weston outlives this session, and a compositor sitting in
+                   or mapping libraries from a launcher bundle that an update
+                   has since replaced keeps the card from closing at
+                   shutdown. See weston_initd.h. */
+                (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
+                jw__usleep(1000000UL);
                 state->direct_drm_weston_stopped = false;
             }
             if (!state->shutdown_requested && !g_shutdown_requested) {
@@ -15670,7 +16364,7 @@ static void jw__cleanup(jw_daemon_state *state) {
                    jw__monotonic_ms() < deadline) {
                 jw__handle_child_exit(state);
                 if (state->child_pid == child_pid) {
-                    usleep(20000);
+                    jw__usleep(20000);
                 }
             }
             if (state->child_pid == child_pid) {
@@ -15684,7 +16378,7 @@ static void jw__cleanup(jw_daemon_state *state) {
                        jw__monotonic_ms() < deadline) {
                     jw__handle_child_exit(state);
                     if (state->child_pid == child_pid) {
-                        usleep(20000);
+                        jw__usleep(20000);
                     }
                 }
             }
@@ -15707,7 +16401,7 @@ static void jw__cleanup(jw_daemon_state *state) {
                    jw__monotonic_ms() < deadline) {
                 jw__handle_child_exit(state);
                 if (state->child_pid == child_pid) {
-                    usleep(20000);
+                    jw__usleep(20000);
                 }
             }
             if (state->child_pid == child_pid) {
@@ -15717,7 +16411,7 @@ static void jw__cleanup(jw_daemon_state *state) {
                        jw__monotonic_ms() < deadline) {
                     jw__handle_child_exit(state);
                     if (state->child_pid == child_pid) {
-                        usleep(20000);
+                        jw__usleep(20000);
                     }
                 }
             }
@@ -15775,6 +16469,8 @@ static void jw__cleanup(jw_daemon_state *state) {
     jw_pakrat_mutation_lock_release(&state->mutation_recovery_lock);
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
+    /* MLP1 queued its rootfs handoff before shutdown began. */
+#ifndef PLATFORM_MLP1
     if (state->power_transition_requested) {
         jw_platform_result result;
         jw_platform_perform_action(&state->platform,
@@ -15786,6 +16482,7 @@ static void jw__cleanup(jw_daemon_state *state) {
                                            : jw_platform_result_code_name(result.code));
         }
     }
+#endif
     jw_platform_shutdown(&state->platform);
     free(state->runtime_dir);
     free(state->sdcard_root);
@@ -15795,6 +16492,47 @@ static void jw__cleanup(jw_daemon_state *state) {
     free(state->state_dir);
 }
 
+#ifdef PLATFORM_MLP1
+/* /proc/<pid>/stat field 22: start time in clock ticks. With the pid it
+   identifies one process, so a recycled pid never reads as the game. */
+static unsigned long long jw__proc_start_ticks(pid_t pid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    buf[n] = '\0';
+    char *p = strrchr(buf, ')');
+    if (!p) return 0;
+    /* Fields after the command name start at field 3 (state). */
+    int field = 2;
+    for (p++; *p && field < 22; p++) {
+        if (*p == ' ') field++;
+    }
+    return field == 22 ? strtoull(p, NULL, 10) : 0;
+}
+
+/* SVC-1: shutdown could not prove every writer gone. Tell the rootfs
+   supervisor what to wait for instead of reporting completion. */
+static int jw__publish_power_incomplete(int stuck_services, const char *stuck_record,
+                                        pid_t game_pid) {
+    char record[2600];
+    int n = snprintf(record, sizeof(record), "reason=%s\n%s",
+                     stuck_services > 0 ? "unverified-service" : "game-child",
+                     stuck_record ? stuck_record : "");
+    if (n < 0 || (size_t)n >= sizeof(record)) return -1;
+    if (game_pid > 0) {
+        int m = snprintf(record + n, sizeof(record) - (size_t)n,
+                         "game pid=%d start=%llu\n", (int)game_pid,
+                         jw__proc_start_ticks(game_pid));
+        if (m < 0 || (size_t)m >= sizeof(record) - (size_t)n) return -1;
+    }
+    return jw_power_request_incomplete(record);
+}
+#endif
+
 int main(int argc, char *argv[]) {
     signal(SIGINT, jw__handle_signal);
     signal(SIGTERM, jw__handle_signal);
@@ -15802,6 +16540,11 @@ int main(int argc, char *argv[]) {
 
     jw_daemon_state state;
     memset(&state, 0, sizeof(state));
+    state.reap_by_signal = jw__install_sigchld_pipe();
+    if (!state.reap_by_signal) {
+        jw_log_warn("SIGCHLD pipe unavailable (%s); checking children every pass",
+                    strerror(errno));
+    }
     /* A zeroed snapshot would read as "everything disabled"; the defaults are
        the fixed chords this replaces, so a daemon that never reaches the
        settings load still behaves as it always did. */
@@ -15877,6 +16620,17 @@ int main(int argc, char *argv[]) {
     unsetenv("SDL_JOYSTICK_HIDAPI");
     unsetenv("JAWAKA_INPUT_ROSTER_COUNT");
 
+    /* The RA account snapshot is per-launch child state, resolved fresh from
+       the DB for each authorized standalone launch. Never inherit it: with
+       the daemon's own environment cleared here, no app, helper or emulator
+       can receive a stale snapshot through ordinary inheritance. The
+       RetroArch channel is per-launch too: set only around the config write
+       and cleared right after, so an inherited value is always stale, and
+       supervised services inherit this environment as-is. */
+    jw__ra_account_clear_env();
+    jw__cheevos_clear_env();
+    jw__flycast_route_clear_env();
+
     if (jw_platform_init(&state.platform, state.runtime_dir, state.sdcard_root) != 0) {
         jw_log_error("could not initialize platform service");
         jw__cleanup(&state);
@@ -15936,6 +16690,7 @@ int main(int argc, char *argv[]) {
     (void)jw__perf_apply_frontend(&state, "startup");
     jw__apply_persisted_brightness(&state);
     jw__apply_persisted_volume(&state);
+    (void)jw__apply_color_temp(&state, false);
     jw__apply_persisted_led(&state);
 
     /* 5-Game Mode boot check: decide whether to enter the locked focus screen
@@ -16141,6 +16896,7 @@ int main(int argc, char *argv[]) {
         if (g_shutdown_requested) {
             state.shutdown_requested = true;
         }
+        jw__drain_sigchld(&state);
 
         /* Detect a resume from ANY suspend — our auto-sleep OR loong_power's power
            button — by the gap between BOOTTIME (counts suspend time) and MONOTONIC
@@ -16175,7 +16931,15 @@ int main(int argc, char *argv[]) {
         jw_update_download_poll(&state.update_status, &state.update_download_job);
         jw__poll_update_install(&state);
         jw_update_check_poll(&state.update_status, &state.update_check_job);
-        jw__handle_child_exit(&state);
+        /* Child exits: only after a SIGCHLD, or on every pass while something
+           is busy (a writer group can outlive its leader's one SIGCHLD). */
+        bool check_exits = !state.reap_by_signal || state.sigchld_seen ||
+                           jw__loop_busy(&state);
+        if (state.sigchld_seen && state.services) {
+            jw_svc_supervisor_note_child_exit(state.services);
+        }
+        state.sigchld_seen = false;
+        if (check_exits) jw__handle_child_exit(&state);
         /* While RetroArch runs the synchronous save, nothing else talks to it:
            a blocked request would stall this loop and every retry would queue
            behind the save. */
@@ -16186,12 +16950,14 @@ int main(int argc, char *argv[]) {
             jw__tick_retroarch_stuck_quit(&state);
             jw__tick_in_game_menu_prewarm(&state);
         }
-        jw__handle_menu_exit(&state);
+        if (check_exits) jw__handle_menu_exit(&state);
         if (!power_hold_saving) {
             jw__tick_advanced_shader(&state);
         }
-        jw__handle_osd_exit(&state);
-        jw__handle_ledd_exit(&state);
+        if (check_exits || (!state.osd_ready && state.osd_ready_fd >= 0)) {
+            jw__handle_osd_exit(&state);
+        }
+        if (check_exits) jw__handle_ledd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
         jw__tick_menu_escape(&state);
         jw_external_input_monitor_tick(&state.external_input,
@@ -16213,6 +16979,7 @@ int main(int argc, char *argv[]) {
                volume keypress re-read, or that press steps from the old value
                and jumps. */
             state.cached_volume_percent = -1;
+            jw__notify_launcher_levels(&state);
         }
         if (!power_hold_saving) {
             jw__tick_retroarch_audio_reinit(&state);
@@ -16323,7 +17090,7 @@ int main(int argc, char *argv[]) {
                 } else {
                     kill(state.child_pid, SIGTERM);
                 }
-                usleep(50000);
+                jw__usleep(50000);
                 if (kill(state.child_pid, 0) == 0) {
                     if (jw__child_kind_has_writer_barrier(state.child_kind)) {
                         (void)jw__signal_tracked_game_group(&state, SIGKILL);
@@ -16335,18 +17102,18 @@ int main(int argc, char *argv[]) {
         }
         if (state.shutdown_requested && state.menu_pid > 0) {
             kill(state.menu_pid, SIGTERM);
-            usleep(50000);
+            jw__usleep(50000);
             if (kill(state.menu_pid, 0) == 0) {
                 kill(state.menu_pid, SIGKILL);
             }
         }
 
         if (state.shutdown_requested) {
-            usleep(50000);
+            jw__usleep(50000);
             continue;
         }
 
-        jw__ipc_tick(&state, 50);
+        jw__ipc_tick(&state, jw__loop_timeout_ms(&state));
         jw__game_coordination_tick(&state);
         if (!state.daemon_only && state.child_pid <= 0 &&
             (state.game_check_decision || state.game_launch_blocked)) {
@@ -16365,16 +17132,47 @@ int main(int argc, char *argv[]) {
        stranded ON with nothing left to clear it. */
     jw__rumble_quiesce();
 
+    bool shutdown_verified = true;
+    int stuck_services = 0;
+    char stuck_record[2048] = "";
     /* SVC-1: stop every running service and verify each group absent before
-       exiting. Per the contract's unverified-stop table, shutdown continues
-       past a stuck service (recorded, never allowed to wedge the device). */
+       exiting. Per the contract's unverified-stop table, an MLP1 power
+       transition with a stuck service does not report completion: the rootfs
+       supervisor pauses, and continues on proven absence, a user override, or
+       its critical-battery rule. Exit-to-stock and other platforms continue
+       with the warning. */
     if (state.services) {
         int stuck = jw_svc_supervisor_stop_all(state.services);
         if (stuck > 0) {
+            shutdown_verified = false;
+            stuck_services = stuck;
+            (void)jw_svc_supervisor_describe_unverified(state.services, stuck_record,
+                                                        sizeof(stuck_record));
             jw_log_warn("services: %d service(s) could not be verified stopped "
                         "during shutdown", stuck);
         }
     }
+
+    jw_log_info("jawakad exiting");
+    jw__cleanup(&state);
+#ifdef PLATFORM_MLP1
+    if (state.power_transition_requested) {
+        if (shutdown_verified && state.child_pid <= 0) {
+            if (jw_power_request_complete() != 0) {
+                (void)jw_power_request_incomplete("reason=cleanup-failed\n");
+                return 1;
+            }
+        } else if (jw__publish_power_incomplete(stuck_services, stuck_record,
+                                                state.child_pid) != 0) {
+            jw_log_error("power handoff: could not record the unverified stop; "
+                         "the supervisor can only offer an override");
+        }
+    }
+#else
+    (void)shutdown_verified;
+    (void)stuck_services;
+    (void)stuck_record;
+#endif
 
     /* Write clean-exit marker so the Leaf boot supervisor's crash-loop guard
        knows this was an intentional shutdown, not a crash. The marker lives in
@@ -16390,7 +17188,5 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    jw_log_info("jawakad exiting");
-    jw__cleanup(&state);
     return 0;
 }

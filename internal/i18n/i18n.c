@@ -47,7 +47,7 @@ static struct {
     uint32_t        count;
     const char     *pool;
     uint32_t        pool_size;
-    char            lang[16];
+    char            lang[JW_I18N_CODE_MAX];
 } g_i18n = { NULL, 0, NULL, 0, NULL, 0, "en" };
 
 /* FNV-1a. Chosen for being three lines and dependency-free; the table is a few
@@ -636,7 +636,7 @@ bool jw_i18n_language_is_cjk(const char *lang) {
  * is offered to the user, so a translator's dropped .tsv makes the Settings row
  * appear without a build. */
 static void jw__i18n_scan_dir(const char *env, const char *ext,
-                              char store[][16], size_t *count, size_t max) {
+                              char store[][JW_I18N_CODE_MAX], size_t *count, size_t max) {
     char dir[PATH_MAX];
     const char *root = getenv(env);
     if (!root || !root[0]) return;
@@ -646,31 +646,49 @@ static void jw__i18n_scan_dir(const char *env, const char *ext,
     if (!dp) return;
     size_t ext_len = strlen(ext);
     struct dirent *de;
-    while ((de = readdir(dp)) != NULL && *count < max) {
+    /* Read every entry, not just until full: a language past the limit has to be
+       seen to be reported. Duplicates are checked first, so a language offered
+       both as a .tsv and as a compiled table is never mistaken for overflow. */
+    while ((de = readdir(dp)) != NULL) {
         size_t n = strlen(de->d_name);
         if (n <= ext_len + 1 || strcmp(de->d_name + n - ext_len, ext) != 0) continue;
         size_t base = n - ext_len - 1;                 /* drop ".<ext>" */
-        if (base == 0 || base >= 16) continue;
-        char code[16];
+        if (base == 0) continue;
+        if (base >= JW_I18N_CODE_MAX) {
+            jw_log_warn("i18n: %s/%s: language code longer than %d characters; ignoring",
+                        dir, de->d_name, JW_I18N_CODE_MAX - 1);
+            continue;
+        }
+        char code[JW_I18N_CODE_MAX];
         memcpy(code, de->d_name, base);
         code[base] = '\0';
         if (strcmp(code, "en") == 0) continue;         /* en is the built-in default */
         bool seen = false;
         for (size_t i = 0; i < *count; i++)
             if (strcmp(store[i], code) == 0) { seen = true; break; }
-        if (!seen) {
-            snprintf(store[*count], 16, "%s", code);
-            (*count)++;
+        if (seen) continue;
+        if (*count >= max) {
+            /* `max` is the effective limit for this call, which is below the
+               constant when a caller asks for fewer. Naming the constant only
+               when it is the reason keeps the message true either way. */
+            if (max >= JW_I18N_MAX_LANGUAGES)
+                jw_log_warn("i18n: %s not offered: Leaf lists at most %d languages "
+                            "(raise JW_I18N_MAX_LANGUAGES)", code, JW_I18N_MAX_LANGUAGES);
+            else
+                jw_log_warn("i18n: %s not offered: the caller asked for %zu", code, max);
+            continue;
         }
+        snprintf(store[*count], JW_I18N_CODE_MAX, "%s", code);
+        (*count)++;
     }
     closedir(dp);
 }
 
 size_t jw_i18n_available(const char **out, size_t max) {
-    static char store[8][16];
+    static char store[JW_I18N_MAX_LANGUAGES][JW_I18N_CODE_MAX];
     size_t count = 0;
     if (!out || max == 0) return 0;
-    size_t cap = max < 8 ? max : 8;
+    size_t cap = max < JW_I18N_MAX_LANGUAGES ? max : JW_I18N_MAX_LANGUAGES;
     jw__i18n_scan_dir("UMRK_INTERNAL_DATA_PATH", "tsv", store, &count, cap);
     jw__i18n_scan_dir("UMRK_PLATFORM_PATH", "jwi", store, &count, cap);
     for (size_t i = 0; i < count; i++) out[i] = store[i];

@@ -43,6 +43,19 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
                                                char *diagnostic,
                                                size_t diagnostic_size);
 bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t error_size);
+/* How a value can be written to a RetroArch config line so RetroArch's
+ * escape-free parser reads back exactly that value. QUOTED is `key = "v"`,
+ * BARE is `key = v` (the only spelling for a value holding '"'), UNWRITABLE
+ * has no exact spelling: a '"' together with whitespace, '#', a non-ASCII
+ * byte or a line break, or a leading '"'. Settings uses it to refuse such a
+ * RetroAchievements password up front. See paths.c. */
+typedef enum {
+    JW_RA_CFG_QUOTED,
+    JW_RA_CFG_BARE,
+    JW_RA_CFG_UNWRITABLE,
+} jw_ra_cfg_form;
+jw_ra_cfg_form jw_retroarch_cfg_value_form(const char *value);
+
 /* player_joypad_indices: per-user SDL joypad indices for players 1-4 from the
  * Jawaka input roster (-1 = unused player). Non-NULL also raises the generated
  * input_max_users to 4 on MLP1, and every generated index is protected from
@@ -146,5 +159,19 @@ bool jw_primary_recordings_path(char *out, size_t out_size,
 void jw_retroarch_pin_core_device(const char *ra_home, const char *core_id,
                                   const char *core_config_folder,
                                   const char *rom_path);
+
+/* Install the per-core option profile a core needs before its first launch --
+ * today only FlyCast Fast UMRK, whose tuned settings must be on disk before the
+ * core initializes. Copies the release template under
+ * $UMRK_PLATFORM_PATH/defaults/retroarch/core-options/<folder>/<folder>.opt to
+ * the effective RetroArch config dir, and only while the core's .opt file is
+ * absent; an existing file is never rewritten. A versioned stamp beside
+ * ra_home records completion, so a deliberate later deletion stays deleted.
+ * Returns 0 when the file is in place or the core is not seeded, -1 on failure
+ * with a message in error. See paths.c for the ownership rules. */
+int jw_retroarch_seed_core_options(const char *ra_home, const char *sdcard_root,
+                                   const char *core_id,
+                                   const char *core_config_folder,
+                                   char *error, size_t error_size);
 
 #endif

@@ -14,11 +14,6 @@
 #define JW_STORAGE_UI_SOURCE_COUNT 2
 extern const char *const jw_storage_ui_sources[JW_STORAGE_UI_SOURCE_COUNT];
 
-typedef enum {
-    JW_STORAGE_UI_RESULT_DISMISSED = 0,
-    JW_STORAGE_UI_RESULT_SCRAPE_MISSING,
-} jw_storage_ui_result_action;
-
 bool jw_storage_ui_is_read_only(const jw_ipc_storage_status_info *card);
 bool jw_storage_ui_needs_repair(const jw_ipc_storage_status_info *card);
 /* "launcher SD card (MLPPRDLEAF)" */
@@ -43,11 +38,11 @@ bool jw_storage_ui_request_repair(const char *socket_path,
 
 /* Shows the last repair result once and acknowledges it. library_writable is
    false when another card still keeps the library read-only. */
-jw_storage_ui_result_action jw_storage_ui_show_repair_result(
+void jw_storage_ui_show_repair_result(
     const char *socket_path, const jw_ipc_storage_status_info *card,
     bool library_writable);
 
-/* Settings > General > SD Cards: choose a card, then an action. Sets
+/* Settings > System > SD Cards: choose a card, then an action. Sets
    *unmount_secondary when the user chose to unmount the second card, so the
    caller runs its existing safe-unmount flow. */
 void jw_storage_ui_manage_cards(const char *socket_path, char *status,

@@ -1,7 +1,9 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "internal/platform/paths.h"
+#include "third_party/retroarch/config_file_parser.inc"
 
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -29,6 +31,11 @@ static int write_text(const char *path, const char *text) {
     if (!fp) return -1;
     size_t len = strlen(text);
     return fwrite(text, 1, len, fp) == len && fclose(fp) == 0 ? 0 : -1;
+}
+
+static int path_exists(const char *path) {
+    struct stat st;
+    return path && stat(path, &st) == 0;
 }
 
 static char *read_text(const char *path) {
@@ -120,6 +127,37 @@ static int key_count(const char *text, const char *key, const char *value) {
         line = next ? next + 1 : NULL;
     }
     return count;
+}
+
+/* Look `key` up in config text the way RetroArch v1.22.2 does, returning a
+   malloc'd copy of its value or NULL. Lines split on '\n' as
+   filestream_getline does; the per-line steps restate the non-directive path
+   of config_file_parse_line and call the vendored config_file_strip_comment
+   and config_file_extract_value for the parts that decide a value. The first
+   occurrence wins, as in config_file_load_internal. */
+static char *ra_parse_value(const char *text, const char *key) {
+    char *copy = strdup(text ? text : "");
+    char *found = NULL;
+    if (!copy) return NULL;
+    for (char *line = copy; line && !found;) {
+        char *next = strchr(line, '\n');
+        if (next) *next++ = '\0';
+        if (*line && !config_file_strip_comment(line)) {
+            char *p = line;
+            while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+            char *k = p;
+            while (isgraph((unsigned char)*p)) p++;
+            size_t key_len = (size_t)(p - k);
+            while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+            if (*p == '=' && key_len == strlen(key) &&
+                strncmp(k, key, key_len) == 0) {
+                found = config_file_extract_value(p + 1);
+            }
+        }
+        line = next;
+    }
+    free(copy);
+    return found;
 }
 
 static int verify_runtime(const char *path, const char *shader_dir) {
@@ -974,6 +1012,98 @@ int main(void) {
         }
     }
 
+    /* RetroAchievements credentials reach RetroArch exactly. The writer's
+       output goes through RetroArch's own parser (vendored, see
+       third_party/retroarch/config_file_parser.inc), so a password with a '"'
+       or '\\' either reads back byte for byte or is left out entirely --
+       never truncated or doubled. Synthetic passwords only; a failure names
+       the case number, never the value. */
+    {
+        static const struct {
+            const char *pass;
+            jw_ra_cfg_form form;
+        } cases[] = {
+            { "plainpass", JW_RA_CFG_QUOTED },
+            { "with space", JW_RA_CFG_QUOTED },
+            { "semi;colon", JW_RA_CFG_QUOTED },
+            { "hash#tag", JW_RA_CFG_QUOTED },
+            { "#leading-hash", JW_RA_CFG_QUOTED },
+            { " padded ", JW_RA_CFG_QUOTED },
+            { "back\\slash", JW_RA_CFG_QUOTED },
+            { "trail\\", JW_RA_CFG_QUOTED },
+            { "\\\\two", JW_RA_CFG_QUOTED },
+            { "tab\there", JW_RA_CFG_QUOTED },
+            { "caf\xc3\xa9 ok", JW_RA_CFG_QUOTED },
+            { "=equals=", JW_RA_CFG_QUOTED },
+            { "quote\"inside", JW_RA_CFG_BARE },
+            { "trail\"", JW_RA_CFG_BARE },
+            { "a\"b\\c", JW_RA_CFG_BARE },
+            { "q\"=;!~", JW_RA_CFG_BARE },
+            { "\"leading", JW_RA_CFG_UNWRITABLE },
+            { "quote\" and space", JW_RA_CFG_UNWRITABLE },
+            { "quote\"#hash", JW_RA_CFG_UNWRITABLE },
+            { "quote\"caf\xc3\xa9", JW_RA_CFG_UNWRITABLE },
+            { "quote\"\ttab", JW_RA_CFG_UNWRITABLE },
+            { "line\nbreak", JW_RA_CFG_UNWRITABLE },
+            { "carriage\rreturn", JW_RA_CFG_UNWRITABLE },
+        };
+        static const char user[] = "synthetic_user";
+        if (write_text(shared_cfg, "menu_driver = \"rgui\"\n") != 0) {
+            return fail("cheevos credential shared config write failed");
+        }
+        setenv("JAWAKA_CHEEVOS_USERNAME", user, 1);
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            char label[96];
+            if (jw_retroarch_cfg_value_form(cases[i].pass) != cases[i].form) {
+                snprintf(label, sizeof(label),
+                         "credential case %zu classified wrongly", i);
+                return fail(label);
+            }
+            setenv("JAWAKA_CHEEVOS_PASSWORD", cases[i].pass, 1);
+            runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                      true, false,
+                                                      error, sizeof(error));
+            if (!runtime_cfg) {
+                unsetenv("JAWAKA_CHEEVOS_USERNAME");
+                unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+                return fail(error[0] ? error : "credential config failed");
+            }
+            char *text = read_text(runtime_cfg);
+            char *got_pass = ra_parse_value(text, "cheevos_password");
+            char *got_user = ra_parse_value(text, "cheevos_username");
+            char *got_enable = ra_parse_value(text, "cheevos_enable");
+            /* An unrelated generated key still parses the same way. */
+            char *got_menu = ra_parse_value(text, "network_cmd_enable");
+            int ok = text && got_menu && strcmp(got_menu, "true") == 0;
+            if (cases[i].form == JW_RA_CFG_UNWRITABLE) {
+                ok = ok && !got_pass && !got_user && !got_enable &&
+                     occurrences(text, "cheevos_password") == 0;
+            } else {
+                ok = ok && got_pass && strcmp(got_pass, cases[i].pass) == 0 &&
+                     got_user && strcmp(got_user, user) == 0 &&
+                     got_enable && strcmp(got_enable, "true") == 0 &&
+                     occurrences(text, "cheevos_password") == 1;
+            }
+            free(got_pass);
+            free(got_user);
+            free(got_enable);
+            free(got_menu);
+            free(text);
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            if (!ok) {
+                unsetenv("JAWAKA_CHEEVOS_USERNAME");
+                unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+                snprintf(label, sizeof(label),
+                         "credential case %zu did not round-trip through "
+                         "RetroArch's parser", i);
+                return fail(label);
+            }
+        }
+        unsetenv("JAWAKA_CHEEVOS_USERNAME");
+        unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+    }
+
     /* An ordinary, non-Leaf-owned key survives the full round trip the app
        tile and every game launch use: prepare -> RetroArch rewrites the
        working file -> backup -> prepare. This is the path Leaf#48 says loses
@@ -1082,6 +1212,61 @@ int main(void) {
         free(menu_shared);
         if (!menu_shared_ok) {
             return fail("menu_show_configurations persisted to the shared config");
+        }
+    }
+
+    /* 120 Hz frame pacing. The persisted values are what the BFI-repetition
+       trial left on a real card: a manual interval 1 would keep Auto from
+       ever choosing 2, and 0 dark frames would make the next genuine BFI
+       request plain repetition. The session must read Auto and one dark
+       frame, and neither key may be promoted back. */
+    {
+        if (write_text(shared_cfg, "menu_driver = \"rgui\"\n"
+                                   "video_swap_interval = \"1\"\n"
+                                   "video_bfi_dark_frames = \"0\"\n") != 0) {
+            return fail("frame-pacing shared config write failed");
+        }
+        setenv("JAWAKA_BFI", "1", 1);
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        unsetenv("JAWAKA_BFI");
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "frame-pacing config failed");
+        }
+        char *pacing = read_text(runtime_cfg);
+        char *interval = ra_parse_value(pacing, "video_swap_interval");
+        char *dark = ra_parse_value(pacing, "video_bfi_dark_frames");
+        char *bfi = ra_parse_value(pacing, "video_black_frame_insertion");
+        int pacing_ok = pacing &&
+                        key_count(pacing, "video_swap_interval", NULL) == 1 &&
+                        key_count(pacing, "video_bfi_dark_frames", NULL) == 1 &&
+                        interval && strcmp(interval, "0") == 0 &&
+                        dark && strcmp(dark, "1") == 0 &&
+                        bfi && strcmp(bfi, "1") == 0;
+        free(interval);
+        free(dark);
+        free(bfi);
+        free(pacing);
+        if (!pacing_ok) {
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail("frame-pacing keys were not pinned for the session");
+        }
+        if (jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                       error, sizeof(error)) != 0) {
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail(error[0] ? error : "frame-pacing backup failed");
+        }
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        char *pacing_shared = read_text(shared_cfg);
+        int pacing_shared_ok = pacing_shared &&
+                               key_count(pacing_shared, "video_swap_interval", NULL) == 0 &&
+                               key_count(pacing_shared, "video_bfi_dark_frames", NULL) == 0;
+        free(pacing_shared);
+        if (!pacing_shared_ok) {
+            return fail("frame-pacing keys persisted to the shared config");
         }
     }
 #endif
@@ -1291,6 +1476,163 @@ int main(void) {
                     big_lines, elapsed_ms);
             return 1;
         }
+    }
+
+    /* FlyCast Fast UMRK first-launch option seed. The profile is installed once,
+       only while the core's .opt is absent; after the versioned stamp exists,
+       the file belongs to the user and nothing here may touch it again. */
+    {
+        char seed_root[PATH_MAX], seed_home[PATH_MAX], seed_config[PATH_MAX];
+        char seed_template_dir[PATH_MAX], seed_template[PATH_MAX];
+        char seed_folder_dir[PATH_MAX], seed_dest[PATH_MAX], seed_stamp[PATH_MAX];
+        snprintf(seed_root, sizeof(seed_root), "%s/flycast-seed", root);
+        snprintf(seed_home, sizeof(seed_home), "%s/home", seed_root);
+        snprintf(seed_config, sizeof(seed_config), "%s/config", seed_root);
+        snprintf(seed_template_dir, sizeof(seed_template_dir),
+                 "%s/defaults/retroarch/core-options/FlyCast Fast UMRK", platform);
+        snprintf(seed_template, sizeof(seed_template),
+                 "%s/FlyCast Fast UMRK.opt", seed_template_dir);
+        snprintf(seed_folder_dir, sizeof(seed_folder_dir),
+                 "%s/FlyCast Fast UMRK", seed_config);
+        snprintf(seed_dest, sizeof(seed_dest),
+                 "%s/FlyCast Fast UMRK.opt", seed_folder_dir);
+        snprintf(seed_stamp, sizeof(seed_stamp),
+                 "%s/.leaf-core-options-seed-flycast_fast_umrk-v1", seed_home);
+        if (mkdir_one(seed_root) || mkdir_one(seed_home) || mkdir_one(seed_config) ||
+            jw__mkdir_p_test(seed_template_dir)) {
+            return fail("core option seed fixture mkdir failed");
+        }
+
+        static const char profile[] =
+            "reicast_internal_resolution = \"640x480\"\n"
+            "reicast_threaded_rendering = \"enabled\"\n"
+            "reicast_texupscale = \"1\"\n";
+        if (write_text(seed_template, profile) != 0) {
+            return fail("core option template fixture failed");
+        }
+        setenv("UMRK_RETROARCH_CONFIG_DIR", seed_config, 1);
+
+        char seed_error[256];
+        /* Every other core is out of scope: no destination, no stamp, no error. */
+        if (jw_retroarch_seed_core_options(seed_home, root, "flycast", "Flycast",
+                                           seed_error, sizeof(seed_error)) != 0 ||
+            path_exists(seed_folder_dir) || path_exists(seed_stamp)) {
+            return fail("seed ran for a core it does not own");
+        }
+
+        /* First seed: the exact template bytes, and completion only afterwards. */
+        if (jw_retroarch_seed_core_options(seed_home, root, "flycast_fast_umrk",
+                                           "FlyCast Fast UMRK", seed_error,
+                                           sizeof(seed_error)) != 0) {
+            return fail(seed_error[0] ? seed_error : "first seed failed");
+        }
+        char *seeded = read_text(seed_dest);
+        if (!seeded || strcmp(seeded, profile) != 0) {
+            free(seeded);
+            return fail("first seed did not copy the template byte for byte");
+        }
+        free(seeded);
+        if (!path_exists(seed_stamp)) {
+            return fail("first seed did not record completion");
+        }
+
+        /* Preservation: an existing file -- user-edited here, but any content --
+           is never rewritten, and still counts as a completed seed. */
+        static const char user_edited[] =
+            "reicast_internal_resolution = \"1280x960\"\n";
+        if (write_text(seed_dest, user_edited) != 0) {
+            return fail("user profile fixture failed");
+        }
+        unlink(seed_stamp);   /* the pre-stamp upgrade case */
+        if (jw_retroarch_seed_core_options(seed_home, root, "flycast_fast_umrk",
+                                           "FlyCast Fast UMRK", seed_error,
+                                           sizeof(seed_error)) != 0) {
+            return fail(seed_error[0] ? seed_error : "preservation failed");
+        }
+        char *kept = read_text(seed_dest);
+        if (!kept || strcmp(kept, user_edited) != 0) {
+            free(kept);
+            return fail("an existing core option file was rewritten");
+        }
+        free(kept);
+        if (!path_exists(seed_stamp)) {
+            return fail("preservation did not record completion");
+        }
+
+        /* Completed: a deliberate deletion stays deleted. Re-seeding it would
+           make the user's own choice impossible to keep. */
+        unlink(seed_dest);
+        if (jw_retroarch_seed_core_options(seed_home, root, "flycast_fast_umrk",
+                                           "FlyCast Fast UMRK", seed_error,
+                                           sizeof(seed_error)) != 0) {
+            return fail("a completed seed reported failure");
+        }
+        char *resurrected = read_text(seed_dest);
+        if (resurrected) {
+            free(resurrected);
+            return fail("a completed seed resurrected a deleted profile");
+        }
+
+        /* A non-file completion marker is not completion. Refuse it instead of
+           silently treating a corrupt or hostile path as a successful seed. */
+        unlink(seed_stamp);
+        if (mkdir(seed_stamp, 0755) != 0) {
+            return fail("could not build the invalid-stamp fixture");
+        }
+        int rc = jw_retroarch_seed_core_options(seed_home, root,
+                                                "flycast_fast_umrk",
+                                                "FlyCast Fast UMRK", seed_error,
+                                                sizeof(seed_error));
+        if (rmdir(seed_stamp) != 0 || rc == 0 || !seed_error[0] ||
+            path_exists(seed_dest)) {
+            return fail("an invalid completion stamp was accepted");
+        }
+
+        /* Failed copy: reported, and no stamp, so the next launch retries. A
+           regular file where the destination directory belongs is the
+           privilege-independent way to make the copy fail. */
+        if (rmdir(seed_folder_dir) != 0 ||
+            write_text(seed_folder_dir, "not a directory\n") != 0) {
+            return fail("could not build the failed-copy fixture");
+        }
+        rc = jw_retroarch_seed_core_options(seed_home, root, "flycast_fast_umrk",
+                                            "FlyCast Fast UMRK", seed_error,
+                                            sizeof(seed_error));
+        unlink(seed_folder_dir);
+        if (rc == 0 || !seed_error[0] || path_exists(seed_stamp) ||
+            path_exists(seed_dest)) {
+            return fail("a failed option copy was not surfaced cleanly");
+        }
+
+        /* Missing template: surfaced against the path the payload owns, again
+           with no completion stamp. */
+        unlink(seed_template);
+        rc = jw_retroarch_seed_core_options(seed_home, root, "flycast_fast_umrk",
+                                            "FlyCast Fast UMRK", seed_error,
+                                            sizeof(seed_error));
+        if (rc == 0 || strstr(seed_error, "template") == NULL ||
+            path_exists(seed_stamp)) {
+            return fail("a missing option template was not surfaced");
+        }
+        if (write_text(seed_template, profile) != 0) {
+            return fail("core option template restore failed");
+        }
+
+        /* Config-folder validation: a folder that would climb out of the
+           RetroArch config dir is refused, and so is a safe folder belonging to
+           a different core -- the Fast profile must never land in the standard
+           Flycast settings. */
+        const char *bad_folders[] = { "../Flycast", "Flycast", "" };
+        for (size_t i = 0; i < sizeof(bad_folders) / sizeof(bad_folders[0]); i++) {
+            if (jw_retroarch_seed_core_options(seed_home, root, "flycast_fast_umrk",
+                                               bad_folders[i], seed_error,
+                                               sizeof(seed_error)) == 0 ||
+                !seed_error[0] || path_exists(seed_stamp)) {
+                return fail("a foreign config folder was accepted");
+            }
+        }
+
+        unsetenv("UMRK_RETROARCH_CONFIG_DIR");
     }
 
     printf("retroarch-config-test: ok\n");

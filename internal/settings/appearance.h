@@ -3,6 +3,8 @@
 
 #include <stddef.h>
 
+#include "internal/i18n/i18n.h"
+
 #define JW_APPEARANCE_FONT_FAMILY_COUNT 9
 #define JW_APPEARANCE_FONT_FAMILY_DEFAULT 3   /* Nunito (index into kJawakaFontFamily*) */
 
@@ -29,6 +31,9 @@ int jw_appearance_font_family_index_from_db(const char *db_path);
    stylesheet because this path is also baked into the child environment at
    fork() time, where reading a stylesheet is not available. */
 #define JW_APPEARANCE_CJK_FONT_PATH "fonts/SourceHanSansCN/SourceHanSansCN-Regular.otf"
+/* Japanese glyph forms for the same codepoints (compare 直 or 骨). It covers
+   every character the Chinese face does, so Chinese titles still render. */
+#define JW_APPEARANCE_JA_FONT_PATH  "fonts/LeafHanSansJP/LeafHanSansJP-Regular.otf"
 
 const char *jw_appearance_font_path_for_index(int index);
 
@@ -36,6 +41,14 @@ const char *jw_appearance_font_path_for_index(int index);
    Use this anywhere the UI font is chosen; the plain _for_index form is for
    the font picker itself, which must keep showing the themed families. */
 const char *jw_appearance_font_path_for_language(int index, const char *lang);
+
+/* The face Catastrophe substitutes for CJK strings, exported as
+   CAT_CJK_FONT_PATH. "" leaves the theme's cjk_font in charge; only Japanese
+   needs different glyph forms. */
+const char *jw_appearance_cjk_font_path_for_language(const char *lang);
+
+/* The name the Font row shows while a CJK language pins the face. */
+const char *jw_appearance_cjk_font_label(const char *lang);
 
 /* Pre-resolved appearance environment, holding the final CAT_* env values as
  * ready-to-export strings. Filled by jw_appearance_resolve() (which touches the
@@ -66,14 +79,22 @@ typedef struct jw_appearance_env {
     char status_bt_state[8];      /* CAT_STATUS_BT_STATE: 0 off, 1 on, 2 connected */
     char timezone[64];            /* TZ override for launched apps; empty = inherit */
     /* Persisted language code, "en" when unset. Drives the font choice above and
-       is handed to the child so it loads the matching string table. */
-    char language[16];
+       is handed to the child so it loads the matching string table. Sized from
+       the same constant as every other language code, so it cannot truncate one
+       the scanner accepted. */
+    char language[JW_I18N_CODE_MAX];
 } jw_appearance_env;
 
 /* Parent-side: read the DB (and env) and resolve every appearance value into
  * `out`. Always fully populates `out` (falling back to defaults). Safe to call
  * anywhere a normal SQLite open is safe — but NOT between fork() and execv(). */
 void jw_appearance_resolve(const char *db_path, jw_appearance_env *out);
+
+/* jw_appearance_resolve() without the Bluetooth snapshot: status_bt_state is
+ * left "0". The snapshot shells out to bluetoothctl, which on jawakad's main
+ * loop stalls input forwarding; use this for a child that draws no status bar
+ * (the OSD). Reads the DB exactly once. Same fork() rule as above. */
+void jw_appearance_resolve_settings(const char *db_path, jw_appearance_env *out);
 
 /* Child-side: export a resolved appearance into the environment with setenv
  * only — no allocation beyond setenv's own, no DB/SQLite. Safe to call in a

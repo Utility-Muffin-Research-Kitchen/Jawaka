@@ -609,18 +609,47 @@ jw_storage_repair jw_storage_repair_hold_for_uuid(const jw_storage_probe_env *en
     return repair;
 }
 
-bool jw_storage_repair_last_result(const jw_storage_probe_env *env,
+/* Triggers name a reason, never a path or free text. */
+static bool jw__repair_trigger_valid(const char *value) {
+    if (!value || !value[0]) return false;
+    for (const char *p = value; *p; p++) {
+        if (!((*p >= 'a' && *p <= 'z') || *p == '-')) return false;
+    }
+    return true;
+}
+
+bool jw_storage_repair_hold_trigger(const jw_storage_probe_env *env, const char *uuid,
+                                    char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (!env || !env->repair_dir || !jw_storage_uuid_valid(uuid)) return false;
+    char path[JW_STORAGE_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/holds/%s", env->repair_dir, uuid);
+    char *text = jw__read_small_file(path, JW__REPAIR_FILE_MAX, NULL);
+    if (!text) return false;
+    bool found = jw__repair_kv_get(text, "trigger", out, out_size) &&
+                 jw__repair_trigger_valid(out);
+    free(text);
+    if (!found) out[0] = '\0';
+    return found;
+}
+
+bool jw_storage_repair_last_result(const jw_storage_probe_env *env, const char *uuid,
                                    jw_storage_repair_result *out) {
     if (!out) {
         return false;
     }
     memset(out, 0, sizeof(*out));
-    if (!env || !env->repair_dir) {
+    if (!env || !env->repair_dir || !jw_storage_uuid_valid(uuid)) {
         return false;
     }
     char path[JW_STORAGE_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/last-result", env->repair_dir);
+    snprintf(path, sizeof(path), "%s/last-results/%s", env->repair_dir, uuid);
     char *pointer = jw__read_small_file(path, 256, NULL);
+    if (!pointer) {
+        snprintf(path, sizeof(path), "%s/last-result", env->repair_dir);
+        pointer = jw__read_small_file(path, 256, NULL);
+    }
     if (!pointer) {
         return false;
     }
@@ -642,7 +671,9 @@ bool jw_storage_repair_last_result(const jw_storage_probe_env *env,
         return false;
     }
     char value[64];
-    if (!jw__repair_kv_get(text, "request_id", out->request_id,
+    if (!jw__repair_kv_get(text, "uuid", value, sizeof(value)) ||
+        strcmp(value, uuid) != 0 ||
+        !jw__repair_kv_get(text, "request_id", out->request_id,
                            sizeof(out->request_id)) ||
         strcmp(out->request_id, id) != 0 ||
         !jw__repair_kv_get(text, "outcome", out->outcome, sizeof(out->outcome))) {
@@ -653,6 +684,13 @@ bool jw_storage_repair_last_result(const jw_storage_probe_env *env,
     (void)jw__repair_kv_get(text, "mount_state", out->mount_state,
                             sizeof(out->mount_state));
     (void)jw__repair_kv_get(text, "mode", out->mode, sizeof(out->mode));
+    if (!jw__repair_kv_get(text, "origin", out->origin, sizeof(out->origin))) {
+        snprintf(out->origin, sizeof(out->origin), "user-request");
+    }
+    if (!jw__repair_kv_get(text, "trigger", out->trigger, sizeof(out->trigger)) ||
+        !jw__repair_trigger_valid(out->trigger)) {
+        out->trigger[0] = '\0';
+    }
     if (jw__repair_kv_get(text, "changes_complete", value, sizeof(value))) {
         out->changes_complete = strcmp(value, "true") == 0;
     }

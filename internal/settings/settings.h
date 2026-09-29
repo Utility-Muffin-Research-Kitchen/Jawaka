@@ -3,6 +3,7 @@
 
 #include "catastrophe.h"
 #include "catastrophe_widgets.h"
+#include "internal/i18n/i18n.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
@@ -51,20 +52,21 @@ typedef enum {
     JW_SETTINGS_HOME = 0,
     JW_SETTINGS_APPEARANCE,
     JW_SETTINGS_COLORS,
-    JW_SETTINGS_LAYOUT,
+    JW_SETTINGS_HOME_SCREEN, /* home layout + what the home tabs show */
     JW_SETTINGS_STATUS_BAR,
     JW_SETTINGS_DISPLAY,
-    JW_SETTINGS_NETWORK,
+    JW_SETTINGS_WIFI,
     JW_SETTINGS_BLUETOOTH,
     JW_SETTINGS_LIGHTING,
     JW_SETTINGS_ACCOUNTS,
-    JW_SETTINGS_SCRAPING,
+    JW_SETTINGS_GAMES,
     JW_SETTINGS_SCRAPE_PRIORITY,   /* artwork or region editor, see scrape_edit_is_region */
     JW_SETTINGS_SCRAPE_QUEUE,      /* live scrape-job queue (native page, not the modal) */
     JW_SETTINGS_SCRAPE_QUEUE_DETAIL, /* one job's result (native page, was cat_detail_screen) */
     JW_SETTINGS_SCRAPE_DOWNLOAD,   /* pick All Systems / a system to scrape missing art */
-    JW_SETTINGS_BEHAVIOR,
-    JW_SETTINGS_CONTROLS,    /* Controls & Feedback: rumble/haptics */
+    JW_SETTINGS_SYSTEM,      /* System: language, clock, power, storage */
+    JW_SETTINGS_CONTROLS,    /* Hotkeys & Rumble: rumble, and the way in to
+                                the Menu-chord bindings on MLP1 */
 #ifdef PLATFORM_MLP1
     /* Guarded rather than merely unreachable elsewhere, so every switch over
        this enum stops compiling on the platform that grows a new screen. */
@@ -83,12 +85,18 @@ typedef enum {
 
 /* ─── Row indices per sub-page ─────────────────────────────────────────── */
 
-/* Appearance sub-menu */
-#define JW_APPEAR_THEME    0
-#define JW_APPEAR_COLORS   1
-#define JW_APPEAR_LAYOUT   2
-#define JW_APPEAR_STATUSBAR 3
-#define JW_APPEAR_ROW_COUNT 4
+/* Appearance page — how the interface itself looks. The two child pages it
+   keeps (Colors, Status Bar) are lists of their own; everything that fits in a
+   single row lives here directly, so a font or theme change is two levels deep
+   rather than three. Home-screen structure is the Home Screen page instead. */
+#define JW_APPEAR_SCHEME     0   /* curated color scheme cycler */
+#define JW_APPEAR_COLORS     1   /* -> the per-role color editor */
+#define JW_APPEAR_THEME      2   /* user theme from <sdcard>/Themes, or None */
+#define JW_APPEAR_FONT       3
+#define JW_APPEAR_FONT_SIZE  4
+#define JW_APPEAR_LIST_STYLE 5
+#define JW_APPEAR_STATUSBAR  6   /* -> the status-bar visibility page */
+#define JW_APPEAR_ROW_COUNT  7
 
 /* Colors page — ordered by visual impact (most visible first). */
 #define JW_COLOR_ACCENT      0
@@ -100,23 +108,24 @@ typedef enum {
 #define JW_COLOR_BTN_BG     6
 #define JW_COLOR_ROW_COUNT   7
 
-/* Layout page */
-#define JW_LAYOUT_HOME_STYLE   0   /* Tabs / Coverflow / Grid home layout */
-#define JW_LAYOUT_THEME        1   /* user theme from <sdcard>/Themes, or None */
-#define JW_LAYOUT_SYSTEM_ICONS 2   /* which built-in system-icon pack to draw; the
-                                      fallback whenever a user theme has no icon */
-#define JW_LAYOUT_GRID_SIZE    3   /* Grid density: Automatic follows the theme */
-#define JW_LAYOUT_PILL_SHAPE   4
-#define JW_LAYOUT_FONT_FAMILY  5
-#define JW_LAYOUT_FONT_SIZE    6
-#define JW_LAYOUT_TAB_SWITCH   7
-#define JW_LAYOUT_STARTUP_TAB  8   /* which tab the launcher opens on */
-#define JW_LAYOUT_HOME_TABS    9   /* opens the Home Tabs hide/reorder editor */
-#define JW_LAYOUT_ROW_COUNT    10
+/* Home Screen page — what the launcher's home screen is and what it shows.
+   Split out of the old Layout page, whose other half (theme, font, row style)
+   is now the Appearance page: those two never belonged in one list, and
+   together they were the only Settings page long enough to scroll. */
+#define JW_HOMESCREEN_LAYOUT       0   /* Tabs / Coverflow / Grid home layout */
+#define JW_HOMESCREEN_GRID_SIZE    1   /* Grid density: Automatic follows the theme */
+#define JW_HOMESCREEN_SYSTEM_ICONS 2   /* which built-in system-icon pack to draw; the
+                                          fallback whenever a user theme has no icon */
+#define JW_HOMESCREEN_TAB_SWITCH   3
+#define JW_HOMESCREEN_STARTUP_TAB  4   /* which tab the launcher opens on */
+#define JW_HOMESCREEN_TABS         5   /* opens the Home Tabs hide/reorder editor */
+#define JW_HOMESCREEN_ROW_COUNT    6
 
 /* Grid density picker. 0 follows the theme (theme.json "grid" recommendation,
-   else the stylesheet); the rest pin a density. Persisted as an index. */
-#define JW_GRID_DENSITY_COUNT  4
+   else the stylesheet); the rest pin a density, ordered by tile count and only
+   ever appended to -- the stored value is the index. See the tables in
+   settings.c. */
+#define JW_GRID_DENSITY_COUNT  9
 
 /* Status Bar page */
 #define JW_STATUSBAR_HINTS   0
@@ -129,13 +138,22 @@ typedef enum {
 
 /* Display & Sound page */
 #define JW_DISPLAY_BRIGHTNESS   0
-#define JW_DISPLAY_REFRESH_RATE 1
-#define JW_DISPLAY_BFI          2
-#define JW_DISPLAY_HDMI         3
-#define JW_DISPLAY_VOLUME       4
-#define JW_DISPLAY_OUTPUT       5
-#define JW_DISPLAY_TEST_SOUND   6
-#define JW_DISPLAY_ROW_COUNT    7
+#define JW_DISPLAY_COLOR_TEMP   1   /* grouped with Brightness: both retune the panel image */
+#define JW_DISPLAY_REFRESH_RATE 2
+#define JW_DISPLAY_BFI          3
+#define JW_DISPLAY_HDMI         4
+#define JW_DISPLAY_VOLUME       5
+#define JW_DISPLAY_OUTPUT       6
+#define JW_DISPLAY_TEST_SOUND   7
+#define JW_DISPLAY_ROW_COUNT    8
+
+/* Wi-Fi page. Bluetooth is its own top-level category rather than a row here:
+   the two radios are what people look for by name, and a Bluetooth row sitting
+   between the Wi-Fi toggle and the list of scanned Wi-Fi networks read as part
+   of the Wi-Fi page rather than a way out of it. */
+#define JW_WIFI_ROW_RADIO  0
+#define JW_WIFI_ROW_ADB    1   /* ADB over this connection */
+#define JW_WIFI_FIXED_ROWS 2
 
 /* Bluetooth page */
 #define JW_BLUETOOTH_ROW_POWER 0
@@ -156,35 +174,43 @@ typedef enum {
 #define JW_ACCOUNTS_RETROACHIEVEMENTS 1
 #define JW_ACCOUNTS_ROW_COUNT         2
 
-/* Scraping page */
-#define JW_SCRAPING_DOWNLOAD  0
-#define JW_SCRAPING_QUEUE     1
-#define JW_SCRAPING_ARTWORK   2
-#define JW_SCRAPING_REGION    3
-#define JW_SCRAPING_ROW_COUNT 4
+/* Games page (was Game Art). Artwork first because scraping is what the page is
+   opened for; the two settings that describe how games run, and the accounts
+   that serve games, follow. */
+#define JW_GAMES_SCRAPE_DOWNLOAD 0
+#define JW_GAMES_SCRAPE_QUEUE    1
+#define JW_GAMES_ARTWORK         2
+#define JW_GAMES_REGION          3
+#define JW_GAMES_PERFORMANCE     4   /* was General > Game Performance */
+#define JW_GAMES_RESET_RETROARCH 5   /* was General > Reset RetroArch Config */
+#define JW_GAMES_ACCOUNTS        6   /* -> Accounts, was a top-level category */
+#define JW_GAMES_ROW_COUNT       7
 /* Capacity for the priority editors (catalogs are 10 entries each today). */
 #define JW_SCRAPE_PRIO_SLOTS  16
 
-/* Behavior page */
-#define JW_BEHAVIOR_AUTO_SLEEP  0
-/* Save the RetroArch game on a power-button shutdown. Shown everywhere, usable
-   on MLP1 only: other platforms need their own button qualification. */
-#define JW_BEHAVIOR_POWER_HOLD_SAVE 1
-#define JW_BEHAVIOR_PERFORMANCE 2
-#define JW_BEHAVIOR_TIMEZONE    3   /* opens the Time Zone picker screen */
-#define JW_BEHAVIOR_BOOT_SPLASH 4
-#define JW_BEHAVIOR_RESET_RETROARCH   5   /* maintenance, moved from Library */
-#define JW_BEHAVIOR_UNMOUNT_SECONDARY 6
-/* Kept last: this row is hidden when no translation is installed, so the other
-   rows keep their indices in both states. */
-#define JW_BEHAVIOR_LANGUAGE    7
-#define JW_BEHAVIOR_ROW_COUNT   8
+/* System page (was General). Two of its rows are conditional -- Language exists
+   only when a translation is installed, Services only when one is present -- so
+   the page is described by what each row IS rather than by a fixed index, and
+   jw_settings_system_rows() builds the visible order. That keeps the rows in a
+   sensible reading order instead of forcing every optional row to the bottom to
+   protect the indices of the rows above it. */
+typedef enum {
+    JW_SYSTEM_ROW_LANGUAGE = 0,   /* conditional: a translation is installed */
+    JW_SYSTEM_ROW_TIMEZONE,       /* opens the Time Zone picker screen */
+    JW_SYSTEM_ROW_AUTO_SLEEP,
+    JW_SYSTEM_ROW_BOOT_SPLASH,
+    JW_SYSTEM_ROW_SD_CARDS,
+    JW_SYSTEM_ROW_SERVICES,       /* conditional: -> Services, was a category */
+    JW_SYSTEM_ROW_KIND_COUNT
+} jw_system_row_kind;
+#define JW_SYSTEM_ROW_MAX JW_SYSTEM_ROW_KIND_COUNT
 
-/* Controls & Feedback page.
-   On MLP1 the four capture rows move to the In-game Shortcuts child page, so
-   this page ends at a single entry point to it. Everywhere else the page keeps
-   all eight rows and there is no child page: the shortcut bindings are an MLP1
-   input-proxy feature and mean nothing on the other backends. */
+/* Hotkeys & Rumble page.
+   On MLP1 the four capture rows move to the Hotkeys child page, so this page
+   ends at a single entry point to it. Everywhere else the page keeps all seven
+   rows and there is no child page: the chord bindings are an MLP1 input-proxy
+   feature and mean nothing on the other backends, which is also why the
+   category is named for both halves rather than only the hotkeys. */
 #define JW_CONTROLS_UI_RUMBLE   0   /* every interface buzz, cursor ticks included */
 #define JW_CONTROLS_GAME        1   /* hand the motor to emulators in-game */
 #define JW_CONTROLS_STRENGTH    2   /* 0-100 %, left/right adjust, shared by both */
@@ -200,10 +226,10 @@ typedef enum {
 #endif
 
 #ifdef PLATFORM_MLP1
-/* In-game Shortcuts page (MLP1 only). Each binding row sits under the feature
-   it belongs to, so "Screenshots off" and "Screenshot Shortcut disabled" read
-   as the two separate things they are: the toggle gates the feature, the
-   binding gates the chord. */
+/* Hotkeys page (MLP1 only). Each binding row sits under the feature it belongs
+   to, so "Screenshots off" and "Screenshot Hotkey disabled" read as the two
+   separate things they are: the toggle gates the feature, the binding gates the
+   chord. */
 #define JW_SHORTCUT_SWITCHER    0   /* Menu + <button> -> game switcher */
 #define JW_SHORTCUT_SCREENSHOTS 1   /* screenshot feature on/off */
 #define JW_SHORTCUT_SHOT_BIND   2   /* Menu + <button> -> screenshot */
@@ -249,14 +275,14 @@ typedef struct {
     cat_list_state     home_list;
     cat_list_state     appearance_list;
     cat_list_state     colors_list;
-    cat_list_state     layout_list;
+    cat_list_state     home_screen_list;
     cat_list_state     statusbar_list;
     cat_list_state     display_list;
-    cat_list_state     network_list;
+    cat_list_state     wifi_list;
     cat_list_state     bluetooth_list;
     cat_list_state     lighting_list;
     cat_list_state     accounts_list;
-    cat_list_state     scraping_list;
+    cat_list_state     games_list;
     cat_list_state     scrape_edit_list;
     cat_list_state     scrape_queue_list;   /* cursor/scroll for the live queue page */
     int                scrape_queue_filter; /* 0=ALL 1=BUSY 2=DONE 3=FAIL */
@@ -273,10 +299,10 @@ typedef struct {
     int                scrape_download_total_games;
     bool               scrape_missing_have_cache;
     bool               scrape_download_replace;      /* Y toggles missing-only vs replace-all */
-    cat_list_state     behavior_list;
-    cat_list_state     controls_list;    /* Controls & Feedback page */
+    cat_list_state     system_list;
+    cat_list_state     controls_list;    /* Hotkeys & Rumble page */
 #ifdef PLATFORM_MLP1
-    cat_list_state     shortcuts_list;   /* In-game Shortcuts page */
+    cat_list_state     shortcuts_list;   /* Hotkeys page */
     cat_list_state     shortcut_pick_list; /* button picker for one action */
     /* Which action the picker is editing. Set on entry; the picker reads no
        other row state, so leaving and re-entering always starts consistent. */
@@ -335,13 +361,14 @@ typedef struct {
     /* UI language. `languages` is en plus whatever tables are installed, so the
        row cycles through real choices only; `language_count` of 1 means English
        alone, and the row is hidden. */
-    char               language[16];
-    char               languages[8][16];
+    char               language[JW_I18N_CODE_MAX];
+    /* English at [0], then every language the scanner can return. */
+    char               languages[JW_I18N_MAX_LANGUAGES + 1][JW_I18N_CODE_MAX];
     int                language_count;
     /* What the row is showing. Left and Right browse this; only A applies it,
        behind a confirmation, because applying restarts the launcher and takes
        the user out of Settings. Empty means "same as `language`". */
-    char               language_pending[16];
+    char               language_pending[JW_I18N_CODE_MAX];
     int                ss_requests_today;   /* quota snapshot from validation */
     int                ss_max_requests;     /* quota snapshot from validation; 0 unknown */
     /* Scrape priority editors: permutations of the scrape catalogs as catalog
@@ -357,14 +384,27 @@ typedef struct {
     jw_ipc_scrape_queue_info *scrape_queue_cache;
     bool               scrape_queue_have_cache;
     unsigned           scrape_queue_next_poll_ms;
-    char               ra_username[64];     /* RetroAchievements account ("" = signed out); exported
-                                               to RetroArch's session config, which validates it */
+    char               ra_username[64];     /* RetroAchievements account; set only when the stored
+                                               account resolves configured (never a truncated copy) */
+    bool               ra_account_needs_repair; /* stored account is invalid or unreadable: shown
+                                                   as not saved, and Y may clear it */
+    bool               ra_pass_unwritable;  /* saved username or password has no exact
+                                               retroarch.cfg spelling: kept for the other
+                                               emulators, RetroArch launches skip sign-in;
+                                               see jw_retroarch_cfg_value_form */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     /* Home Tabs editor. home_tab_order holds all JW_HOME_TABS_COUNT tabs in
-       display order (each a jw_tab index); the first home_tab_visible entries are
-       shown, the rest are hidden. Serialized to the "home_tab_order" setting as a
-       CSV of the visible tab indices. */
+       display order (each a jw_tab index); home_tab_hidden says which of them the
+       launcher skips, so hiding a tab leaves it where it sits in the list rather
+       than sinking it to the bottom.
+
+       Serialized to the "home_tab_order" setting as a CSV in display order, a
+       hidden tab written as -(index + 1). Readers that predate hiding-in-place
+       (the launcher's own parser, and any older build) drop negative tokens,
+       which leaves exactly the visible tabs in order: the same value they always
+       read. */
     int                home_tab_order[JW_HOME_TABS_COUNT];
+    bool               home_tab_hidden[JW_HOME_TABS_COUNT];   /* by jw_tab index */
     int                home_tab_visible;    /* count of visible tabs (>= 1) */
     cat_list_state     home_tabs_list;
     bool               home_tabs_grabbed;   /* X grabbed the cursor row to reorder */
@@ -377,7 +417,7 @@ typedef struct {
     bool               recording_enabled;   /* Menu+R1 game recording hotkey (daemon reads the DB key) */
     bool               recording_split;     /* cut clips over 10MB into postable parts */
     bool               recording_keep_src;  /* keep the lossless .mkv once the MP4 exists */
-    bool               rumble_ui;         /* Controls & Feedback: interface buzzes (daemon reads DB) */
+    bool               rumble_ui;         /* Hotkeys & Rumble: interface buzzes (daemon reads DB) */
     bool               rumble_game;       /* in-game emulator rumble */
     int                rumble_strength;   /* 0-100 %, shared by both */
     /* Services screen (app-services-v1). A snapshot of CTL-1 service-list,
@@ -389,7 +429,7 @@ typedef struct {
     int                  services_count;
     char                 services_msg[128];  /* transient action feedback */
     unsigned             services_next_poll_ms;
-    int                game_perf_profile;   /* Settings > Behavior game profile */
+    int                game_perf_profile;   /* Settings > Games game profile */
     bool               performance_supported;
     int                brightness_percent;
     int                volume_percent;
@@ -399,6 +439,8 @@ typedef struct {
     bool               test_sound_playing;  /* Display&Sound: Test Sound clip active */
     int                refresh_rate_hz;     /* display refresh: 60, 100, or 120 */
     bool               refresh_rate_supported; /* platform offers refresh-rate switching */
+    int                color_temp_kelvin;   /* display color-temperature target in K (6500 = neutral) */
+    bool               color_temp_supported; /* platform offers color-temperature correction */
     bool               bfi_enabled;         /* Black Frame Insertion (RA): 100/120Hz only */
     int                hdmi_output_mode;    /* HDMI out: 0 off, 1 4:3 pillarbox, 2 stretch */
     int                hdmi_connected;      /* HDMI cable: -1 unknown, 0 no, 1 yes */
@@ -419,6 +461,7 @@ typedef struct {
     unsigned           wifi_msg_ms;         /* when wifi_msg was set (0 = none); auto-expires */
     char               wifi_attempt_ssid[64];  /* network we're trying to join ("" = none) */
     unsigned           wifi_attempt_ms;     /* when the join attempt started */
+    int                wifi_attempt_auth_fails; /* auth-fail events seen this attempt */
     int                wifi_monitor_fd;     /* wpa event-socket fd during a join (-1 = none) */
     bool               wifi_radio_on;       /* Wi-Fi on/off toggle state */
     int                wifi_strength_cached;/* 0..3 for the status-bar icon; polled on a throttle */
@@ -471,13 +514,15 @@ bool jw_settings_tab_glide(const jw_settings_ui *ui);
    the UI never sees them). The launcher hands this to its BACKGROUND poller and
    applies the result with jw_settings_ui_apply_av(); it must not be sampled on
    the render thread, because a round trip to jawakad costs ~110ms of latency and
-   this page needs several.
+   this page needs several. Pass -1 for a level and NULL for the audio status
+   when that half was not sampled.
 
    jw_settings_ui_refresh_av() is the blocking one-shot, still fine on page open
    where a single stall is invisible, but never in a loop. */
 bool jw_settings_ui_wants_av_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_av(jw_settings_ui *ui);
 void jw_settings_ui_apply_av(jw_settings_ui *ui, int brightness_percent,
+                             int volume_percent,
                              const jw_ipc_audio_status *audio);
 
 /* True while the Network page is open. The launcher calls
@@ -558,6 +603,14 @@ int  jw_settings_user_theme_index(const jw_settings_ui *ui);   /* -1 = None */
    rebuild for the layout (the Layout row raises theme_changed for it). */
 bool jw_settings_ui_select_user_theme(jw_settings_ui *ui, int index,
                                       char *status_buf, size_t status_size);
+/* RetroAchievements row. The loader reads the stored account through the same
+   validator the launch handoff uses (jw_db_resolve_ra_account), so a row the
+   handoff would reject is never displayed as saved. */
+void jw_settings_ui_load_ra_account(jw_settings_ui *ui);
+/* The row's value text: "Saved: <name>", "Not saved - sign in again" for an
+   invalid or unreadable stored account, else "Not signed in". */
+void jw_settings_ra_account_value(const jw_settings_ui *ui, char *out,
+                                  size_t out_size);
 /* Effective grid density: the user's explicit choice wins, then the selected
    theme's recommendation, else 0/0 meaning "use the stylesheet". Returns true
    when cols/rows were set by either source. */

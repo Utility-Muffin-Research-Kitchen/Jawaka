@@ -36,6 +36,7 @@
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
 #include "internal/settings/storage_ui.h"
+#include "internal/storage/repair_advice.h"
 #include "internal/storage/health.h"
 #include "internal/store/pakrat_state.h"
 #include "internal/store/pakrat_state_logic.h"
@@ -1146,7 +1147,7 @@ static void jw__draw_footer(const jw_launcher_state *state,
    the menu, not a footer hint. */
 static void jw__draw_settings_footer(const jw_launcher_state *state) {
     jw_settings_screen scr = jw_settings_ui_screen(&state->settings);
-    if (scr == JW_SETTINGS_NETWORK) {
+    if (scr == JW_SETTINGS_WIFI) {
         cat_footer_item footer[] = {
             { CAT_BTN_X, "Rescan",  false, JW_HINT("X") },
             { CAT_BTN_Y, "Forget",  false, JW_HINT("Y") },
@@ -1572,11 +1573,14 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     return 0;
 }
 
+static void jw__status_poller_kick(void);
+
 static int jw__scan_library(const char *socket_path, const char *db_path,
                              jw_launcher_state *state) {
     (void)db_path;
     int rc = jw_ipc_scan_library(socket_path, state->status, sizeof(state->status));
     if (rc != 0) return -1;
+    jw__status_poller_kick();   /* follow the scan at the 1 s cadence now */
 
     jw_ipc_library_status_info lib;
     if (jw_ipc_library_status_full(socket_path, &lib) == 0) {
@@ -1631,7 +1635,11 @@ static int jw__load_library_cache(const char *socket_path, const char *db_path,
 #define JW_STATUS_POLL_VOLUME (1 << 0)
 #define JW_STATUS_POLL_WIFI   (1 << 1)
 #define JW_STATUS_POLL_BT     (1 << 2)
-#define JW_STATUS_POLL_AV     (1 << 3)   /* brightness + full audio status */
+#define JW_STATUS_POLL_AV     (1 << 3)   /* brightness + volume + full audio status */
+#define JW_STATUS_POLL_AV_AUDIO (1 << 4) /* ...with the audio status every pass */
+/* With Display & Sound open, the full audio status is sampled once every this
+   many passes (~300 ms apart); brightness and volume every pass. */
+#define JW_STATUS_AV_AUDIO_EVERY 5
 #define JW_STATUS_SAMPLE_NONE INT_MIN
 
 typedef struct {
@@ -1650,6 +1658,9 @@ typedef struct {
     atomic_int  bt;           /* 0=off, 1=on, 2=connected */
     atomic_int  battery;      /* 0..100, -1 = unknown */
     atomic_int  charging;     /* 0/1, -1 = unknown */
+    /* Seconds left on an armed HDMI 1080p120 revert, from the same reads:
+       0 = none, -1 = not known (the render thread then asks jawakad itself). */
+    atomic_int  hdmi_revert;
     uint32_t    fb_last_fast; /* render-thread fallback throttles (worker never started) */
     uint32_t    fb_last_slow;
     /* Scrape progress snapshot, refreshed at the fast cadence. Strings need
@@ -1662,6 +1673,7 @@ typedef struct {
        mutex+seq shape as scrape above, because audio status is a struct and one
        atomic cannot carry it. Brightness rides along as a plain mailbox. */
     atomic_int  av_brightness;
+    atomic_int  av_volume;
     pthread_mutex_t av_mu;
     jw_ipc_audio_status av_audio;
     atomic_int  av_seq;
@@ -1669,74 +1681,198 @@ typedef struct {
 
 static jw_status_poller jw__status_poller;
 
+/* The worker waits on this pipe for its next interval, so anything that
+   should make it look sooner writes a byte: 'v' when jawakad signals that it
+   changed the volume (SIGUSR2; a pipe write is what a signal handler may do),
+   'k' for everything else (a page opening, a scan or scrape starting,
+   shutdown). */
+static int jw__status_kick_pipe[2] = {-1, -1};
+#define JW_STATUS_KICK_LEVELS 'v'
+#define JW_STATUS_KICK_OTHER  'k'
+
+static void jw__status_poller_kick_byte(char byte) {
+    if (jw__status_kick_pipe[1] >= 0) {
+        ssize_t ignored = write(jw__status_kick_pipe[1], &byte, 1);
+        (void)ignored;
+    }
+}
+
+static void jw__status_poller_kick(void) {
+    jw__status_poller_kick_byte(JW_STATUS_KICK_OTHER);
+}
+
+static void jw__levels_changed_handler(int signo) {
+    (void)signo;
+    int saved_errno = errno;
+    jw__status_poller_kick_byte(JW_STATUS_KICK_LEVELS);
+    errno = saved_errno;
+}
+
+/* Before hello: jawakad only signals a launcher whose hello said it handles
+   SIGUSR2, and SIGUSR2's default action would kill this process. */
+static bool jw__status_kick_setup(void) {
+    if (pipe(jw__status_kick_pipe) != 0) {
+        jw__status_kick_pipe[0] = jw__status_kick_pipe[1] = -1;
+        return false;
+    }
+    for (int i = 0; i < 2; i++) {
+        (void)fcntl(jw__status_kick_pipe[i], F_SETFD, FD_CLOEXEC);
+        int flags = fcntl(jw__status_kick_pipe[i], F_GETFL);
+        if (flags >= 0) {
+            (void)fcntl(jw__status_kick_pipe[i], F_SETFL, flags | O_NONBLOCK);
+        }
+    }
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = jw__levels_changed_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    return sigaction(SIGUSR2, &sa, NULL) == 0;
+}
+
+/* Drain the pipe: *levels when jawakad said the volume moved, *other for any
+   other kick. */
+static void jw__status_kick_drain(bool *levels, bool *other) {
+    if (jw__status_kick_pipe[0] < 0) {
+        return;
+    }
+    char buf[32];
+    ssize_t n;
+    while ((n = read(jw__status_kick_pipe[0], buf, sizeof(buf))) > 0) {
+        for (ssize_t i = 0; i < n; i++) {
+            if (buf[i] == JW_STATUS_KICK_LEVELS) *levels = true;
+            else *other = true;
+        }
+    }
+}
+
 static void *jw__status_poll_worker(void *arg) {
     jw_status_poller *P = (jw_status_poller *)arg;
-    uint32_t last_slow = 0;
+    uint32_t next_library = 0;
+    uint32_t next_slow = 0;
+    unsigned av_pass = 0;
+    char scrape_state[16] = "";   /* last scrape-status state; "" = never read */
+    bool levels = true;           /* first pass reads everything */
+    bool kicked = true;
     while (!atomic_load(&P->stop)) {
         int mask = atomic_load(&P->poll_mask);
-        /* ~1s cadence: volume + library generation (both IPC to the daemon). */
-        if (mask & JW_STATUS_POLL_VOLUME) {
-            int percent = -1;
-            if (jw_ipc_platform_volume(P->socket_path, &percent) == 0 && percent >= 0)
-                atomic_store(&P->volume, percent > 100 ? 100 : percent);
-        }
-        /* Display & Sound: brightness + audio status. Two blocking round trips
-           that used to run on the render thread and stall cursor movement on
-           that page; out here they cost nothing anyone can see. */
-        if (mask & JW_STATUS_POLL_AV) {
-            int percent = -1;
-            if (jw_ipc_platform_brightness(P->socket_path, &percent) == 0 && percent >= 0)
-                atomic_store(&P->av_brightness, percent);
-            jw_ipc_audio_status audio;
-            if (jw_ipc_platform_audio_status(P->socket_path, &audio) == 0) {
-                pthread_mutex_lock(&P->av_mu);
-                P->av_audio = audio;
-                pthread_mutex_unlock(&P->av_mu);
-                atomic_fetch_add(&P->av_seq, 1);
-            }
-        }
-        jw_ipc_library_status_info lib;
-        if (jw_ipc_library_status_full(P->socket_path, &lib) == 0) {
-            atomic_store(&P->generation, lib.generation);
-            atomic_store(&P->scan_running, lib.scan_running ? 1 : 0);
-            atomic_store(&P->pending_rescan, lib.pending_rescan ? 1 : 0);
-            atomic_store(&P->library_populated, lib.library_populated ? 1 : 0);
-            atomic_store(&P->storage_generation, lib.storage_health_generation);
-        }
-        /* Scrape progress (same fast cadence; art pops in live while the
-           daemon worker downloads, so the status line should track it). */
-        {
-            jw_ipc_scrape_status_info scrape;
-            if (jw_ipc_scrape_status(P->socket_path, &scrape) == 0) {
-                pthread_mutex_lock(&P->scrape_mu);
-                P->scrape = scrape;
-                pthread_mutex_unlock(&P->scrape_mu);
-                atomic_fetch_add(&P->scrape_seq, 1);
-            }
-        }
-        /* ~5s cadence: Wi-Fi strength, Bluetooth state, and battery/charging.
-           These shell out (wpa_cli/bluetoothctl) or IPC, so the render thread
-           never spawns or blocks for status. */
         uint32_t now = SDL_GetTicks();
-        if (last_slow == 0 || now - last_slow >= 5000) {
+        /* Volume and the HDMI revert countdown: when jawakad says one changed
+           (SIGUSR2), and on a kick. The 5 s status read below refreshes both,
+           in case a signal was missed. */
+        if (levels || kicked) {
+            int percent = -1, revert = -1;
+            if (jw_ipc_platform_levels_full(P->socket_path, NULL, &percent, &revert) == 0) {
+                if ((mask & JW_STATUS_POLL_VOLUME) && percent >= 0)
+                    atomic_store(&P->volume, percent > 100 ? 100 : percent);
+                atomic_store(&P->hdmi_revert, revert);
+            }
+        }
+        /* Display & Sound. Off the render thread these round trips cost the
+           launcher nothing anyone can see, but not jawakad: it answers on the
+           loop that forwards the pad, and the audio status costs it a dozen
+           pactl/amixer/bluetoothctl spawns. Sampling that every 300 ms kept
+           jawakad busy half the time and the page's D-pad input waited behind
+           it. So brightness and volume, which follow the hardware keys and
+           come from jawakad's cache, are read every pass; the audio status
+           (route, outputs, test clip) every JW_STATUS_AV_AUDIO_EVERY passes,
+           or every pass while the page asks for it (test clip playing). */
+        if (mask & JW_STATUS_POLL_AV) {
+            int brightness = -1, volume = -1;
+            if (jw_ipc_platform_levels(P->socket_path, &brightness, &volume) == 0) {
+                if (brightness >= 0)
+                    atomic_store(&P->av_brightness, brightness);
+                if (volume >= 0)
+                    atomic_store(&P->av_volume, volume > 100 ? 100 : volume);
+            }
+            if ((mask & JW_STATUS_POLL_AV_AUDIO) || av_pass % JW_STATUS_AV_AUDIO_EVERY == 0) {
+                jw_ipc_audio_status audio;
+                if (jw_ipc_platform_audio_status(P->socket_path, &audio) == 0) {
+                    pthread_mutex_lock(&P->av_mu);
+                    P->av_audio = audio;
+                    pthread_mutex_unlock(&P->av_mu);
+                    atomic_fetch_add(&P->av_seq, 1);
+                }
+            }
+            av_pass++;
+        } else {
+            av_pass = 0;   /* the page's first pass samples everything */
+        }
+        /* Library and scrape progress: every second while a scan or scrape
+           runs, so the status line and art keep up; otherwise every 5 s. The
+           library status says whether the scraper is doing anything, so an
+           idle one is not asked (one more read after it stops keeps the final
+           counts). A daemon that does not report scrape_state is asked every
+           time, as before. */
+        if (kicked || (int32_t)(now - next_library) >= 0) {
+            bool busy = false;
+            jw_ipc_library_status_info lib;
+            if (jw_ipc_library_status_full(P->socket_path, &lib) == 0) {
+                atomic_store(&P->generation, lib.generation);
+                atomic_store(&P->scan_running, lib.scan_running ? 1 : 0);
+                atomic_store(&P->pending_rescan, lib.pending_rescan ? 1 : 0);
+                atomic_store(&P->library_populated, lib.library_populated ? 1 : 0);
+                atomic_store(&P->storage_generation, lib.storage_health_generation);
+                busy = lib.scan_running;
+                bool known = lib.scrape_state[0] != '\0';
+                bool scraping = !known || strcmp(lib.scrape_state, "idle") != 0;
+                if (scraping || strcmp(scrape_state, "idle") != 0) {
+                    jw_ipc_scrape_status_info scrape;
+                    if (jw_ipc_scrape_status(P->socket_path, &scrape) == 0) {
+                        pthread_mutex_lock(&P->scrape_mu);
+                        P->scrape = scrape;
+                        pthread_mutex_unlock(&P->scrape_mu);
+                        atomic_fetch_add(&P->scrape_seq, 1);
+                        snprintf(scrape_state, sizeof(scrape_state), "%s", scrape.state);
+                    }
+                }
+                if (strcmp(known ? lib.scrape_state : scrape_state, "running") == 0)
+                    busy = true;
+            }
+            next_library = now + (busy ? 1000u : 5000u);
+        }
+        /* Every 5 s: Wi-Fi strength, Bluetooth state (both read from the
+           kernel), and battery, charging, volume and the HDMI revert countdown
+           in one platform-status. */
+        if (kicked || (int32_t)(now - next_slow) >= 0) {
             if (mask & JW_STATUS_POLL_WIFI)
                 atomic_store(&P->wifi,
                              jw_wifi_available() ? jw_wifi_strength_now() : -1);
             if (mask & JW_STATUS_POLL_BT)
                 atomic_store(&P->bt, jw_settings_bt_state_now());
-            int batt = -1, chg = -1;
-            if (jw_ipc_platform_power_status(P->socket_path, &batt, &chg) == 0) {
+            int batt = -1, chg = -1, volume = -1, revert = -1;
+            if (jw_ipc_platform_power_status_full(P->socket_path, &batt, &chg,
+                                                  (mask & JW_STATUS_POLL_VOLUME) ? &volume : NULL,
+                                                  &revert) == 0) {
                 atomic_store(&P->battery, batt);
                 atomic_store(&P->charging, chg);
+                if (volume >= 0)
+                    atomic_store(&P->volume, volume > 100 ? 100 : volume);
+                atomic_store(&P->hdmi_revert, revert);
             }
-            last_slow = now;
+            next_slow = now + 5000u;
         }
-        /* Sleep ~1s, waking promptly for shutdown. While Display & Sound is open
-           tighten to ~300ms so its sliders keep up with the hardware keys as
-           closely as the old render-thread poll did — the cost is confined to
-           this thread, and only while that page is showing. */
-        int slices = (mask & JW_STATUS_POLL_AV) ? 3 : 10;
-        for (int i = 0; i < slices && !atomic_load(&P->stop); i++) SDL_Delay(100);
+        /* Wait out the whole interval unless kicked. While Display & Sound is
+           open, 300 ms so its sliders keep up with the hardware keys. */
+        int timeout;
+        if (mask & JW_STATUS_POLL_AV) {
+            timeout = 300;
+        } else {
+            uint32_t after = SDL_GetTicks();
+            int32_t until_library = (int32_t)(next_library - after);
+            int32_t until_slow = (int32_t)(next_slow - after);
+            int32_t wait = until_library < until_slow ? until_library : until_slow;
+            timeout = wait > 0 ? (int)wait : 0;
+        }
+        struct pollfd pfd = { .fd = jw__status_kick_pipe[0], .events = POLLIN };
+        if (pfd.fd >= 0) {
+            (void)poll(&pfd, 1, timeout);
+        } else {
+            SDL_Delay((Uint32)timeout);
+        }
+        levels = false;
+        kicked = false;
+        jw__status_kick_drain(&levels, &kicked);
     }
     return NULL;
 }
@@ -1786,10 +1922,14 @@ static void jw__status_poller_fallback_poll(jw_settings_ui *s, int mask) {
 static int jw__status_poll_mask(const jw_settings_ui *s) {
     int mask = 0;
     /* The A/V sample carries volume too, so the two never both run. */
-    if (jw_settings_ui_wants_av_poll(s))
+    if (jw_settings_ui_wants_av_poll(s)) {
         mask |= JW_STATUS_POLL_AV;
-    else if (jw_settings_show_volume(s))
+        /* Keep sampling the clip so its row returns to Play when it ends. */
+        if (s->test_sound_playing)
+            mask |= JW_STATUS_POLL_AV_AUDIO;
+    } else if (jw_settings_show_volume(s)) {
         mask |= JW_STATUS_POLL_VOLUME;
+    }
     if (jw_settings_show_wifi(s) && !jw_settings_ui_wants_wifi_poll(s))
         mask |= JW_STATUS_POLL_WIFI;
     if (s->show_bluetooth && !jw_settings_ui_wants_bluetooth_poll(s))
@@ -1811,7 +1951,8 @@ static void jw__status_poller_sync(jw_settings_ui *s) {
         jw__status_poller_fallback_poll(s, mask);
         return;
     }
-    atomic_store(&P->poll_mask, mask);
+    if (atomic_exchange(&P->poll_mask, mask) != mask)
+        jw__status_poller_kick();   /* a page opened or closed: sample now */
 
     int v = atomic_exchange(&P->volume, JW_STATUS_SAMPLE_NONE);
     if (v != JW_STATUS_SAMPLE_NONE && (mask & JW_STATUS_POLL_VOLUME))
@@ -1822,6 +1963,7 @@ static void jw__status_poller_sync(jw_settings_ui *s) {
     if (mask & JW_STATUS_POLL_AV) {
         static int av_seen = 0;
         int brightness = atomic_exchange(&P->av_brightness, JW_STATUS_SAMPLE_NONE);
+        int volume = atomic_exchange(&P->av_volume, JW_STATUS_SAMPLE_NONE);
         int seq = atomic_load(&P->av_seq);
         jw_ipc_audio_status audio;
         bool have_audio = false;
@@ -1832,9 +1974,11 @@ static void jw__status_poller_sync(jw_settings_ui *s) {
             pthread_mutex_unlock(&P->av_mu);
             have_audio = true;
         }
-        if (brightness != JW_STATUS_SAMPLE_NONE || have_audio) {
+        if (brightness != JW_STATUS_SAMPLE_NONE || volume != JW_STATUS_SAMPLE_NONE ||
+            have_audio) {
             jw_settings_ui_apply_av(s,
                                     brightness == JW_STATUS_SAMPLE_NONE ? -1 : brightness,
+                                    volume == JW_STATUS_SAMPLE_NONE ? -1 : volume,
                                     have_audio ? &audio : NULL);
         }
     }
@@ -1867,12 +2011,14 @@ static void jw__status_poller_start(const char *socket_path, jw_settings_ui *set
     atomic_store(&P->bt, JW_STATUS_SAMPLE_NONE);
     atomic_store(&P->battery, JW_STATUS_SAMPLE_NONE);
     atomic_store(&P->charging, JW_STATUS_SAMPLE_NONE);
+    atomic_store(&P->hdmi_revert, -1);
     /* Seed the mask before the worker's first pass so startup doesn't skip a
        round of samples while waiting for the first sync. */
     atomic_store(&P->poll_mask, jw__status_poll_mask(settings));
     pthread_mutex_init(&P->scrape_mu, NULL);
     pthread_mutex_init(&P->av_mu, NULL);
     atomic_store(&P->av_brightness, JW_STATUS_SAMPLE_NONE);
+    atomic_store(&P->av_volume, JW_STATUS_SAMPLE_NONE);
     atomic_store(&P->av_seq, 0);
     atomic_store(&P->scrape_seq, 0);
     atomic_store(&P->stop, false);
@@ -1885,6 +2031,7 @@ static void jw__status_poller_shutdown(void) {
     jw_status_poller *P = &jw__status_poller;
     if (!P->started) return;
     atomic_store(&P->stop, true);
+    jw__status_poller_kick();
     pthread_join(P->thread, NULL);
     P->started = false;
 }
@@ -2677,6 +2824,8 @@ static const char *jw__pakrat_theme_reason_text(jw_theme_reason reason) {
 static const char *jw__pakrat_license_label(const char *license) {
     if (strcmp(license, "CC-BY-4.0") == 0)    return "CC BY 4.0";
     if (strcmp(license, "CC-BY-SA-4.0") == 0) return "CC BY-SA 4.0";
+    if (strcmp(license, "CC-BY-NC-SA-2.0") == 0) return "CC BY-NC-SA 2.0";
+    if (strcmp(license, "CC-BY-NC-SA-4.0") == 0) return "CC BY-NC-SA 4.0";
     if (strcmp(license, "CC0-1.0") == 0)      return "CC0 1.0";
     if (strcmp(license, "redistribution-permitted") == 0)
         return T("All rights reserved, redistribution permitted");
@@ -4796,7 +4945,7 @@ static void jw__render_focus(jw_launcher_state *state) {
 
 /* ─── System icon loader (shared across themes) ──────────────────────────── */
 
-/* Which artwork a system tile draws is a setting (Settings > Appearance > Layout
+/* Which artwork a system tile draws is a setting (Settings > Home Screen
  * > System Icons), not a consequence of the home layout. One builder owns the
  * whole candidate order so the two consumers below cannot drift apart:
  *
@@ -4942,7 +5091,9 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
     const cat_stylesheet *ss = cat_get_stylesheet();
     bool grid = ss && ss->launcher.layout == CAT_LAUNCHER_GRID;
 
-    /* (0) the selected user theme, for the view this layout draws. Wins over
+    /* (0) the selected user theme, for the view this layout draws: that view's
+       own folder, then the theme's shared icons/ folder, so one set can serve
+       both views while either can still override a system. Wins over
        everything, falls through for any system it does not supply, and never
        for _default (Leaf's safety net, not a tile). Over-cap PNGs are refused
        here so a 4000 px photo never reaches the decoder. */
@@ -4951,13 +5102,20 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
         if (grid)                                                     view = "grid";
         else if (ss && ss->launcher.layout == CAT_LAUNCHER_COVERFLOW) view = "coverflow";
         int ti = jw_settings_user_theme_index(&state->settings);
-        if (view && ti >= 0 &&
-            jw_user_theme_icon_path(jw_settings_user_themes(&state->settings), ti,
-                                    view, system_code, path, sizeof(path))) {
-            int w = 0, h = 0;
-            if (jw_user_theme_png_dims(path, &w, &h) &&
-                w <= JW_USER_THEME_ICON_MAX_PX && h <= JW_USER_THEME_ICON_MAX_PX)
-                jw__push_icon_candidate(out, path);
+        const jw_user_theme_catalog *themes = jw_settings_user_themes(&state->settings);
+        if (view && ti >= 0) {
+            bool found = false;
+            for (int pass = 0; pass < 2 && !found; pass++) {
+                bool have = pass == 0
+                    ? jw_user_theme_icon_path(themes, ti, view, system_code, path, sizeof(path))
+                    : jw_user_theme_shared_icon_path(themes, ti, system_code, path, sizeof(path));
+                int w = 0, h = 0;
+                if (have && jw_user_theme_png_dims(path, &w, &h) &&
+                    w <= JW_USER_THEME_ICON_MAX_PX && h <= JW_USER_THEME_ICON_MAX_PX) {
+                    jw__push_icon_candidate(out, path);
+                    found = true;
+                }
+            }
         }
     }
 
@@ -8798,7 +8956,7 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
             jw__action_add_row(state, JW_ACTION_ROW_BIOS);
         }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
-        /* Per-system scraping moved to Settings > Game Art > Scrape Missing
+        /* Per-system scraping moved to Settings > Games > Scrape Missing
            Artwork; the system X menu no longer offers it. */
         jw__action_add_row(state, JW_ACTION_ROW_RESET);
     } else if (state->action_scope == JW_ACTION_GAME) {
@@ -9659,7 +9817,7 @@ static bool jw__confirm_pakrat_theme_uninstall(const jw_launcher_state *state,
     return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
-/* Apply is the selection Settings > Appearance > Layout > Theme makes, followed
+/* Apply is the selection Settings > Appearance > Theme makes, followed
    by the rebuild the launcher runs when that row changes. */
 static void jw__pakrat_apply_theme(jw_launcher_state *state,
                                    const jw_pakrat_app_state *app) {
@@ -10639,6 +10797,7 @@ static void jw__start_action_scrape(const char *socket_path, const char *db_path
                  status[0] ? status : "daemon unavailable");
         return;
     }
+    jw__status_poller_kick();   /* follow the scrape at the 1 s cadence now */
     if (is_game) {
         char name[256];
         jw__clean_rom_name(state->action_game.name, name, sizeof(name));
@@ -11262,7 +11421,8 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
             }
         }
         if (!running) break;
-        if (jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE)
+        if (jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE ||
+            jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE_PICKER)
             jw_settings_ui_refresh_update(ui);
 
         jw__poll_library_generation(socket_path, db_path, state);
@@ -11342,6 +11502,7 @@ static void jw__menu_activate(const char *socket_path, const char *db_path,
             cat_request_frame();
             jw__render_menu(state);
             int rc = jw_ipc_scan_library(socket_path, buf, sizeof(buf));
+            if (rc == 0) jw__status_poller_kick();
             jw_system_notice_set(&state->system_activity.feedback,
                 rc == 0 ? T("Library scan requested") : (buf[0] ? buf : T("Library scan failed")),
                 SDL_GetTicks());
@@ -12893,6 +13054,7 @@ static void jw__screenshot_flash_handler(int sig) {
 typedef struct {
     bool blocked;
     bool override_allowed;
+    bool retry_allowed;
     bool requires_verified_stop;
     bool sync_pending;
     int pending_items;
@@ -12923,6 +13085,8 @@ static bool jw__blocked_game_launch_query(const char *socket_path,
     cJSON *blocked = cJSON_GetObjectItemCaseSensitive(root, "blocked");
     cJSON *allowed =
         cJSON_GetObjectItemCaseSensitive(root, "override_allowed");
+    cJSON *retry_allowed =
+        cJSON_GetObjectItemCaseSensitive(root, "retry_allowed");
     cJSON *sync_pending =
         cJSON_GetObjectItemCaseSensitive(root, "sync_pending");
     cJSON *requires_verified_stop =
@@ -12935,6 +13099,7 @@ static bool jw__blocked_game_launch_query(const char *socket_path,
     cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
     out->blocked = cJSON_IsTrue(blocked);
     out->override_allowed = cJSON_IsTrue(allowed);
+    out->retry_allowed = cJSON_IsTrue(retry_allowed);
     out->requires_verified_stop = cJSON_IsTrue(requires_verified_stop);
     out->sync_pending = cJSON_IsTrue(sync_pending);
     if (cJSON_IsNumber(pending_items) && pending_items->valuedouble >= 0.0 &&
@@ -12983,6 +13148,84 @@ static bool jw__blocked_game_launch_action(const char *socket_path,
     return ok;
 }
 
+typedef enum {
+    JW__ROP_PROMPT_CANCEL = 0,
+    JW__ROP_PROMPT_RETRY,
+    JW__ROP_PROMPT_PLAY,
+} jw__rop_prompt_choice;
+
+/* RAOfflineProxy is enabled but did not answer its health check in time. This
+   is the one blocked-launch prompt with three answers, and cat_confirmation
+   only knows A and B, so it draws its own. X Retry follows the launcher's
+   X-for-Refresh/Rescan convention; A keeps the direct-play answer it always
+   had, and B cancels. Retry sends one request per press and never loops. */
+static jw__rop_prompt_choice jw__raofflineproxy_prompt(bool retry_allowed) {
+    const char *body = retry_allowed
+        ? "Offline achievements unavailable.\n\n"
+          "RAOfflineProxy is enabled but not responding. Retry checks it "
+          "again. Play directly signs you in to RetroAchievements online, "
+          "but unlocks can't be queued for offline play. To check the "
+          "service, cancel and open Settings > System > Services."
+        : "Offline achievements unavailable.\n\n"
+          "RAOfflineProxy is enabled but not responding. Play directly "
+          "signs you in to RetroAchievements online, but unlocks can't be "
+          "queued for offline play. To check the service, cancel and open "
+          "Settings > System > Services.";
+    TTF_Font *font = cat_get_font(CAT_FONT_MEDIUM);
+    if (!font) {
+        return JW__ROP_PROMPT_CANCEL;
+    }
+    cat_theme *theme = cat_get_theme();
+    cat_footer_item footer[] = {
+        { CAT_BTN_B, "Cancel",        false, JW_HINT("B") },
+        { CAT_BTN_X, "Retry",         false, JW_HINT("X") },
+        { CAT_BTN_A, "Play directly", true,  JW_HINT("A") },
+    };
+    int footer_count = 3;
+    if (!retry_allowed) {
+        footer[1] = footer[2];
+        footer_count = 2;
+    }
+    cat_request_frame();
+    for (;;) {
+        cat_input_event ev;
+        while (cat_poll_input(&ev)) {
+            if (!ev.pressed) {
+                continue;
+            }
+            if (ev.button == CAT_BTN_A) {
+                return JW__ROP_PROMPT_PLAY;
+            }
+            if (ev.button == CAT_BTN_B) {
+                return JW__ROP_PROMPT_CANCEL;
+            }
+            if (ev.button == CAT_BTN_X && retry_allowed) {
+                return JW__ROP_PROMPT_RETRY;
+            }
+        }
+        int sw = cat_get_screen_width();
+        int sh = cat_get_screen_height();
+        int max_w = sw - CAT_S(80);
+        if (max_w < 1) {
+            max_w = 1;
+        }
+        cat_draw_background();
+        int body_h = cat_measure_wrapped_text_height(font, body, max_w);
+        int y = (sh - body_h - cat_get_footer_height()) / 2;
+        if (y < CAT_S(20)) {
+            y = CAT_S(20);
+        }
+        cat_draw_text_wrapped(font, body, CAT_S(40), y, max_w, theme->text,
+                              CAT_ALIGN_CENTER);
+        /* jw__footer_direct translates labels in place; draw from a copy so
+           the next frame does not translate an already translated label. */
+        cat_footer_item drawn[3];
+        memcpy(drawn, footer, sizeof(drawn));
+        jw__footer_direct(drawn, footer_count);
+        jw__present();
+    }
+}
+
 static bool jw__surface_blocked_game_launch(
         const char *socket_path, const jw_blocked_game_launch *blocked) {
     if (!blocked || !blocked->blocked) {
@@ -13023,6 +13266,22 @@ static bool jw__surface_blocked_game_launch(
         bool accepted = jw__blocked_game_launch_action(socket_path, action);
         return accepted && leaves_launcher;
     }
+    if (blocked->override_allowed &&
+        strcmp(blocked->reason, "raofflineproxy-not-ready") == 0) {
+        jw__rop_prompt_choice choice =
+            jw__raofflineproxy_prompt(blocked->retry_allowed);
+        if (choice == JW__ROP_PROMPT_PLAY) {
+            return jw__blocked_game_launch_action(
+                socket_path, "game-launch-override");
+        }
+        if (choice == JW__ROP_PROMPT_RETRY) {
+            return jw__blocked_game_launch_action(
+                socket_path, "game-launch-retry");
+        }
+        (void)jw__blocked_game_launch_action(
+            socket_path, "game-launch-blocked-dismiss");
+        return false;
+    }
     char message[640];
     if (blocked->override_allowed) {
         bool unsafe_card_binding =
@@ -13043,12 +13302,6 @@ static bool jw__surface_blocked_game_launch(
                      "Cancel leaves syncing active.",
                      blocked->pending_items,
                      blocked->pending_items == 1 ? "" : "s", size);
-        } else if (strcmp(blocked->reason, "raofflineproxy-not-ready") == 0) {
-            snprintf(message, sizeof(message),
-                     "Offline achievements unavailable.\n\nRAOfflineProxy is "
-                     "enabled but not responding. You can play now without "
-                     "offline achievements, or cancel and check the service "
-                     "in Settings > Services.");
         } else if (blocked->requires_verified_stop) {
             snprintf(message, sizeof(message),
                      "Sync needs attention.\n\nSyncthing could not be verified "
@@ -13062,14 +13315,10 @@ static bool jw__surface_blocked_game_launch(
                      blocked->service_id[0] ? blocked->service_id
                                             : "A background service");
         }
-        bool rop_not_ready =
-            strcmp(blocked->reason, "raofflineproxy-not-ready") == 0;
         cat_footer_item footer[] = {
             { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
             { .button = CAT_BTN_A,
-              .label = unsafe_card_binding ? "Stop & Play"
-                      : rop_not_ready  ? "Play without achievements"
-                                       : "Play Anyway",
+              .label = unsafe_card_binding ? "Stop & Play" : "Play Anyway",
               .is_confirm = true },
         };
         cat_message_opts opts = {
@@ -13163,36 +13412,26 @@ static void jw__poll_storage_health(const char *socket_path, const char *db_path
         return;
     }
     for (int i = 0; i < JW_STORAGE_UI_SOURCE_COUNT; i++) {
-        if (have[i] && cards[i].warning_pending &&
-            jw_storage_ui_show_warning(socket_path, &cards[i])) {
+        if (!have[i] || !cards[i].warning_pending) {
+            continue;
+        }
+        if (jw_storage_ui_show_warning(socket_path, &cards[i])) {
             snprintf(state->status, sizeof(state->status), "%s",
                      T("Restarting to repair your SD card"));
             cat_request_frame();
             return;
+        }
+        /* The warning for a check that found errors already reported that
+           result and acknowledged it; don't show it again from this copy. */
+        if (jw_storage_advice_check_found_errors(&cards[i])) {
+            cards[i].last_repair_acknowledged = true;
         }
     }
     for (int i = 0; i < JW_STORAGE_UI_SOURCE_COUNT; i++) {
         if (!have[i] || !cards[i].last_repair_valid || cards[i].last_repair_acknowledged) {
             continue;
         }
-        if (jw_storage_ui_show_repair_result(socket_path, &cards[i], library_writable) ==
-            JW_STORAGE_UI_RESULT_SCRAPE_MISSING) {
-            if (!jw__screenscraper_account_configured(db_path) &&
-                !jw__confirm_anonymous_batch_scrape(true)) {
-                break;
-            }
-            int enqueued = 0;
-            char status[256] = "";
-            if (jw_ipc_scrape_start(socket_path, "all", NULL, NULL, true, &enqueued,
-                                    status, sizeof(status)) != 0) {
-                snprintf(state->status, sizeof(state->status), "Scrape failed: %.180s",
-                         status[0] ? status : "daemon unavailable");
-            } else if (enqueued > 0) {
-                snprintf(state->status, sizeof(state->status), "Scraping %d games", enqueued);
-            } else {
-                snprintf(state->status, sizeof(state->status), "%s", "Nothing to scrape");
-            }
-        }
+        jw_storage_ui_show_repair_result(socket_path, &cards[i], library_writable);
         break;   /* one result, reported on both cards' status */
     }
     (void)running;
@@ -13217,8 +13456,10 @@ int main(void) {
         return 1;
     }
 
+    bool levels_signal = jw__status_kick_setup();
     long long hello_start_ms = jw__monotonic_ms();
-    if (jw_ipc_hello(socket_path, "launcher") != 0) {
+    if ((levels_signal ? jw_ipc_hello_levels_signal(socket_path, "launcher")
+                       : jw_ipc_hello(socket_path, "launcher")) != 0) {
         jw_log_error("could not connect to jawakad at %s; is the daemon running?",
                      socket_path);
         free(socket_path);
@@ -13236,7 +13477,7 @@ int main(void) {
        A missing or damaged table simply leaves lookups returning their English
        keys, so a failure here is not worth aborting startup over. */
     {
-        char lang[16];
+        char lang[JW_I18N_CODE_MAX];
         if (jw_db_get_setting(db_path, "language", lang, sizeof(lang)) != 0 || !lang[0])
             snprintf(lang, sizeof(lang), "%s", "en");
         jw_i18n_load(lang);
@@ -13298,7 +13539,7 @@ int main(void) {
     state.storage_generation_seen = -1;
     /* A resume breadcrumb (left by the last game/app launch, cleared on reboot)
        restores the exact position; otherwise honor the persisted Startup Tab
-       (Settings > Behavior > Startup Tab), default Games. Index mirrors jw_tab. */
+       (Settings > Home Screen > Startup Tab), default Games. Index mirrors jw_tab. */
     jw_resume resume;
     bool have_resume = jw__load_resume(&resume);
     /* Build the visible-tab set first (tabs can be hidden/reordered), so the
@@ -13632,14 +13873,25 @@ int main(void) {
            would swallow the failsafe unlock chord, and if a revert was somehow
            armed the daemon still auto-reverts to the safe mode on its own timer. */
         if (!state.focus_active) {
-            static uint32_t s_revert_poll = 0;
-            uint32_t rn = SDL_GetTicks();
-            if (s_revert_poll == 0 || rn - s_revert_poll >= 700) {
-                s_revert_poll = rn;
-                int rsecs = 0;
-                if (jw_ipc_hdmi_revert_status(socket_path, &rsecs) == 0 && rsecs > 0) {
-                    jw__hdmi_keep_prompt(socket_path);
-                    cat_request_frame();
+            /* The status worker learns of an armed revert from jawakad's signal
+               or its 5 s read; the prompt re-checks with the daemon before it
+               shows. Without the worker, or with a daemon that does not report
+               the countdown, ask directly as before. */
+            int rsecs = jw__status_poller.started
+                            ? atomic_load(&jw__status_poller.hdmi_revert) : -1;
+            if (rsecs > 0) {
+                atomic_store(&jw__status_poller.hdmi_revert, 0);
+                jw__hdmi_keep_prompt(socket_path);
+                cat_request_frame();
+            } else if (rsecs < 0) {
+                static uint32_t s_revert_poll = 0;
+                uint32_t rn = SDL_GetTicks();
+                if (s_revert_poll == 0 || rn - s_revert_poll >= 700) {
+                    s_revert_poll = rn;
+                    if (jw_ipc_hdmi_revert_status(socket_path, &rsecs) == 0 && rsecs > 0) {
+                        jw__hdmi_keep_prompt(socket_path);
+                        cat_request_frame();
+                    }
                 }
             }
         }

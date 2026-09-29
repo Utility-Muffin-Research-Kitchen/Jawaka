@@ -6,11 +6,15 @@
  *  - injected values and RA-derived cheevos_token never reach the shared cfg;
  *  - direct (NULL / non-proxied) backups persist ordinary setting changes;
  *  - the bounded loopback health probe accepts only the fixed ready body and
- *    never overruns its timeout against a dead listener.
+ *    never overruns its timeout against a dead listener;
+ *  - service liveness (the RetroArch gate's and the Flycast route's shared
+ *    predicate) across every supervisor state, STARTING included, and the
+ *    UMRK_FLYCAST_RA_ROUTE value the bundled Flycast child gets for each.
  */
 
 #include "internal/platform/paths.h"
 #include "internal/platform/raofflineproxy.h"
+#include "internal/launcher/ra_account.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -260,8 +264,101 @@ static bool has_line(const char *text, const char *exact_line) {
     return false;
 }
 
+/* -- service liveness and the bundled Flycast route ---------------------- */
+
+static int write_record(const char *dir, const char *name, const char *text) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    return write_text(path, text);
+}
+
+static int test_liveness_and_flycast_route(void) {
+    char root[] = "/tmp/jw-rop-route-XXXXXX";
+    if (!mkdtemp(root)) return fail("route mkdtemp failed");
+    char platform[PATH_MAX], emulators[PATH_MAX], flycast[PATH_MAX];
+    char launcher[PATH_MAX];
+    snprintf(platform, sizeof(platform), "%s/platform", root);
+    snprintf(emulators, sizeof(emulators), "%s/emulators", platform);
+    snprintf(flycast, sizeof(flycast), "%s/flycast", emulators);
+    snprintf(launcher, sizeof(launcher), "%s/launch.sh", flycast);
+    if (mkdir_one(platform) || mkdir_one(emulators) || mkdir_one(flycast) ||
+        write_text(launcher, "#!/bin/sh\n") ||
+        write_record(flycast, "ra-account-v1", "standalone-ra-account-v1\n") ||
+        write_record(flycast, "ra-route-v1", "umrk-flycast-ra-route-v1\n")) {
+        return fail("route fixture write failed");
+    }
+
+    /* The bundled Flycast child: the release-owned launcher with both
+       capability records. */
+    const jw_standalone_policy flycast_policy = {
+        .provider_bound = false, .release = JW_STANDALONE_RELEASE_FLYCAST,
+    };
+    if (!jw_flycast_ra_route_target_authorized(launcher, "flycast_standalone",
+                                               &flycast_policy, NULL, platform)) {
+        return fail("bundled Flycast child is not route-authorized");
+    }
+
+    static const struct {
+        jw_svc_effective_state state;
+        pid_t pgid;
+        bool pak_present;
+        bool manifest_valid;
+        bool live;
+        const char *what;
+    } cases[] = {
+        { JW_SVC_STATE_RUNNING,          4242, true,  true,  true,  "running" },
+        { JW_SVC_STATE_STARTING,         4242, true,  true,  true,  "starting" },
+        { JW_SVC_STATE_STARTING,         0,    true,  true,  false, "starting without a group" },
+        { JW_SVC_STATE_RUNNING,          0,    true,  true,  false, "running without a group" },
+        { JW_SVC_STATE_STOPPING,         4242, true,  true,  false, "stopping" },
+        { JW_SVC_STATE_STOPPED,          0,    true,  true,  false, "stopped" },
+        { JW_SVC_STATE_DISABLED,         0,    true,  true,  false, "disabled" },
+        { JW_SVC_STATE_BACKOFF,          0,    true,  true,  false, "backoff" },
+        { JW_SVC_STATE_FAILED,           0,    true,  true,  false, "failed" },
+        { JW_SVC_STATE_STALE_GENERATION, 4242, true,  true,  false, "stale generation" },
+        { JW_SVC_STATE_UNAVAILABLE,      0,    false, false, false, "unavailable" },
+        { JW_SVC_STATE_RUNNING,          4242, false, true,  false, "running, pak gone" },
+        { JW_SVC_STATE_STARTING,         4242, true,  false, false, "starting, manifest invalid" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        jw_svc_supervised entry;
+        memset(&entry, 0, sizeof(entry));
+        entry.state = cases[i].state;
+        entry.pgid = cases[i].pgid;
+        entry.pak_present = cases[i].pak_present;
+        entry.manifest_valid = cases[i].manifest_valid;
+        bool live = jw_raofflineproxy_entry_live(&entry);
+        const char *route = jw_flycast_ra_route_value(live);
+        const char *want = cases[i].live ? "service-live" : "native";
+        if (live != cases[i].live || strcmp(route, want) != 0) {
+            fprintf(stderr, "raofflineproxy-bridge-test: %s: live=%d route=%s, "
+                            "want live=%d route=%s\n",
+                    cases[i].what, live, route, cases[i].live, want);
+            return 1;
+        }
+    }
+    if (jw_raofflineproxy_entry_live(NULL) ||
+        strcmp(jw_flycast_ra_route_value(false), "native") != 0) {
+        return fail("an absent service must route native");
+    }
+
+    /* A Flycast build without the route record keeps its native path however
+       live the service is. */
+    char record[PATH_MAX];
+    snprintf(record, sizeof(record), "%s/ra-route-v1", flycast);
+    unlink(record);
+    if (jw_flycast_ra_route_target_authorized(launcher, "flycast_standalone",
+                                              &flycast_policy, NULL, platform)) {
+        return fail("account-only Flycast build was route-authorized");
+    }
+    return 0;
+}
+
 int main(void) {
     if (test_health_probe() != 0) {
+        return 1;
+    }
+    if (test_liveness_and_flycast_route() != 0) {
         return 1;
     }
 

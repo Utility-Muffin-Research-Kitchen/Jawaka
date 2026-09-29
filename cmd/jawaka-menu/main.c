@@ -233,7 +233,6 @@ typedef struct {
 } jw_perf_option;
 
 static const jw_platform_perf_profile kInGamePerfProfiles[] = {
-    JW_PLATFORM_PERF_PROFILE_AUTO,
     JW_PLATFORM_PERF_PROFILE_BALANCED,
     JW_PLATFORM_PERF_PROFILE_PERFORMANCE,
     JW_PLATFORM_PERF_PROFILE_BATTERY_SAVER,
@@ -918,9 +917,15 @@ static void jw__ingame_perf_sync_indices(jw_ingame_state *state) {
     if (!state || !state->perf_ready) {
         return;
     }
-    state->perf_profile_index = jw__ingame_perf_profile_index(
-        state->perf.session_override ? state->perf.session_profile
-                                     : state->perf.global_profile);
+    const char *shown = state->perf.session_override
+        ? state->perf.session_profile : state->perf.active_profile;
+    jw_platform_perf_profile parsed;
+    if (jw_platform_parse_perf_profile(shown, &parsed) &&
+        parsed == JW_PLATFORM_PERF_PROFILE_AUTO &&
+        state->perf.active_profile[0]) {
+        shown = state->perf.active_profile;
+    }
+    state->perf_profile_index = jw__ingame_perf_profile_index(shown);
     state->perf_cpu_index = jw__ingame_perf_match_option(
         &state->perf.domains[JW_PLATFORM_PERF_DOMAIN_CPU],
         kCpuPerfOptions, JW_CPU_PERF_OPTION_COUNT);
@@ -1033,7 +1038,7 @@ static void jw__ingame_shader_refresh(const char *socket_path,
                 (strcmp(path, picker.current_path) == 0 ||
                  (referenced[0] && strcmp(path, referenced) == 0))) {
                 snprintf(state->shader_label, sizeof(state->shader_label), "%s",
-                         catalog.rows[i].display_name);
+                         T(catalog.rows[i].display_name));
                 found = true;
                 break;
             }
@@ -1906,7 +1911,10 @@ static const char *jw__shader_item_label(const jw_ingame_shader_view *view,
                                          int index) {
     if (index == 0) return T("Off");
     const jw_shader_catalog_row *row = jw__shader_item_row(view, index);
-    if (row) return row->display_name;
+    /* Catalog text is data from shaders/manifest.json, not a literal in this
+       repo, so it is translated here at draw the way a row label would be. The
+       keys reach the .pot through internal/retroarch/shader_strings.c. */
+    if (row) return T(row->display_name);
     if (index == jw__shader_custom_index(view)) return T("Save current shader…");
     return T("Advanced RetroArch menu");
 }
@@ -2092,15 +2100,15 @@ static void jw__render_ingame_shader(const jw_ingame_state *state,
     const char *description = NULL;
     const char *constraint = NULL;
     if (selected) {
-        description = selected->description;
+        description = T(selected->description);
         if (selected->constraint_count > 0) {
-            constraint = selected->constraints[0];
+            constraint = T(selected->constraints[0]);
             /* The active-system filter already enforces simple "GBA only"
                constraints. Prefer the safety/performance caveat the device
                matrix asks the user to see when one is present. */
             for (size_t i = 0; i < selected->constraint_count; i++) {
                 if (strstr(selected->constraints[i], "BFI")) {
-                    constraint = selected->constraints[i];
+                    constraint = T(selected->constraints[i]);
                     break;
                 }
             }
@@ -3054,7 +3062,8 @@ static void jw__menu_host_setting(const char *socket_path, jw_menu_state *menu,
             }
         }
         if (!running) break;
-        if (jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE)
+        if (jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE ||
+            jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE_PICKER)
             jw_settings_ui_refresh_update(ui);
         jw__render_hosted(menu, ui);
     }
@@ -3087,7 +3096,7 @@ int main(int argc, char **argv) {
        T() in it silently returns English. (Found on device: the About page
        translated but this menu's footers did not.) */
     {
-        char lang[16];
+        char lang[JW_I18N_CODE_MAX];
         if (!db_path ||
             jw_db_get_setting(db_path, "language", lang, sizeof(lang)) != 0 ||
             !lang[0])

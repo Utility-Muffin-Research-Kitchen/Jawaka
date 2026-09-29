@@ -249,10 +249,24 @@ void jw_svc_supervisor_close(jw_svc_supervisor *sup);
  * startup and whenever the caller notices an app install/remove. */
 int jw_svc_supervisor_scan(jw_svc_supervisor *sup);
 
-/* Main-loop tick. Call every iteration (the daemon's loop runs at ~20 Hz;
- * this function internally throttles the once-per-second lease retry).
- * Returns the number of state changes applied (informational). */
+/* Main-loop tick. Call every iteration; it keeps its own timers (the settle
+ * window, backoff, the once-per-second lease retry), so an extra call is
+ * harmless. Returns the number of state changes applied (informational). */
 int jw_svc_supervisor_tick(jw_svc_supervisor *sup);
+
+/* The next monotonic ms at which jw_svc_supervisor_tick() has work: now_ms
+ * while a stop sequence or a pending start needs every tick, the settle,
+ * backoff or lease-retry time otherwise, or -1 when every service is simply
+ * running or idle (only a child exit can change that). */
+long long jw_svc_supervisor_next_deadline_ms(const jw_svc_supervisor *sup,
+                                             long long now_ms);
+
+/* Opt in to exit notification: after this, the tick checks service leaders
+ * for exit only once jw_svc_supervisor_note_child_exit() has been called
+ * (from a SIGCHLD), instead of on every tick. Without it the tick checks
+ * every time, as before. */
+void jw_svc_supervisor_set_exit_notify(jw_svc_supervisor *sup, bool enabled);
+void jw_svc_supervisor_note_child_exit(jw_svc_supervisor *sup);
 
 /* Looks up a supervised entry by service id, or NULL. The pointer is
  * invalidated by the next scan; do not retain it across one. */
@@ -371,6 +385,15 @@ bool jw_svc_supervisor_mutation_info(
  * the stuck service's id is logged and the function returns the count of
  * services whose absence could NOT be verified (0 = clean shutdown). */
 int jw_svc_supervisor_stop_all(jw_svc_supervisor *sup);
+
+/* After jw_svc_supervisor_stop_all(): one line per service whose absence was
+ * not verified, "service=<id> pgid=<n> lease=<path>\n" (pgid 0 for a stale
+ * generation this daemon cannot signal). The generation lease stays locked
+ * while any group member lives, so an acquirable lease proves absence to a
+ * process outside Jawaka without signalling anything. Returns the number of
+ * lines written; a line that does not fit is omitted, never truncated. */
+int jw_svc_supervisor_describe_unverified(const jw_svc_supervisor *sup,
+                                          char *out, size_t out_size);
 
 /* Compatibility bulk hook at the SVC-1/LIFE-1 boundary. Stops every live
  * mode-stop generation and marks every stale non-ignore generation stuck.

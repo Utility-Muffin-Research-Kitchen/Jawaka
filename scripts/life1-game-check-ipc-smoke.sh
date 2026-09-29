@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/lib/smoke-daemon.sh"
 BUILD_REL="${BUILD:-build}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-life1-check.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
@@ -22,10 +23,7 @@ CTL="$ROOT_DIR/$BUILD_REL/bin/jawaka-platformctl"
 cleanup() {
     exit_status=$?
     set +e
-    if [ -n "${DAEMON_PID:-}" ]; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
+    smoke_daemon_stop || exit_status=1
     if [ "$exit_status" -ne 0 ] && [ -f "$LOG" ]; then
         sed -n '1,240p' "$LOG" >&2
     fi
@@ -44,6 +42,12 @@ mkdir -p "$PAK/bin" "$STATE" "$RUNTIME" "$USERDATA" "$LOGS" \
 cp "$ROOT_DIR/$BUILD_REL/bin/life1-fixture-service" "$PAK/bin/life1-fixture-service"
 cp "$ROOT_DIR/$BUILD_REL/bin/game-writer-fixture" "$EMULATOR"
 chmod 755 "$PAK/bin/life1-fixture-service" "$EMULATOR"
+# The launch-status stages this smoke reads are logged as jawakad sends them to
+# the OSD, so OSD requests stay on. A copy of the daemon with no jawaka-osd
+# beside it keeps any OSD from starting.
+DAEMON_BIN="$TMP_DIR/bin/jawakad"
+mkdir -p "$TMP_DIR/bin"
+cp "$ROOT_DIR/$BUILD_REL/bin/jawakad" "$DAEMON_BIN"
 printf 'rom\n' >"$PRIMARY/Roms/N64/Barrier.n64"
 printf '%s\n' \
   "{\"id\":\"$SERVICE_ID\",\"name\":\"LIFE-1 Check Fixture\",\"platform\":\"mac\",\"pak_version\":\"1.0.0\",\"service\":{\"schema\":1,\"id\":\"$SERVICE_ID\",\"run\":{\"path\":\"bin/life1-fixture-service\",\"args\":[]},\"default_enabled\":false,\"stop_grace_ms\":300,\"restart\":\"no\",\"lifecycle\":{\"game\":\"stop\"}}}" \
@@ -55,8 +59,7 @@ printf '%s\n' \
   '{"version":2,"platform":"mac","systems":[{"id":"N64","name":"Nintendo 64","patterns":["N64"],"extensions":["n64"],"archive_extensions":[],"archive_inner_extensions":["n64"],"archive_mode":"pass_through","file_names":[],"ignore_file_names":[],"playlist_extensions":[],"m3u_generation":"none","default_core":"writer_fixture","alternate_cores":[],"rom_root":"Roms/N64","image_root":"Images/N64","bios_notes":[]}]}' \
   >"$DEFAULTS/systems.json"
 
-(
-    cd "$ROOT_DIR"
+smoke_daemon_start "$ROOT_DIR" "$LOG" \
     PLATFORM=mac SDCARD_PATH="$PRIMARY" APPS_PATH="$PRIMARY/Apps" \
     USERDATA_PATH="$USERDATA" LOGS_PATH="$LOGS" \
     SAVES_PATH="$PRIMARY/Saves" STATES_PATH="$PRIMARY/States" \
@@ -64,10 +67,8 @@ printf '%s\n' \
     UMRK_DAEMON_SOCKET="$SOCKET" UMRK_INTERNAL_DATA_PATH="$STATE" \
     JAWAKA_SDCARD_ROOT="$PRIMARY" \
     UMRK_LIFE1_FIXTURE_SERVICE_ID="$SERVICE_ID" \
-    UMRK_LIFE1_FIXTURE_SCENARIO="$SCENARIO" \
-        "$ROOT_DIR/$BUILD_REL/bin/jawakad" --daemon-only >>"$LOG" 2>&1
-) &
-DAEMON_PID=$!
+    UMRK_LIFE1_FIXTURE_SCENARIO="$SCENARIO" JAWAKA_OSD=1 \
+    "$DAEMON_BIN" --daemon-only
 
 for _ in $(seq 1 300); do
     [ -S "$SOCKET" ] && break
@@ -134,7 +135,10 @@ case "$SCENARIO" in
         grep -F 'life1: user cancelled check-before-stop' "$LOG" >/dev/null
         grep -F 'life1: launch status stage=checking' "$LOG" >/dev/null
         grep -F 'life1: launch status stage=syncing pending_items=3' "$LOG" >/dev/null
-        ! grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null
+        if grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null; then
+            echo "launch status showed stage=starting" >&2
+            exit 1
+        fi
         echo "PASS life1-game-check-ipc-smoke ($SCENARIO)"
         exit 0
         ;;
@@ -181,7 +185,10 @@ grep -F 'life1: verified service stop service=' "$LOG" >/dev/null
 grep -F 'life1: writer started' "$LOG" >/dev/null
 grep -F 'life1: launch status stage=checking' "$LOG" >/dev/null
 grep -F 'life1: launch status stage=stopping' "$LOG" >/dev/null
-! grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null
+if grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null; then
+    echo "launch status showed stage=starting" >&2
+    exit 1
+fi
 stop_line="$(grep -n -F 'life1: verified service stop service=' "$LOG" | tail -1 | cut -d: -f1)"
 writer_line="$(grep -n -F 'life1: writer started' "$LOG" | tail -1 | cut -d: -f1)"
 checking_line="$(grep -n -F 'life1: launch status stage=checking' "$LOG" | head -1 | cut -d: -f1)"

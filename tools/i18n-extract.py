@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -29,6 +30,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 POT = ROOT / "i18n" / "leaf.pot"
+# Committed so it can be read without a checkout or a build: the README badges
+# point shields.io at this file's raw URL, and --check keeps it honest, so a
+# badge can never claim a coverage the repo does not actually have.
+COVERAGE = ROOT / "i18n" / "coverage.json"
 
 # Sources that draw UI. The i18n test's T() calls are fixtures, not UI.
 SOURCE_GLOBS = ["cmd/**/*.c", "internal/**/*.c"]
@@ -46,6 +51,7 @@ FUNNELS = [
     "jw__render_nav_row",
     "jw__draw_header",
     "jw__draw_slider_row",
+    "jw__draw_slider_row_ex",
     "jw__render_account_row",
     "jw__draw_info_title",
     "jw__about_push",
@@ -80,11 +86,11 @@ ARRAYS = [
     ("cmd/jawaka-launcher/main.c", "kSysActions", "all"),
     ("cmd/jawaka-launcher/main.c", "kSysInfo", "all"),
     ("cmd/jawaka-menu/main.c", "kInGameItems", "all"),
-    ("internal/settings/settings.c", "kHomeCategoryLabels", "all"),
     ("internal/settings/settings.c", "kStartupTabLabels", "all"),
     ("internal/settings/settings.c", "kAutoSleepLabels", "all"),
     ("internal/launcher/system_names.c", "kSystemDisplayNames", "second"),
-    ("internal/settings/settings.c", "kTimeZones", "first"),
+    ("internal/settings/settings.c", "kHomeCategories", "first"),
+    ("internal/settings/timezones.c", "kJawakaTimeZones", "first"),
     ("cmd/jawaka-menu/main.c", "kCpuPerfOptions", "first"),
     ("cmd/jawaka-menu/main.c", "kGpuPerfOptions", "first"),
     ("cmd/jawaka-menu/main.c", "kDmcPerfOptions", "first"),
@@ -232,26 +238,48 @@ def pot_keys(path: Path):
 def po_entries(path: Path):
     """(all keys, translated keys). A key with an empty msgstr is present but
     untranslated -- it must count for the orphan check and NOT for coverage,
-    or a fully-seeded file reads as 100% before anyone has reviewed a word."""
+    or a fully-seeded file reads as 100% before anyone has reviewed a word.
+
+    Continuation lines are joined: a .po wraps any long string as `msgstr ""`
+    followed by one quoted fragment per line, and it is still one string. This
+    used to read only the first line, so every wrapped translation looked empty
+    and was counted untranslated -- understating every language's coverage
+    (Mexican Spanish read 90% on a complete file) -- and a wrapped msgid was
+    never registered at all, so the orphan check could not see it.
+
+    Fuzzy entries count as present but not translated, matching i18n-compile.py,
+    which never ships them: coverage should describe what a player sees."""
     text = path.read_text(encoding="utf-8")
     all_keys, translated = set(), set()
-    ctx = None
-    entry_re = re.compile(
-        r'^(msgctxt|msgid|msgstr) "((?:[^"\\]|\\.)*)"', re.M)
-    last_key = None
-    for m in entry_re.finditer(text):
-        kind, val = m.group(1), c_unescape(m.group(2))
-        if kind == "msgctxt":
-            ctx = val
-        elif kind == "msgid":
-            last_key = (f"{ctx}|{val}" if ctx else val) if val else None
-            if last_key:
-                all_keys.add(last_key)
-            ctx = None
-        elif kind == "msgstr" and last_key:
-            if val:
-                translated.add(last_key)
-            last_key = None
+    for block in re.split(r"\n\s*\n", text):
+        fuzzy = False
+        cur = None
+        parts = {"msgctxt": [], "msgid": [], "msgstr": []}
+        for line in block.splitlines():
+            if line.startswith("#~"):
+                cur = None
+                continue
+            if line.startswith("#,") and "fuzzy" in line:
+                fuzzy = True
+                continue
+            if line.startswith("#"):
+                continue
+            m = re.match(r'^(msgctxt|msgid|msgstr) "((?:[^"\\]|\\.)*)"', line)
+            if m:
+                cur = m.group(1)
+                parts[cur].append(m.group(2))
+                continue
+            m = re.match(r'^"((?:[^"\\]|\\.)*)"', line)
+            if m and cur:
+                parts[cur].append(m.group(1))
+        val = c_unescape("".join(parts["msgid"]))
+        if not val:
+            continue                      # the header entry, or no entry at all
+        ctx = c_unescape("".join(parts["msgctxt"]))
+        key = f"{ctx}|{val}" if ctx else val
+        all_keys.add(key)
+        if "".join(parts["msgstr"]) and not fuzzy:
+            translated.add(key)
     return all_keys, translated
 
 
@@ -294,6 +322,7 @@ def main() -> int:
         print(f"wrote {POT.relative_to(ROOT)}")
 
     universe = set(keys)
+    coverage: dict[str, dict[str, int]] = {}
     for po in args.po:
         p = Path(po)
         if not p.exists():
@@ -311,6 +340,32 @@ def main() -> int:
             covered = len(translated & universe)
             print(f"{p.name}: {covered}/{len(universe)} translated "
                   f"({covered * 100 // max(1, len(universe))}%)")
+            coverage[p.stem] = {
+                "translated": covered,
+                "percent": covered * 100 // max(1, len(universe)),
+            }
+
+    # Only rewrite the coverage document when every .po was inspected; a partial
+    # run (one --po argument) would otherwise drop the languages it did not see.
+    if args.po and rc == 0:
+        doc = {
+            "_comment": "Generated by tools/i18n-extract.py. Read by the README "
+                        "coverage badges; regenerate with `make i18n-pot`.",
+            "total": len(universe),
+            "languages": dict(sorted(coverage.items())),
+        }
+        text = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+        if args.check:
+            current = COVERAGE.read_text() if COVERAGE.exists() else ""
+            if current != text:
+                print("FAIL: i18n/coverage.json is stale; run `make i18n-pot` "
+                      "and commit it", file=sys.stderr)
+                rc = 1
+            else:
+                print("i18n/coverage.json is current")
+        else:
+            COVERAGE.write_text(text)
+            print(f"wrote {COVERAGE.relative_to(ROOT)}")
 
     return rc
 
