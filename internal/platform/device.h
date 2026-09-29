@@ -102,10 +102,6 @@ typedef struct {
     char script_dir[JW_PLATFORM_MAX_PATH];
     jw_platform_capabilities capabilities;
     bool home_ready_sent;
-    /* Set by the daemon each loop pass: a game or app child is running, so
-       audio can start at any moment. The backend polls audio state quickly
-       only while this, or its own playback, says it can. */
-    bool content_active;
     void *backend_data;
 } jw_platform_context;
 
