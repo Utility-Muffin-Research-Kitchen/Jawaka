@@ -1573,11 +1573,14 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     return 0;
 }
 
+static void jw__status_poller_kick(void);
+
 static int jw__scan_library(const char *socket_path, const char *db_path,
                              jw_launcher_state *state) {
     (void)db_path;
     int rc = jw_ipc_scan_library(socket_path, state->status, sizeof(state->status));
     if (rc != 0) return -1;
+    jw__status_poller_kick();   /* follow the scan at the 1 s cadence now */
 
     jw_ipc_library_status_info lib;
     if (jw_ipc_library_status_full(socket_path, &lib) == 0) {
@@ -1655,6 +1658,9 @@ typedef struct {
     atomic_int  bt;           /* 0=off, 1=on, 2=connected */
     atomic_int  battery;      /* 0..100, -1 = unknown */
     atomic_int  charging;     /* 0/1, -1 = unknown */
+    /* Seconds left on an armed HDMI 1080p120 revert, from the same reads:
+       0 = none, -1 = not known (the render thread then asks jawakad itself). */
+    atomic_int  hdmi_revert;
     uint32_t    fb_last_fast; /* render-thread fallback throttles (worker never started) */
     uint32_t    fb_last_slow;
     /* Scrape progress snapshot, refreshed at the fast cadence. Strings need
@@ -1675,17 +1681,92 @@ typedef struct {
 
 static jw_status_poller jw__status_poller;
 
+/* The worker waits on this pipe for its next interval, so anything that
+   should make it look sooner writes a byte: 'v' when jawakad signals that it
+   changed the volume (SIGUSR2; a pipe write is what a signal handler may do),
+   'k' for everything else (a page opening, a scan or scrape starting,
+   shutdown). */
+static int jw__status_kick_pipe[2] = {-1, -1};
+#define JW_STATUS_KICK_LEVELS 'v'
+#define JW_STATUS_KICK_OTHER  'k'
+
+static void jw__status_poller_kick_byte(char byte) {
+    if (jw__status_kick_pipe[1] >= 0) {
+        ssize_t ignored = write(jw__status_kick_pipe[1], &byte, 1);
+        (void)ignored;
+    }
+}
+
+static void jw__status_poller_kick(void) {
+    jw__status_poller_kick_byte(JW_STATUS_KICK_OTHER);
+}
+
+static void jw__levels_changed_handler(int signo) {
+    (void)signo;
+    int saved_errno = errno;
+    jw__status_poller_kick_byte(JW_STATUS_KICK_LEVELS);
+    errno = saved_errno;
+}
+
+/* Before hello: jawakad only signals a launcher whose hello said it handles
+   SIGUSR2, and SIGUSR2's default action would kill this process. */
+static bool jw__status_kick_setup(void) {
+    if (pipe(jw__status_kick_pipe) != 0) {
+        jw__status_kick_pipe[0] = jw__status_kick_pipe[1] = -1;
+        return false;
+    }
+    for (int i = 0; i < 2; i++) {
+        (void)fcntl(jw__status_kick_pipe[i], F_SETFD, FD_CLOEXEC);
+        int flags = fcntl(jw__status_kick_pipe[i], F_GETFL);
+        if (flags >= 0) {
+            (void)fcntl(jw__status_kick_pipe[i], F_SETFL, flags | O_NONBLOCK);
+        }
+    }
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = jw__levels_changed_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    return sigaction(SIGUSR2, &sa, NULL) == 0;
+}
+
+/* Drain the pipe: *levels when jawakad said the volume moved, *other for any
+   other kick. */
+static void jw__status_kick_drain(bool *levels, bool *other) {
+    if (jw__status_kick_pipe[0] < 0) {
+        return;
+    }
+    char buf[32];
+    ssize_t n;
+    while ((n = read(jw__status_kick_pipe[0], buf, sizeof(buf))) > 0) {
+        for (ssize_t i = 0; i < n; i++) {
+            if (buf[i] == JW_STATUS_KICK_LEVELS) *levels = true;
+            else *other = true;
+        }
+    }
+}
+
 static void *jw__status_poll_worker(void *arg) {
     jw_status_poller *P = (jw_status_poller *)arg;
-    uint32_t last_slow = 0;
+    uint32_t next_library = 0;
+    uint32_t next_slow = 0;
     unsigned av_pass = 0;
+    char scrape_state[16] = "";   /* last scrape-status state; "" = never read */
+    bool levels = true;           /* first pass reads everything */
+    bool kicked = true;
     while (!atomic_load(&P->stop)) {
         int mask = atomic_load(&P->poll_mask);
-        /* ~1s cadence: volume + library generation (both IPC to the daemon). */
-        if (mask & JW_STATUS_POLL_VOLUME) {
-            int percent = -1;
-            if (jw_ipc_platform_volume(P->socket_path, &percent) == 0 && percent >= 0)
-                atomic_store(&P->volume, percent > 100 ? 100 : percent);
+        uint32_t now = SDL_GetTicks();
+        /* Volume and the HDMI revert countdown: when jawakad says one changed
+           (SIGUSR2), and on a kick. The 5 s status read below refreshes both,
+           in case a signal was missed. */
+        if (levels || kicked) {
+            int percent = -1, revert = -1;
+            if (jw_ipc_platform_levels_full(P->socket_path, NULL, &percent, &revert) == 0) {
+                if ((mask & JW_STATUS_POLL_VOLUME) && percent >= 0)
+                    atomic_store(&P->volume, percent > 100 ? 100 : percent);
+                atomic_store(&P->hdmi_revert, revert);
+            }
         }
         /* Display & Sound. Off the render thread these round trips cost the
            launcher nothing anyone can see, but not jawakad: it answers on the
@@ -1717,48 +1798,81 @@ static void *jw__status_poll_worker(void *arg) {
         } else {
             av_pass = 0;   /* the page's first pass samples everything */
         }
-        jw_ipc_library_status_info lib;
-        if (jw_ipc_library_status_full(P->socket_path, &lib) == 0) {
-            atomic_store(&P->generation, lib.generation);
-            atomic_store(&P->scan_running, lib.scan_running ? 1 : 0);
-            atomic_store(&P->pending_rescan, lib.pending_rescan ? 1 : 0);
-            atomic_store(&P->library_populated, lib.library_populated ? 1 : 0);
-            atomic_store(&P->storage_generation, lib.storage_health_generation);
-        }
-        /* Scrape progress (same fast cadence; art pops in live while the
-           daemon worker downloads, so the status line should track it). */
-        {
-            jw_ipc_scrape_status_info scrape;
-            if (jw_ipc_scrape_status(P->socket_path, &scrape) == 0) {
-                pthread_mutex_lock(&P->scrape_mu);
-                P->scrape = scrape;
-                pthread_mutex_unlock(&P->scrape_mu);
-                atomic_fetch_add(&P->scrape_seq, 1);
+        /* Library and scrape progress: every second while a scan or scrape
+           runs, so the status line and art keep up; otherwise every 5 s. The
+           library status says whether the scraper is doing anything, so an
+           idle one is not asked (one more read after it stops keeps the final
+           counts). A daemon that does not report scrape_state is asked every
+           time, as before. */
+        if (kicked || (int32_t)(now - next_library) >= 0) {
+            bool busy = false;
+            jw_ipc_library_status_info lib;
+            if (jw_ipc_library_status_full(P->socket_path, &lib) == 0) {
+                atomic_store(&P->generation, lib.generation);
+                atomic_store(&P->scan_running, lib.scan_running ? 1 : 0);
+                atomic_store(&P->pending_rescan, lib.pending_rescan ? 1 : 0);
+                atomic_store(&P->library_populated, lib.library_populated ? 1 : 0);
+                atomic_store(&P->storage_generation, lib.storage_health_generation);
+                busy = lib.scan_running;
+                bool known = lib.scrape_state[0] != '\0';
+                bool scraping = !known || strcmp(lib.scrape_state, "idle") != 0;
+                if (scraping || strcmp(scrape_state, "idle") != 0) {
+                    jw_ipc_scrape_status_info scrape;
+                    if (jw_ipc_scrape_status(P->socket_path, &scrape) == 0) {
+                        pthread_mutex_lock(&P->scrape_mu);
+                        P->scrape = scrape;
+                        pthread_mutex_unlock(&P->scrape_mu);
+                        atomic_fetch_add(&P->scrape_seq, 1);
+                        snprintf(scrape_state, sizeof(scrape_state), "%s", scrape.state);
+                    }
+                }
+                if (strcmp(known ? lib.scrape_state : scrape_state, "running") == 0)
+                    busy = true;
             }
+            next_library = now + (busy ? 1000u : 5000u);
         }
-        /* ~5s cadence: Wi-Fi strength, Bluetooth state, and battery/charging.
-           These shell out (wpa_cli/bluetoothctl) or IPC, so the render thread
-           never spawns or blocks for status. */
-        uint32_t now = SDL_GetTicks();
-        if (last_slow == 0 || now - last_slow >= 5000) {
+        /* Every 5 s: Wi-Fi strength, Bluetooth state (both read from the
+           kernel), and battery, charging, volume and the HDMI revert countdown
+           in one platform-status. */
+        if (kicked || (int32_t)(now - next_slow) >= 0) {
             if (mask & JW_STATUS_POLL_WIFI)
                 atomic_store(&P->wifi,
                              jw_wifi_available() ? jw_wifi_strength_now() : -1);
             if (mask & JW_STATUS_POLL_BT)
                 atomic_store(&P->bt, jw_settings_bt_state_now());
-            int batt = -1, chg = -1;
-            if (jw_ipc_platform_power_status(P->socket_path, &batt, &chg) == 0) {
+            int batt = -1, chg = -1, volume = -1, revert = -1;
+            if (jw_ipc_platform_power_status_full(P->socket_path, &batt, &chg,
+                                                  (mask & JW_STATUS_POLL_VOLUME) ? &volume : NULL,
+                                                  &revert) == 0) {
                 atomic_store(&P->battery, batt);
                 atomic_store(&P->charging, chg);
+                if (volume >= 0)
+                    atomic_store(&P->volume, volume > 100 ? 100 : volume);
+                atomic_store(&P->hdmi_revert, revert);
             }
-            last_slow = now;
+            next_slow = now + 5000u;
         }
-        /* Sleep ~1s, waking promptly for shutdown. While Display & Sound is open
-           tighten to ~300ms so its sliders keep up with the hardware keys as
-           closely as the old render-thread poll did — the cost is confined to
-           this thread, and only while that page is showing. */
-        int slices = (mask & JW_STATUS_POLL_AV) ? 3 : 10;
-        for (int i = 0; i < slices && !atomic_load(&P->stop); i++) SDL_Delay(100);
+        /* Wait out the whole interval unless kicked. While Display & Sound is
+           open, 300 ms so its sliders keep up with the hardware keys. */
+        int timeout;
+        if (mask & JW_STATUS_POLL_AV) {
+            timeout = 300;
+        } else {
+            uint32_t after = SDL_GetTicks();
+            int32_t until_library = (int32_t)(next_library - after);
+            int32_t until_slow = (int32_t)(next_slow - after);
+            int32_t wait = until_library < until_slow ? until_library : until_slow;
+            timeout = wait > 0 ? (int)wait : 0;
+        }
+        struct pollfd pfd = { .fd = jw__status_kick_pipe[0], .events = POLLIN };
+        if (pfd.fd >= 0) {
+            (void)poll(&pfd, 1, timeout);
+        } else {
+            SDL_Delay((Uint32)timeout);
+        }
+        levels = false;
+        kicked = false;
+        jw__status_kick_drain(&levels, &kicked);
     }
     return NULL;
 }
@@ -1837,7 +1951,8 @@ static void jw__status_poller_sync(jw_settings_ui *s) {
         jw__status_poller_fallback_poll(s, mask);
         return;
     }
-    atomic_store(&P->poll_mask, mask);
+    if (atomic_exchange(&P->poll_mask, mask) != mask)
+        jw__status_poller_kick();   /* a page opened or closed: sample now */
 
     int v = atomic_exchange(&P->volume, JW_STATUS_SAMPLE_NONE);
     if (v != JW_STATUS_SAMPLE_NONE && (mask & JW_STATUS_POLL_VOLUME))
@@ -1896,6 +2011,7 @@ static void jw__status_poller_start(const char *socket_path, jw_settings_ui *set
     atomic_store(&P->bt, JW_STATUS_SAMPLE_NONE);
     atomic_store(&P->battery, JW_STATUS_SAMPLE_NONE);
     atomic_store(&P->charging, JW_STATUS_SAMPLE_NONE);
+    atomic_store(&P->hdmi_revert, -1);
     /* Seed the mask before the worker's first pass so startup doesn't skip a
        round of samples while waiting for the first sync. */
     atomic_store(&P->poll_mask, jw__status_poll_mask(settings));
@@ -1915,6 +2031,7 @@ static void jw__status_poller_shutdown(void) {
     jw_status_poller *P = &jw__status_poller;
     if (!P->started) return;
     atomic_store(&P->stop, true);
+    jw__status_poller_kick();
     pthread_join(P->thread, NULL);
     P->started = false;
 }
@@ -10680,6 +10797,7 @@ static void jw__start_action_scrape(const char *socket_path, const char *db_path
                  status[0] ? status : "daemon unavailable");
         return;
     }
+    jw__status_poller_kick();   /* follow the scrape at the 1 s cadence now */
     if (is_game) {
         char name[256];
         jw__clean_rom_name(state->action_game.name, name, sizeof(name));
@@ -11384,6 +11502,7 @@ static void jw__menu_activate(const char *socket_path, const char *db_path,
             cat_request_frame();
             jw__render_menu(state);
             int rc = jw_ipc_scan_library(socket_path, buf, sizeof(buf));
+            if (rc == 0) jw__status_poller_kick();
             jw_system_notice_set(&state->system_activity.feedback,
                 rc == 0 ? T("Library scan requested") : (buf[0] ? buf : T("Library scan failed")),
                 SDL_GetTicks());
@@ -13337,8 +13456,10 @@ int main(void) {
         return 1;
     }
 
+    bool levels_signal = jw__status_kick_setup();
     long long hello_start_ms = jw__monotonic_ms();
-    if (jw_ipc_hello(socket_path, "launcher") != 0) {
+    if ((levels_signal ? jw_ipc_hello_levels_signal(socket_path, "launcher")
+                       : jw_ipc_hello(socket_path, "launcher")) != 0) {
         jw_log_error("could not connect to jawakad at %s; is the daemon running?",
                      socket_path);
         free(socket_path);
@@ -13752,14 +13873,25 @@ int main(void) {
            would swallow the failsafe unlock chord, and if a revert was somehow
            armed the daemon still auto-reverts to the safe mode on its own timer. */
         if (!state.focus_active) {
-            static uint32_t s_revert_poll = 0;
-            uint32_t rn = SDL_GetTicks();
-            if (s_revert_poll == 0 || rn - s_revert_poll >= 700) {
-                s_revert_poll = rn;
-                int rsecs = 0;
-                if (jw_ipc_hdmi_revert_status(socket_path, &rsecs) == 0 && rsecs > 0) {
-                    jw__hdmi_keep_prompt(socket_path);
-                    cat_request_frame();
+            /* The status worker learns of an armed revert from jawakad's signal
+               or its 5 s read; the prompt re-checks with the daemon before it
+               shows. Without the worker, or with a daemon that does not report
+               the countdown, ask directly as before. */
+            int rsecs = jw__status_poller.started
+                            ? atomic_load(&jw__status_poller.hdmi_revert) : -1;
+            if (rsecs > 0) {
+                atomic_store(&jw__status_poller.hdmi_revert, 0);
+                jw__hdmi_keep_prompt(socket_path);
+                cat_request_frame();
+            } else if (rsecs < 0) {
+                static uint32_t s_revert_poll = 0;
+                uint32_t rn = SDL_GetTicks();
+                if (s_revert_poll == 0 || rn - s_revert_poll >= 700) {
+                    s_revert_poll = rn;
+                    if (jw_ipc_hdmi_revert_status(socket_path, &rsecs) == 0 && rsecs > 0) {
+                        jw__hdmi_keep_prompt(socket_path);
+                        cat_request_frame();
+                    }
                 }
             }
         }

@@ -222,16 +222,27 @@ static void ipc__parse_update_status(const cJSON *resp,
     if (cJSON_IsString(v)) ipc__copy_string(out->install_message, sizeof(out->install_message), v->valuestring);
 }
 
-int jw_ipc_hello(const char *socket_path, const char *role) {
+static int ipc__hello(const char *socket_path, const char *role, bool levels_signal) {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "hello");
     cJSON_AddStringToObject(req, "role", role);
+    if (levels_signal) {
+        cJSON_AddBoolToObject(req, "levels_signal", true);
+    }
 
     cJSON *resp = NULL;
     if (ipc__request(socket_path, req, &resp) != 0) return -1;
     int ok = ipc__type_is(resp, "hello-ok");
     cJSON_Delete(resp);
     return ok ? 0 : -1;
+}
+
+int jw_ipc_hello(const char *socket_path, const char *role) {
+    return ipc__hello(socket_path, role, false);
+}
+
+int jw_ipc_hello_levels_signal(const char *socket_path, const char *role) {
+    return ipc__hello(socket_path, role, true);
 }
 
 int jw_ipc_has_feature(const char *socket_path, const char *feature,
@@ -783,6 +794,10 @@ int jw_ipc_library_status_full(const char *socket_path, jw_ipc_library_status_in
         const cJSON *error = cJSON_GetObjectItemCaseSensitive(resp, "scan_error");
         if (cJSON_IsString(error)) {
             ipc__copy_string(out->scan_error, sizeof(out->scan_error), error->valuestring);
+        }
+        const cJSON *scrape = cJSON_GetObjectItemCaseSensitive(resp, "scrape_state");
+        if (cJSON_IsString(scrape)) {
+            ipc__copy_string(out->scrape_state, sizeof(out->scrape_state), scrape->valuestring);
         }
         const cJSON *storage_generation =
             cJSON_GetObjectItemCaseSensitive(resp, "storage_health_generation");
@@ -1521,13 +1536,16 @@ int jw_ipc_frontend_ready(const char *socket_path, const char *role) {
     return ok ? 0 : -1;
 }
 
-int jw_ipc_platform_levels(const char *socket_path, int *out_brightness,
-                           int *out_volume) {
+int jw_ipc_platform_levels_full(const char *socket_path, int *out_brightness,
+                                int *out_volume, int *out_hdmi_revert_seconds) {
     if (out_brightness) {
         *out_brightness = -1;
     }
     if (out_volume) {
         *out_volume = -1;
+    }
+    if (out_hdmi_revert_seconds) {
+        *out_hdmi_revert_seconds = -1;
     }
 
     cJSON *req = cJSON_CreateObject();
@@ -1541,6 +1559,7 @@ int jw_ipc_platform_levels(const char *socket_path, int *out_brightness,
     int rc = -1;
     const cJSON *brightness = cJSON_GetObjectItemCaseSensitive(resp, "brightness_percent");
     const cJSON *volume = cJSON_GetObjectItemCaseSensitive(resp, "volume_percent");
+    const cJSON *revert = cJSON_GetObjectItemCaseSensitive(resp, "hdmi_revert_seconds");
     if (cJSON_IsNumber(brightness) && cJSON_IsNumber(volume)) {
         if (out_brightness) {
             *out_brightness = brightness->valueint;
@@ -1548,11 +1567,19 @@ int jw_ipc_platform_levels(const char *socket_path, int *out_brightness,
         if (out_volume) {
             *out_volume = volume->valueint;
         }
+        if (out_hdmi_revert_seconds && cJSON_IsNumber(revert)) {
+            *out_hdmi_revert_seconds = revert->valueint;
+        }
         rc = 0;
     }
 
     cJSON_Delete(resp);
     return rc;
+}
+
+int jw_ipc_platform_levels(const char *socket_path, int *out_brightness,
+                           int *out_volume) {
+    return jw_ipc_platform_levels_full(socket_path, out_brightness, out_volume, NULL);
 }
 
 int jw_ipc_platform_brightness(const char *socket_path, int *out_percent) {
@@ -1562,11 +1589,24 @@ int jw_ipc_platform_brightness(const char *socket_path, int *out_percent) {
 int jw_ipc_platform_power_status(const char *socket_path,
                                  int *out_battery_percent,
                                  int *out_charging) {
+    return jw_ipc_platform_power_status_full(socket_path, out_battery_percent,
+                                             out_charging, NULL, NULL);
+}
+
+int jw_ipc_platform_power_status_full(const char *socket_path, int *out_battery_percent,
+                                      int *out_charging, int *out_volume_percent,
+                                      int *out_hdmi_revert_seconds) {
+    if (out_hdmi_revert_seconds) {
+        *out_hdmi_revert_seconds = -1;
+    }
     if (out_battery_percent) {
         *out_battery_percent = -1;
     }
     if (out_charging) {
         *out_charging = -1;
+    }
+    if (out_volume_percent) {
+        *out_volume_percent = -1;
     }
 
     cJSON *req = cJSON_CreateObject();
@@ -1581,6 +1621,7 @@ int jw_ipc_platform_power_status(const char *socket_path,
     const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
     const cJSON *battery = cJSON_GetObjectItemCaseSensitive(status, "battery_percent");
     const cJSON *charging = cJSON_GetObjectItemCaseSensitive(status, "charging");
+    const cJSON *volume = cJSON_GetObjectItemCaseSensitive(status, "volume_percent");
     if (cJSON_IsNumber(battery) || cJSON_IsNumber(charging)) {
         if (out_battery_percent) {
             *out_battery_percent = cJSON_IsNumber(battery) ? battery->valueint : -1;
@@ -1589,6 +1630,13 @@ int jw_ipc_platform_power_status(const char *socket_path,
             *out_charging = cJSON_IsNumber(charging) ? charging->valueint : -1;
         }
         rc = 0;
+    }
+    if (out_volume_percent && cJSON_IsNumber(volume)) {
+        *out_volume_percent = volume->valueint;
+    }
+    const cJSON *revert = cJSON_GetObjectItemCaseSensitive(resp, "hdmi_revert_seconds");
+    if (out_hdmi_revert_seconds && cJSON_IsNumber(revert)) {
+        *out_hdmi_revert_seconds = revert->valueint;
     }
 
     cJSON_Delete(resp);

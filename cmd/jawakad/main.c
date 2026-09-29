@@ -528,6 +528,10 @@ typedef struct {
     bool storage_log_redirected;
     jw_db_file_sig mutation_recovery_db_sig;  /* library.db when no uninstall was pending */
     jw_db_file_sig autosleep_db_sig;          /* library.db when the setting was read */
+    /* The running launcher said in its hello that it handles SIGUSR2 as
+       "re-read platform-levels": the volume changed or an HDMI revert was
+       armed (see jw__notify_launcher_levels). */
+    bool launcher_levels_signal;
     bool reap_by_signal;   /* the SIGCHLD pipe is installed */
     bool sigchld_seen;     /* a SIGCHLD arrived since the last exit check */
 } jw_daemon_state;
@@ -2638,6 +2642,18 @@ static void jw__platform_sleep_with_performance(jw_daemon_state *state,
     jw_platform_wake_audio(&state->platform);
 }
 
+/* The launcher's status bar shows the volume, and the launcher puts up the
+   HDMI keep-or-revert prompt; it re-reads both from platform-levels when told
+   to, otherwise its status worker checks only every 5 s. Only a launcher whose
+   hello said it handles SIGUSR2 is told (the signal would kill one that does
+   not). */
+static void jw__notify_launcher_levels(jw_daemon_state *state) {
+    if (state && state->launcher_levels_signal && state->child_pid > 0 &&
+        state->child_kind == JW_CHILD_LAUNCHER) {
+        (void)kill(state->child_pid, SIGUSR2);
+    }
+}
+
 static void jw__cache_platform_status(jw_daemon_state *state,
                                       const jw_platform_status *status) {
     if (!state || !status) {
@@ -2981,6 +2997,17 @@ static void jw__publish_display_env(jw_daemon_state *state) {
     jw__publish_language_env(state);
 }
 
+/* Seconds left before an armed 1080p120 revert, 0 when none is armed. The
+   launcher's status worker reads it from platform-levels and platform-status,
+   so it does not have to ask hdmi-revert-status every second. */
+static int jw__hdmi_revert_seconds(const jw_daemon_state *state) {
+    long long now = jw__monotonic_ms();
+    if (state->hdmi_revert_deadline_ms == 0 || state->hdmi_revert_deadline_ms <= now) {
+        return 0;
+    }
+    return (int)((state->hdmi_revert_deadline_ms - now + 999) / 1000);
+}
+
 static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *client) {
     jw_platform_status status;
     jw_platform_get_status(&state->platform, &status);
@@ -3007,6 +3034,7 @@ static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *clie
         cJSON_AddItemToObject(status_json, "led", led);
     }
     cJSON_AddItemToObject(root, "status", status_json);
+    cJSON_AddNumberToObject(root, "hdmi_revert_seconds", jw__hdmi_revert_seconds(state));
     return jw__reply_json(client, root);
 }
 
@@ -3030,6 +3058,7 @@ static int jw__reply_platform_levels(jw_daemon_state *state, jw_ipc_client *clie
     cJSON_AddStringToObject(root, "type", "platform-levels");
     cJSON_AddNumberToObject(root, "brightness_percent", state->cached_brightness_percent);
     cJSON_AddNumberToObject(root, "volume_percent", state->cached_volume_percent);
+    cJSON_AddNumberToObject(root, "hdmi_revert_seconds", jw__hdmi_revert_seconds(state));
     return jw__reply_json(client, root);
 }
 
@@ -3090,17 +3119,19 @@ static int jw__reply_update_status(jw_daemon_state *state, jw_ipc_client *client
     return jw__reply_json(client, root);
 }
 
+static const char *jw__scrape_state_name(jw_scrape_state state) {
+    return state == JW_SCRAPE_RUNNING ? "running" :
+           state == JW_SCRAPE_PAUSED_QUOTA ? "paused-quota" :
+           state == JW_SCRAPE_PAUSED_STORAGE ? "paused-storage" : "idle";
+}
+
 static int jw__reply_scrape_status(jw_ipc_client *client, cJSON *request) {
     jw_scrape_status_info info;
     jw_scrape_status(&info);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "scrape-status");
-    const char *state_name =
-        info.state == JW_SCRAPE_RUNNING ? "running" :
-        info.state == JW_SCRAPE_PAUSED_QUOTA ? "paused-quota" :
-        info.state == JW_SCRAPE_PAUSED_STORAGE ? "paused-storage" : "idle";
-    cJSON_AddStringToObject(root, "state", state_name);
+    cJSON_AddStringToObject(root, "state", jw__scrape_state_name(info.state));
     cJSON_AddNumberToObject(root, "total", info.total);
     cJSON_AddNumberToObject(root, "done", info.done);
     cJSON_AddNumberToObject(root, "found", info.found);
@@ -4744,6 +4775,11 @@ static void jw__scan_job_shutdown(jw_daemon_state *state) {
 static int jw__reply_library_status(jw_daemon_state *state, jw_ipc_client *client) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "library-status");
+    /* The launcher's status worker asks for scrape-status only while this is
+       not "idle", so an idle status bar costs one request instead of two. */
+    jw_scrape_status_info scrape;
+    jw_scrape_status(&scrape);
+    cJSON_AddStringToObject(root, "scrape_state", jw__scrape_state_name(scrape.state));
     cJSON_AddNumberToObject(root, "generation", state ? state->library_generation : 0);
     cJSON_AddNumberToObject(root, "storage_health_generation",
                             state ? (double)state->storage_monitor.generation : 0);
@@ -8144,6 +8180,7 @@ static void jw__apply_persisted_volume(jw_daemon_state *state) {
         if (resolved < 0) resolved = 0;
         if (resolved > 100) resolved = 100;
         state->cached_volume_percent = resolved;
+        jw__notify_launcher_levels(state);
         jw_log_info("applied persisted volume value=%d", resolved);
     } else {
         jw_log_warn("persisted volume apply failed: %s", result.message);
@@ -8321,6 +8358,7 @@ static void jw__input_volume_delta(void *userdata, int delta_percent) {
         if (resolved > 100) resolved = 100;
         state->cached_volume_percent = resolved;
         jw__persist_volume(state, resolved);
+        jw__notify_launcher_levels(state);
         /* No OSD over a kmsdrm standalone emulator: the Wayland overlay can
            only steal one stray frame from the emulator's page flips. The
            audible change is the feedback. */
@@ -9487,6 +9525,7 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     }
 
     if (kind == JW_CHILD_LAUNCHER) state->launch_input_failed = false;
+    state->launcher_levels_signal = false;   /* until the new one says hello */
     state->child_pid = pid;
     state->child_kind = kind;
     jw_log_info("spawned %s pid=%d", name, (int)pid);
@@ -11120,6 +11159,7 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
     if (is120 && !state->hdmi_was_120 && now > 30000) {
         state->hdmi_revert_deadline_ms = now + 15000;
         jw_log_info("HDMI 1080p120 live -> auto-revert armed (15s)");
+        jw__notify_launcher_levels(state);   /* it shows the keep-or-revert prompt */
     } else if (!is120) {
         state->hdmi_revert_deadline_ms = 0;
     }
@@ -13327,6 +13367,8 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         cJSON *role = cJSON_GetObjectItemCaseSensitive(root, "role");
         if (cJSON_IsString(role) && role->valuestring) {
             if (strcmp(role->valuestring, "launcher") == 0) {
+                state->launcher_levels_signal =
+                    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "levels_signal"));
                 jw_log_info("launcher hello");
             } else if (strcmp(role->valuestring, "menu") == 0) {
                 jw_log_info("menu hello");
@@ -13339,11 +13381,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
     }
 
     if (strcmp(type->valuestring, "hdmi-revert-status") == 0) {
-        long long n = jw__monotonic_ms();
-        int secs = 0;
-        if (state->hdmi_revert_deadline_ms != 0 && state->hdmi_revert_deadline_ms > n) {
-            secs = (int)((state->hdmi_revert_deadline_ms - n + 999) / 1000);
-        }
+        int secs = jw__hdmi_revert_seconds(state);
         cJSON_Delete(root);
         cJSON *reply = cJSON_CreateObject();
         cJSON_AddStringToObject(reply, "type", "ok");
@@ -13982,6 +14020,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
                 state->cached_volume_percent = resolved;
                 jw__persist_volume(state, resolved);
                 jw__osd_show_volume(state, resolved);
+                jw__notify_launcher_levels(state);
             }
         } else if (action == JW_PLATFORM_ACTION_SET_AUDIO_OUTPUT) {
             jw_platform_perform_action(&state->platform, action, value, &result);
@@ -13990,6 +14029,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
                 /* Each output restores its own stored level, so the cached
                    percent belongs to the output we just left. */
                 state->cached_volume_percent = -1;
+                jw__notify_launcher_levels(state);
             }
         } else if (action == JW_PLATFORM_ACTION_SET_HDMI_OUTPUT) {
             jw_platform_perform_action(&state->platform, action, value, &result);
@@ -16613,6 +16653,7 @@ int main(int argc, char *argv[]) {
                volume keypress re-read, or that press steps from the old value
                and jumps. */
             state.cached_volume_percent = -1;
+            jw__notify_launcher_levels(&state);
         }
         jw__tick_retroarch_audio_reinit(&state);
         jw__tick_rumble_reclaim(&state);
