@@ -10,10 +10,12 @@
 #include <math.h>
 #include <stdint.h>
 #include <drm/drm.h>
+#include <linux/fs.h>
 #include <drm/drm_mode.h>
 #include <linux/netlink.h>
 #include <linux/input.h>
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
 #include <dlfcn.h>
 #include <dirent.h>
 #include <signal.h>
@@ -98,8 +100,6 @@
 #define JW_MLP1_PACTL_USB_SINK "usb_out"
 #define JW_MLP1_PACTL_SET_DEFAULT_USB \
     "pactl set-default-sink usb_out 2>/dev/null"
-/* Card index of the first USB-Audio class device, or empty if none is attached. */
-#define JW_MLP1_USB_CARD_CMD "awk '/USB-Audio/{print $1; exit}' /proc/asound/cards"
 #define JW_MLP1_PLAYBACK_PATH_CMD "amixer -c 1 cget numid=13 2>/dev/null"
 #define JW_MLP1_PLAYBACK_PATH_SPK "amixer -c 1 cset numid=13 2 >/dev/null 2>&1"
 #define JW_MLP1_PLAYBACK_PATH_HP  "amixer -c 1 cset numid=13 3 >/dev/null 2>&1"
@@ -613,7 +613,10 @@ static int jw__mlp1_init(jw_platform_context *ctx) {
     return 0;
 }
 
+static void jw__mlp1_bt_monitor_stop(void);
+
 static void jw__mlp1_shutdown(jw_platform_context *ctx) {
+    jw__mlp1_bt_monitor_stop();
     jw_mlp1_platform_data *data = ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
     if (data) {
         if (data->uevent_fd >= 0) {
@@ -1019,7 +1022,35 @@ static int jw__parse_percent_from_stream(FILE *fp) {
     return percent;
 }
 
+/* The volume percent last read or set on the current output. The launcher's
+   status poll asks every 5 s, and a fresh read is three popens (Playback Path,
+   default sink, sink volume). jawakad makes every volume change itself, so its
+   own sets keep this right; a route change drops it, and it is re-read at
+   least once a minute in case something else moved the sink. */
+#define JW_MLP1_VOLUME_CACHE_MS 60000
+static int s_mlp1_volume_cache = -1;
+static long long s_mlp1_volume_cache_ms = 0;
+
+static void jw__mlp1_volume_cache_set(int percent) {
+    s_mlp1_volume_cache = percent;
+    s_mlp1_volume_cache_ms = jw__monotonic_ms();
+}
+
+static int jw__mlp1_read_volume_percent(void);
+
 static int jw__mlp1_get_volume_percent(void) {
+    if (s_mlp1_volume_cache >= 0 &&
+        jw__monotonic_ms() - s_mlp1_volume_cache_ms < JW_MLP1_VOLUME_CACHE_MS) {
+        return s_mlp1_volume_cache;
+    }
+    int percent = jw__mlp1_read_volume_percent();
+    if (percent >= 0) {
+        jw__mlp1_volume_cache_set(percent);
+    }
+    return percent;
+}
+
+static int jw__mlp1_read_volume_percent(void) {
     jw_platform_audio_output output = jw__mlp1_get_audio_output();
     if (output == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH) {
         int bt_percent = jw__mlp1_get_bluealsa_volume_percent();
@@ -1065,6 +1096,7 @@ static int jw__mlp1_set_volume_percent(int percent) {
         rc = jw__mlp1_set_bluealsa_volume_percent(percent);
         if (rc == 0) {
             jw__mlp1_sync_sound_volume(output, percent);
+            jw__mlp1_volume_cache_set(percent);
         }
         return rc == 0 ? 0 : -1;
     }
@@ -1081,6 +1113,7 @@ static int jw__mlp1_set_volume_percent(int percent) {
 
     if (rc == 0) {
         jw__mlp1_sync_sound_volume(output, percent);
+        jw__mlp1_volume_cache_set(percent);
     }
     return rc == 0 ? 0 : -1;
 }
@@ -1751,21 +1784,17 @@ static bool jw__mlp1_usb_config_is_adb(void) {
     return result;
 }
 
+/* The same flag lsattr prints as 'i', read with the ioctl lsattr itself uses;
+   this runs on every 5 s platform-status. */
 static bool jw__mlp1_usb_config_is_immutable(void) {
-    FILE *fp = popen("lsattr " JW_MLP1_USB_CONFIG " 2>/dev/null", "r");
-    if (!fp) {
+    int fd = open(JW_MLP1_USB_CONFIG, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) {
         return false;
     }
-
-    char line[128];
-    bool immutable = false;
-    if (fgets(line, sizeof(line), fp)) {
-        char attrs[64];
-        if (sscanf(line, "%63s", attrs) == 1 && strchr(attrs, 'i')) {
-            immutable = true;
-        }
-    }
-    pclose(fp);
+    int attrs = 0;
+    bool immutable = ioctl(fd, FS_IOC_GETFLAGS, &attrs) == 0 &&
+                     (attrs & FS_IMMUTABLE_FL) != 0;
+    close(fd);
     return immutable;
 }
 
@@ -2388,21 +2417,27 @@ static void jw__mlp1_hdmi_audio_off(void) {
    All that's missing is telling pulse, which has no udev-detect here. */
 static int s_mlp1_usb_audio_module = -1;
 
-/* ALSA card index of an attached USB audio device, or -1 when none. */
+/* ALSA card index of an attached USB audio device, or -1 when none: the first
+   /proc/asound/cards line naming the USB-Audio driver. Read directly, since
+   the audio tick asks once a second. */
 static int jw__mlp1_usb_audio_card(void) {
-    char buf[32];
-    if (jw__read_command_line(JW_MLP1_USB_CARD_CMD, buf, sizeof(buf)) != 0) {
+    FILE *fp = fopen("/proc/asound/cards", "r");
+    if (!fp) {
         return -1;
     }
-    if (!buf[0]) {
-        return -1;
+    char line[256];
+    int idx = -1;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, "USB-Audio")) {
+            int n = -1;
+            if (sscanf(line, " %d", &n) == 1 && n >= 0 && n <= 31) {
+                idx = n;
+            }
+            break;
+        }
     }
-    char *end = NULL;
-    long idx = strtol(buf, &end, 10);
-    if (end == buf || idx < 0 || idx > 31) {
-        return -1;
-    }
-    return (int)idx;
+    fclose(fp);
+    return idx;
 }
 
 static bool jw__mlp1_usb_audio_present(void) {
@@ -2506,6 +2541,109 @@ static void jw__mlp1_shell_squote(const char *in, char *out, size_t out_size) {
     out[o] = '\0';
 }
 
+/* BlueALSA presence without polling. A long-lived dbus-monitor child prints
+   whenever org.bluealsa signals (PCMAdded/PCMRemoved) or the service starts or
+   stops. Its stdout sits in jawakad's poll set, and the control name cached
+   below is probed again with amixer only after it has said something. Before,
+   the audio tick forked amixer every 1.5 s, and each probe also cost
+   dbus-daemon a new connection and a GetManagedObjects. Without dbus-monitor
+   (or while it restarts) every call probes, as before. */
+#define JW_MLP1_BT_MONITOR "/usr/bin/dbus-monitor"
+static pid_t s_mlp1_bt_monitor_pid = -1;
+static int s_mlp1_bt_monitor_fd = -1;
+static long long s_mlp1_bt_monitor_retry_ms = 0;
+/* Probes until then: dbus-monitor needs a moment to subscribe, and a PCM that
+   appears in that window would otherwise never be seen. */
+static long long s_mlp1_bt_cache_trust_ms = 0;
+static bool s_mlp1_bt_cache_valid = false;
+static char s_mlp1_bt_cache_ctl[128];
+
+static void jw__mlp1_bt_monitor_stop(void) {
+    if (s_mlp1_bt_monitor_fd >= 0) {
+        close(s_mlp1_bt_monitor_fd);
+        s_mlp1_bt_monitor_fd = -1;
+    }
+    if (s_mlp1_bt_monitor_pid > 0) {
+        kill(s_mlp1_bt_monitor_pid, SIGKILL);
+        (void)waitpid(s_mlp1_bt_monitor_pid, NULL, 0);
+        s_mlp1_bt_monitor_pid = -1;
+    }
+    s_mlp1_bt_cache_valid = false;
+}
+
+static void jw__mlp1_bt_monitor_start(void) {
+    long long now = jw__monotonic_ms();
+    if (s_mlp1_bt_monitor_pid > 0 || now < s_mlp1_bt_monitor_retry_ms) {
+        return;
+    }
+    s_mlp1_bt_monitor_retry_ms = now + 5000;
+    if (access(JW_MLP1_BT_MONITOR, X_OK) != 0) {
+        return;
+    }
+    int fds[2];
+    if (pipe(fds) != 0) {
+        return;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+    if (pid == 0) {
+        (void)prctl(PR_SET_PDEATHSIG, SIGTERM);
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDERR_FILENO);
+        }
+        dup2(fds[1], STDOUT_FILENO);
+        close(fds[0]);
+        close(fds[1]);
+        execl(JW_MLP1_BT_MONITOR, "dbus-monitor", "--system",
+              "type='signal',sender='org.bluealsa'",
+              "type='signal',interface='org.freedesktop.DBus',"
+              "member='NameOwnerChanged',arg0='org.bluealsa'",
+              (char *)NULL);
+        _exit(127);
+    }
+    close(fds[1]);
+    (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    int flags = fcntl(fds[0], F_GETFL);
+    if (flags >= 0) {
+        (void)fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
+    }
+    s_mlp1_bt_monitor_pid = pid;
+    s_mlp1_bt_monitor_fd = fds[0];
+    s_mlp1_bt_cache_valid = false;
+    s_mlp1_bt_cache_trust_ms = now + 2000;
+}
+
+/* Any output means "look again"; end of file means the monitor died, and the
+   next start attempt replaces it. */
+static void jw__mlp1_bt_monitor_drain(void) {
+    if (s_mlp1_bt_monitor_fd < 0) {
+        return;
+    }
+    char buf[1024];
+    for (;;) {
+        ssize_t n = read(s_mlp1_bt_monitor_fd, buf, sizeof(buf));
+        if (n > 0) {
+            s_mlp1_bt_cache_valid = false;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return;
+        }
+        jw_log_warn("audio: bluealsa monitor exited; probing until it restarts");
+        jw__mlp1_bt_monitor_stop();
+        return;
+    }
+}
+
 /* Pick the BlueALSA mixer control to drive: prefer the A2DP (music) profile over
    SCO (call audio). Returns the raw control name; callers must shell-escape it
    with jw__mlp1_shell_squote since device names contain spaces/apostrophes. */
@@ -2514,6 +2652,14 @@ static bool jw__mlp1_bluealsa_control(char *out, size_t out_size) {
         return false;
     }
     out[0] = '\0';
+    jw__mlp1_bt_monitor_start();
+    jw__mlp1_bt_monitor_drain();
+    bool trusted = s_mlp1_bt_monitor_fd >= 0 &&
+                   jw__monotonic_ms() >= s_mlp1_bt_cache_trust_ms;
+    if (trusted && s_mlp1_bt_cache_valid) {
+        snprintf(out, out_size, "%s", s_mlp1_bt_cache_ctl);
+        return out[0] != '\0';
+    }
     FILE *fp = popen("amixer -D bluealsa scontrols 2>/dev/null", "r");
     if (!fp) {
         return false;
@@ -2539,6 +2685,8 @@ static bool jw__mlp1_bluealsa_control(char *out, size_t out_size) {
     if (!have_a2dp && first[0]) {
         snprintf(out, out_size, "%s", first);
     }
+    snprintf(s_mlp1_bt_cache_ctl, sizeof(s_mlp1_bt_cache_ctl), "%s", out);
+    s_mlp1_bt_cache_valid = trusted;
     return out[0] != '\0';
 }
 
@@ -2641,6 +2789,9 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
                                "audio output invalid");
         return -1;
     }
+
+    /* Each output keeps its own level; the one cached belongs to the old route. */
+    s_mlp1_volume_cache = -1;
 
     unsigned available = jw__mlp1_get_audio_available_outputs();
     if ((available & JW_PLATFORM_AUDIO_OUTPUT_BIT(output)) == 0) {
@@ -3814,9 +3965,10 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
     return changed;
 }
 
-/* The hotplug netlink socket and the headphone jack. Everything else the audio
-   and storage ticks watch is either a timer (next_deadline_ms) or a periodic
-   check that runs on whatever pass comes next. */
+/* The hotplug netlink socket, the headphone jack and the BlueALSA monitor.
+   Everything else the audio and storage ticks watch is either a timer
+   (next_deadline_ms) or a periodic check that runs on whatever pass comes
+   next. */
 static int jw__mlp1_poll_fds(jw_platform_context *ctx, int *fds, int max) {
     jw_mlp1_platform_data *data = ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
     int count = 0;
@@ -3826,6 +3978,9 @@ static int jw__mlp1_poll_fds(jw_platform_context *ctx, int *fds, int max) {
     int jack = jw__mlp1_jack_fd();
     if (jack >= 0 && count < max) {
         fds[count++] = jack;
+    }
+    if (s_mlp1_bt_monitor_fd >= 0 && count < max) {
+        fds[count++] = s_mlp1_bt_monitor_fd;
     }
     return count;
 }

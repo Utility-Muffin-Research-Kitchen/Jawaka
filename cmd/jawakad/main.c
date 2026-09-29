@@ -112,6 +112,17 @@
 #define JW_STARTUP_MAINT_GRACE_MS 500LL    /* after frontend-ready */
 #define JW_STARTUP_MAINT_FALLBACK_MS 15000LL /* if frontend-ready never arrives */
 
+/* What library.db looked like on disk the last time a reader acted on it.
+   Idle readers compare this instead of opening the database: an open applies
+   the schema and takes ~60 fcntl locks, which on a 500 ms timer was nearly
+   all of the daemon's idle file I/O. */
+typedef struct {
+    bool valid;
+    long long db[4];        /* ino, size, mtime ns, ctime ns */
+    long long journal[2];   /* size, mtime ns (-1 when absent) */
+    long long wal[2];
+} jw_db_file_sig;
+
 typedef enum {
     JW_CHILD_NONE = 0,
     JW_CHILD_LAUNCHER,
@@ -515,6 +526,8 @@ typedef struct {
     bool storage_scan_deferred;      /* a scan waits for the DB to be writable */
     bool storage_repair_rescan_done; /* post-repair rescan considered this run */
     bool storage_log_redirected;
+    jw_db_file_sig mutation_recovery_db_sig;  /* library.db when no uninstall was pending */
+    jw_db_file_sig autosleep_db_sig;          /* library.db when the setting was read */
     bool reap_by_signal;   /* the SIGCHLD pipe is installed */
     bool sigchld_seen;     /* a SIGCHLD arrived since the last exit check */
 } jw_daemon_state;
@@ -3931,6 +3944,55 @@ static void jw__free_pending_uninstalls(jw_pakrat_pending_uninstall *items,
    source requires a later retry, and -1 on a recoverable local error. A daemon-
    owned lock is deliberately retained across nonzero returns so no service or
    foreground launch can race incomplete recovery. */
+static long long jw__stat_time_ns(const struct stat *st, bool change) {
+#if defined(__APPLE__)
+    const struct timespec *ts = change ? &st->st_ctimespec : &st->st_mtimespec;
+#else
+    const struct timespec *ts = change ? &st->st_ctim : &st->st_mtim;
+#endif
+    return (long long)ts->tv_sec * 1000000000LL + (long long)ts->tv_nsec;
+}
+
+static void jw__db_side_file_sig(const char *db_path, const char *suffix,
+                                 long long out[2]) {
+    char path[PATH_MAX];
+    struct stat st;
+    if (snprintf(path, sizeof(path), "%s%s", db_path, suffix) < (int)sizeof(path) &&
+        stat(path, &st) == 0) {
+        out[0] = (long long)st.st_size;
+        out[1] = jw__stat_time_ns(&st, false);
+    } else {
+        out[0] = out[1] = -1;
+    }
+}
+
+/* True when library.db (or its rollback journal or WAL) changed since *sig
+   was last taken, or on the first call; refreshes *sig. A failed stat counts
+   as a change so the caller falls back to reading. */
+static bool jw__db_file_changed(const char *db_path, jw_db_file_sig *sig) {
+    jw_db_file_sig now;
+    memset(&now, 0, sizeof(now));
+    struct stat st;
+    if (!db_path || stat(db_path, &st) != 0) {
+        sig->valid = false;
+        return true;
+    }
+    now.valid = true;
+    now.db[0] = (long long)st.st_ino;
+    now.db[1] = (long long)st.st_size;
+    now.db[2] = jw__stat_time_ns(&st, false);
+    now.db[3] = jw__stat_time_ns(&st, true);
+    jw__db_side_file_sig(db_path, "-journal", now.journal);
+    jw__db_side_file_sig(db_path, "-wal", now.wal);
+    bool changed = !sig->valid;
+    for (int i = 0; i < 4 && !changed; i++) changed = now.db[i] != sig->db[i];
+    for (int i = 0; i < 2 && !changed; i++) {
+        changed = now.journal[i] != sig->journal[i] || now.wal[i] != sig->wal[i];
+    }
+    *sig = now;
+    return changed;
+}
+
 static int jw__recover_package_mutations(jw_daemon_state *state) {
     if (!state || !state->services) {
         return -1;
@@ -4003,16 +4065,27 @@ static int jw__recover_package_mutations(jw_daemon_state *state) {
             continue;
         }
 
+        /* Pending uninstalls only appear through a library.db write. Take the
+           file's signature first, so a write that lands during the query is
+           seen as a change next time. */
+        jw_db_file_sig before = state->mutation_recovery_db_sig;
+        if (!jw__db_file_changed(state->db_path, &state->mutation_recovery_db_sig)) {
+            return 0;
+        }
         jw_pakrat_pending_uninstall *pending = NULL;
         int pending_count = 0;
         if (jw_pakrat_txn_pending_list(state->db_path, &pending,
                                        &pending_count) != 0) {
+            state->mutation_recovery_db_sig = before;
+            state->mutation_recovery_db_sig.valid = false;
             return -1;
         }
         if (pending_count == 0) {
             free(pending);
             return 0;
         }
+        /* Work to do: forget the signature so the pass after it re-checks. */
+        state->mutation_recovery_db_sig.valid = false;
 
         char operation_id[JW_SVC_PACKAGE_OPERATION_ID_MAX + 1];
         int operation_size = snprintf(
@@ -11096,7 +11169,12 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
     long long now = jw__monotonic_ms();
 
     if (now >= state->autosleep_setting_next_ms) {
-        state->autosleep_timeout_s = jw__autosleep_read_timeout_s(state);
+        /* 0 means "re-read now" (start-up and wake); otherwise only a
+           library.db write can have changed the setting. */
+        bool forced = state->autosleep_setting_next_ms == 0;
+        if (jw__db_file_changed(state->db_path, &state->autosleep_db_sig) || forced) {
+            state->autosleep_timeout_s = jw__autosleep_read_timeout_s(state);
+        }
         state->autosleep_setting_next_ms = now + JW_AUTOSLEEP_SETTING_POLL_MS;
         jw__autosleep_sync_platform(state);
     }
