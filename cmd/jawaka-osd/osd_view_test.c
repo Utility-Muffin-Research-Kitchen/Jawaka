@@ -128,6 +128,33 @@ static void reset_clears_everything(void) {
     assert(jw_osd_view_level(&view, JW_OSD_VIEW_STAGE, 5, 0) == JW_OSD_VIEW_KEEP);
 }
 
+/* The OSD sleeps without a timeout unless something on screen ends by
+   itself, and wakes exactly when it does. */
+static void timeout_follows_the_timed_view(void) {
+    jw_osd_view view;
+    jw_osd_view_reset(&view);
+    assert(jw_osd_view_timeout_ms(&view, 0) == -1);
+    jw_osd_view_level(&view, JW_OSD_VIEW_VOLUME, 30, 1000);
+    assert(jw_osd_view_timeout_ms(&view, 1000) == JW_OSD_LEVEL_MS);
+    assert(jw_osd_view_timeout_ms(&view, 1000 + JW_OSD_LEVEL_MS - 1) == 1);
+    assert(jw_osd_view_timeout_ms(&view, 1000 + JW_OSD_LEVEL_MS + 50) == 0);
+    assert(jw_osd_view_tick(&view, 1000 + JW_OSD_LEVEL_MS) == JW_OSD_VIEW_HIDE);
+    assert(jw_osd_view_timeout_ms(&view, 999999) == -1);
+
+    /* Progress stays until the producer hides it: no timer. Under a level
+       toast, the toast's end is the timer, and afterwards there is none. */
+    jw_osd_view_stage(&view, JW_OSD_GAME_SYNCING, 1, 0);
+    assert(jw_osd_view_timeout_ms(&view, 5) == -1);
+    jw_osd_view_level(&view, JW_OSD_VIEW_BRIGHTNESS, 10, 100);
+    assert(jw_osd_view_timeout_ms(&view, 100) == JW_OSD_LEVEL_MS);
+    assert(jw_osd_view_tick(&view, 100 + JW_OSD_LEVEL_MS) == JW_OSD_VIEW_DRAW);
+    assert(jw_osd_view_timeout_ms(&view, 100 + JW_OSD_LEVEL_MS) == -1);
+
+    jw_osd_view_stage(&view, JW_OSD_PICO8_EXIT_CONFIRM, 0, 0);
+    assert(jw_osd_view_timeout_ms(&view, 0) == JW_OSD_GAME_TRANSIENT_MS);
+    assert(jw_osd_view_timeout_ms(NULL, 0) == -1);
+}
+
 int main(void) {
     progress_returns_after_level();
     progress_started_under_level();
@@ -135,6 +162,7 @@ int main(void) {
     transient_never_restored();
     transient_clears_progress();
     reset_clears_everything();
+    timeout_follows_the_timed_view();
     puts("PASS osd-view-test");
     return 0;
 }

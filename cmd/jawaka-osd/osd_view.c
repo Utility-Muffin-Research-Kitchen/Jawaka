@@ -1,5 +1,6 @@
 #include "cmd/jawaka-osd/osd_view.h"
 
+#include <limits.h>
 #include <string.h>
 
 void jw_osd_view_reset(jw_osd_view *view) {
@@ -82,4 +83,13 @@ jw_osd_view_effect jw_osd_view_tick(jw_osd_view *view, uint64_t now_ms) {
     view->kind = JW_OSD_VIEW_NONE;
     view->has_retained = false;
     return JW_OSD_VIEW_HIDE;
+}
+
+int jw_osd_view_timeout_ms(const jw_osd_view *view, uint64_t now_ms) {
+    if (!view || view->kind == JW_OSD_VIEW_NONE || view->hide_at == UINT64_MAX) {
+        return -1;
+    }
+    if (view->hide_at <= now_ms) return 0;
+    uint64_t wait = view->hide_at - now_ms;
+    return wait > (uint64_t)INT_MAX ? INT_MAX : (int)wait;
 }
