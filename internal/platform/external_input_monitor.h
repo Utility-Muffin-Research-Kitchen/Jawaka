@@ -26,6 +26,16 @@
 #include "internal/platform/input_proxy.h"
 
 #define JW_EXT_INPUT_MAX_PADS 3
+#define JW_EXT_INPUT_SCAN_NODES 64   /* /dev/input/event0..63 */
+
+/* A node the rescan already probed and found not to be a gamepad, by identity:
+   the same device number, inode and ctime means the same device. */
+typedef struct {
+    unsigned long long rdev;
+    unsigned long long ino;
+    long long ctime_ns;
+    bool valid;
+} jw_ext_input_seen;
 
 typedef struct {
     int fds[JW_EXT_INPUT_MAX_PADS]; /* -1 when free */
@@ -35,6 +45,7 @@ typedef struct {
                      (JW_INPUT_PROXY_MAX_PATH + 1)];
     jw_input_menu_tap_cb menu_tap;
     void *menu_userdata;
+    jw_ext_input_seen not_gamepad[JW_EXT_INPUT_SCAN_NODES];
 } jw_external_input_monitor;
 
 /* Initialize the monitor. menu_tap is invoked (without swallow semantics —
