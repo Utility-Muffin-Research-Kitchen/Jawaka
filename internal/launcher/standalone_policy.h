@@ -60,7 +60,9 @@ bool jw_standalone_policy_uses_calibrated_virtual_input(
 typedef enum {
     JW_STANDALONE_MENU_RELEASE = 0,
     JW_STANDALONE_MENU_FORWARD,
-    JW_STANDALONE_MENU_QUIT,
+    /* The core has no menu of its own, so Menu ends it. Quitting loses
+       anything unsaved, so the daemon asks "Return to Leaf?" first. */
+    JW_STANDALONE_MENU_CONFIRM_QUIT,
     JW_STANDALONE_MENU_EXTERNAL_HANDLED,
 } jw_standalone_menu_route;
 

@@ -16,8 +16,9 @@ int main(void) {
     expect("external true handled", jw_standalone_policy_menu(&provider, true, true)
            == JW_STANDALONE_MENU_EXTERNAL_HANDLED);
     for (int external = 0; external < 2; external++) {
-        expect("false quits", jw_standalone_policy_menu(&provider, false, external)
-               == JW_STANDALONE_MENU_QUIT);
+        expect("false asks before quitting",
+               jw_standalone_policy_menu(&provider, false, external)
+               == JW_STANDALONE_MENU_CONFIRM_QUIT);
         jw_standalone_policy release = jw_standalone_policy_resolve("ppsspp", NULL, NULL);
         expect("release route unchanged", jw_standalone_policy_menu(&release, true, external)
                == JW_STANDALONE_MENU_RELEASE);
