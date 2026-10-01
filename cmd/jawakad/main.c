@@ -8420,6 +8420,32 @@ static bool jw__standalone_quit(jw_daemon_state *state, bool escalate) {
     return true;
 }
 
+/* A content pak's path core without a menu of its own ends on Menu, and ending
+   it loses anything the player has not saved. Ask first, with the prompt native
+   PICO-8 uses: the first tap shows "Return to Leaf?" and only a second tap
+   inside its window quits. The prompt is armed only while it is on screen. If
+   the OSD cannot show it, quit as before rather than turn Menu into a dead
+   button. */
+static bool jw__confirm_content_quit(jw_daemon_state *state, bool escalate) {
+    pid_t pid = state->retroarch_session.pid;
+    jw_osd_client client = jw__osd_client(state);
+    jw_osd_pico8_menu confirm =
+        jw_osd_client_pico8_menu(&client, &state->pico8_exit_confirm_until_ms);
+    if (confirm == JW_OSD_PICO8_MENU_ARMED) {
+        jw_log_info("menu tap: asking before quitting content-pak core id=%s pid=%d",
+                    state->retroarch_session.core_id, (int)pid);
+        return true;
+    }
+    if (confirm == JW_OSD_PICO8_MENU_CONFIRMED) {
+        jw_log_info("menu tap: quit confirmed for content-pak core id=%s pid=%d",
+                    state->retroarch_session.core_id, (int)pid);
+    } else {
+        jw_log_warn("menu tap: exit prompt unavailable; quitting content-pak core id=%s pid=%d",
+                    state->retroarch_session.core_id, (int)pid);
+    }
+    return jw__standalone_quit(state, escalate);
+}
+
 static bool jw__input_menu_tap(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
 
@@ -8466,7 +8492,7 @@ static bool jw__input_menu_tap(void *userdata) {
         switch (jw_standalone_policy_menu(&state->retroarch_session.standalone_policy,
                                           state->retroarch_session.supports_menu, false)) {
             case JW_STANDALONE_MENU_FORWARD: return false;
-            case JW_STANDALONE_MENU_QUIT: return jw__standalone_quit(state, false);
+            case JW_STANDALONE_MENU_CONFIRM_QUIT: return jw__confirm_content_quit(state, false);
             default: break;
         }
         if (jw__standalone_session_is_ppsspp(state)) {
@@ -8566,7 +8592,7 @@ static bool jw__external_menu_tap(void *userdata) {
         switch (jw_standalone_policy_menu(&state->retroarch_session.standalone_policy,
                                           state->retroarch_session.supports_menu, true)) {
             case JW_STANDALONE_MENU_EXTERNAL_HANDLED: return true;
-            case JW_STANDALONE_MENU_QUIT: return jw__standalone_quit(state, true);
+            case JW_STANDALONE_MENU_CONFIRM_QUIT: return jw__confirm_content_quit(state, true);
             default: break;
         }
     }
