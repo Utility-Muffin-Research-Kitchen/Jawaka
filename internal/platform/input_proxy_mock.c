@@ -19,6 +19,34 @@
 #define JW_MOCK_POWER_EDGE_QUEUE 32
 #define JW_MOCK_POWER_EDGES_ENV "JAWAKA_MOCK_POWER_EDGES"
 
+/* JAWAKA_MOCK_HELD_BUTTONS stands in for the EVIOCGKEY sample the MLP1 proxy
+   takes when it opens the pad: a comma-separated list of shortcut button
+   names ("b", "start", ...) that read as held from start-up until something
+   takes them. Read once at init. */
+#define JW_MOCK_HELD_BUTTONS_ENV "JAWAKA_MOCK_HELD_BUTTONS"
+static bool s_mock_held[JW_INPUT_SHORTCUT_BUTTON_COUNT];
+
+static void jw__mock_held_load(void) {
+    memset(s_mock_held, 0, sizeof(s_mock_held));
+    const char *list = getenv(JW_MOCK_HELD_BUTTONS_ENV);
+    if (!list || !list[0]) {
+        return;
+    }
+    char copy[128];
+    snprintf(copy, sizeof(copy), "%s", list);
+    char *save = NULL;
+    for (char *name = strtok_r(copy, ",", &save); name; name = strtok_r(NULL, ",", &save)) {
+        jw_input_shortcut_button button = JW_INPUT_SHORTCUT_BUTTON_NONE;
+        if (jw_input_shortcut_button_parse(name, &button) &&
+            button != JW_INPUT_SHORTCUT_BUTTON_NONE) {
+            s_mock_held[button] = true;
+            fprintf(stderr, "input proxy (mock): %s held at start\n", name);
+        } else {
+            fprintf(stderr, "input proxy (mock): ignoring held button '%s'\n", name);
+        }
+    }
+}
+
 typedef struct {
     int fd;
     char partial[128];
@@ -139,6 +167,7 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
     proxy->menu_tap = menu_tap;
     proxy->userdata = userdata;
     jw__mock_feed_open(proxy);
+    jw__mock_held_load();
     return 0;
 }
 
@@ -209,6 +238,17 @@ void jw_input_proxy_release_buttons(jw_input_proxy *proxy) {
 
 void jw_input_proxy_emit_menu_tap(jw_input_proxy *proxy) {
     (void)proxy;   /* mock: no virtual pad to emit onto; safe no-op */
+}
+
+bool jw_input_proxy_take_held_button(jw_input_proxy *proxy,
+                                     jw_input_shortcut_button button) {
+    if (!proxy || button <= JW_INPUT_SHORTCUT_BUTTON_NONE ||
+        button >= JW_INPUT_SHORTCUT_BUTTON_COUNT || !s_mock_held[button]) {
+        return false;
+    }
+    /* Taken: like the real proxy dropping it until release, it is gone. */
+    s_mock_held[button] = false;
+    return true;
 }
 
 bool jw_input_proxy_take_power_edge(jw_input_proxy *proxy, jw_power_edge *edge) {

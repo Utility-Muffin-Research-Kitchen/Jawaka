@@ -1662,6 +1662,38 @@ void jw_input_proxy_release_buttons(jw_input_proxy *proxy) {
     jw__api_unlock(data);
 }
 
+bool jw_input_proxy_take_held_button(jw_input_proxy *proxy,
+                                     jw_input_shortcut_button button) {
+    if (!proxy || !proxy->enabled || !proxy->backend_data ||
+        button == JW_INPUT_SHORTCUT_BUTTON_NONE) {
+        return false;
+    }
+    jw_mlp1_input_proxy_data *data = jw__api_lock(proxy);
+    bool held = false;
+    if (data->physical_state_valid) {
+        for (int code = 0; code <= KEY_MAX; code++) {
+            if (jw__shortcut_button_for_code((uint16_t)code) != button ||
+                !jw__bit_is_set(data->physical_keys, code)) {
+                continue;
+            }
+            held = true;
+            if (data->uinput_fd < 0) {
+                continue;   /* watch-only: nothing reaches anyone through us */
+            }
+            if (jw__bit_is_set(data->held_keys, code)) {
+                jw__write_event(data, EV_KEY, (uint16_t)code, 0);
+                jw__emit_syn(data);
+                jw__bit_clear(data->held_keys, code);
+            }
+            /* The same swallow a claimed Menu chord uses: every event for the
+               code until its release, which clears the bit. */
+            jw__bit_set(data->chord_consumed_keys, code);
+        }
+    }
+    jw__api_unlock(data);
+    return held;
+}
+
 bool jw_input_proxy_take_power_edge(jw_input_proxy *proxy, jw_power_edge *edge) {
     if (!proxy || !proxy->backend_data) {
         return false;
