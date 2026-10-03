@@ -163,6 +163,28 @@ bool jw_ra_core_states_dir(const char *states_dir, const char *core_folder,
            (int)out_size;
 }
 
+bool jw_ra_slot_state_path_for_core(const char *states_dir,
+                                    const char *core_folder,
+                                    const char *rom_path, int slot, bool thumb,
+                                    char *out, size_t out_size) {
+    if (!rom_path || !rom_path[0] || !out || out_size == 0) {
+        return false;
+    }
+    char core_dir[PATH_MAX];
+    if (!jw_ra_core_states_dir(states_dir, core_folder,
+                               core_dir, sizeof(core_dir))) {
+        return false;
+    }
+    char stem[512];
+    jw__states_rom_stem(rom_path, stem, sizeof(stem));
+    if (!stem[0] || strlen(jw__states_basename(rom_path)) >= sizeof(stem)) {
+        return false;
+    }
+    char name[576];
+    jw__states_slot_name(stem, slot, thumb, name, sizeof(name));
+    return snprintf(out, out_size, "%s/%s", core_dir, name) < (int)out_size;
+}
+
 bool jw_ra_find_slot_state_for_core(const char *states_dir,
                                     const char *core_folder,
                                     const char *rom_path,

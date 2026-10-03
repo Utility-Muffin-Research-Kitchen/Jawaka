@@ -199,6 +199,10 @@ typedef enum {
     JW_SYSTEM_ROW_TIMEZONE,       /* opens the Time Zone picker screen */
     JW_SYSTEM_ROW_AUTO_SLEEP,
     JW_SYSTEM_ROW_FORCE_OFF_HOLD, /* PMIC power-button cut; a cycler on MLP1, "Unavailable" elsewhere */
+    /* Save the RetroArch game on a power-button shutdown. Shown everywhere,
+       usable on MLP1 only: other platforms need their own button
+       qualification. */
+    JW_SYSTEM_ROW_POWER_HOLD_SAVE,
     JW_SYSTEM_ROW_BOOT_SPLASH,
     JW_SYSTEM_ROW_SD_CARDS,
     JW_SYSTEM_ROW_SERVICES,       /* conditional: -> Services, was a category */
@@ -413,6 +417,8 @@ typedef struct {
     int                force_off_hold_index; /* power-button hard cut (index into kForceOffHold*) */
     bool               boot_splash_enabled; /* Leaf boot transition/artwork on next boot */
     bool               boot_splash_supported;
+    bool               power_hold_save_enabled;   /* "save_state_on_power_hold"; Off by default */
+    bool               power_hold_save_supported; /* platform qualified the power button */
     bool               screenshots_enabled; /* Menu+L1 screenshot hotkey (daemon reads the DB key) */
     bool               recording_enabled;   /* Menu+R1 game recording hotkey (daemon reads the DB key) */
     bool               recording_split;     /* cut clips over 10MB into postable parts */

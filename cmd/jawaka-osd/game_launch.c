@@ -16,6 +16,10 @@ const char *jw_osd_game_stage_name(jw_osd_game_stage stage) {
         case JW_OSD_PICO8_EXIT_CONFIRM: return "pico8-exit";
         case JW_OSD_PICO8_IMPORT: return "pico8-import";
         case JW_OSD_PICO8_IMPORT_FAILED: return "pico8-import-failed";
+        case JW_OSD_POWER_SAVE_RELEASE: return "power-save-release";
+        case JW_OSD_POWER_SAVE_SAVING: return "power-save-saving";
+        case JW_OSD_POWER_SAVE_SAVED: return "power-save-saved";
+        case JW_OSD_POWER_SAVE_FAILED: return "power-save-failed";
     }
     return "unknown";
 }
@@ -65,6 +69,14 @@ bool jw_osd_game_launch_parse(const cJSON *root,
         *stage = JW_OSD_PICO8_IMPORT;
     } else if (strcmp(stage_item->valuestring, "pico8-import-failed") == 0) {
         *stage = JW_OSD_PICO8_IMPORT_FAILED;
+    } else if (strcmp(stage_item->valuestring, "power-save-release") == 0) {
+        *stage = JW_OSD_POWER_SAVE_RELEASE;
+    } else if (strcmp(stage_item->valuestring, "power-save-saving") == 0) {
+        *stage = JW_OSD_POWER_SAVE_SAVING;
+    } else if (strcmp(stage_item->valuestring, "power-save-saved") == 0) {
+        *stage = JW_OSD_POWER_SAVE_SAVED;
+    } else if (strcmp(stage_item->valuestring, "power-save-failed") == 0) {
+        *stage = JW_OSD_POWER_SAVE_FAILED;
     } else {
         return false;
     }
@@ -162,6 +174,21 @@ void jw_osd_game_launch_text(jw_osd_game_stage stage, int pending_items,
             /* The card flipped read-only during play. */
             jw__copy(title, title_size, T("Your SD card is read-only"));
             jw__copy(action, action_size, T("New saves may fail"));
+            break;
+        case JW_OSD_POWER_SAVE_RELEASE:
+            jw__copy(title, title_size, T("Preparing to save"));
+            jw__copy(action, action_size, T("Release the power button"));
+            break;
+        case JW_OSD_POWER_SAVE_SAVING:
+            jw__copy(title, title_size, T("Saving game"));
+            break;
+        case JW_OSD_POWER_SAVE_SAVED:
+            jw__copy(title, title_size, T("Game saved"));
+            jw__copy(action, action_size, T("Powering off"));
+            break;
+        case JW_OSD_POWER_SAVE_FAILED:
+            jw__copy(title, title_size, T("Game not saved"));
+            jw__copy(action, action_size, T("Powering off"));
             break;
     }
 }

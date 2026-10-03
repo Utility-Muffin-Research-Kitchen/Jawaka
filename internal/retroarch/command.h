@@ -153,7 +153,56 @@ jw_ra_result jw_ra_remove_shader_preset(const jw_ra_client *client,
                                         jw_ra_shader_scope scope,
                                         jw_ra_shader_outcome *outcome);
 
+/* ---- Power-hold save: synchronous temporary-file state save (protocol 1) ----
+ * GET_STATE_SAVE_INFO -> "GET_STATE_SAVE_INFO 1 <bytes> <compressed 0|1>" or
+ * "GET_STATE_SAVE_INFO 1 NO". SAVE_STATE_SYNC <id> <slot> <max bytes>
+ * <start-by CLOCK_MONOTONIC ms> -> "SAVE_STATE_SYNC <id> TMP_READY <bytes>
+ * <path>" or "SAVE_STATE_SYNC <id> ERROR <code>". RetroArch never publishes
+ * the temporary file; the caller renames it. */
+#define JW_RA_SYNC_SAVE_PROTOCOL 1
+#define JW_RA_SYNC_SAVE_PATH_MAX 4096u
+#define JW_RA_SYNC_SAVE_ERROR_MAX 32u
+
+typedef struct {
+    bool supported;      /* protocol 1 and the running core can save states */
+    bool compressed;     /* savestate_file_compression is on */
+    unsigned long long bytes;
+} jw_ra_state_save_info;
+
+typedef struct {
+    int fd;              /* connected UDP socket, -1 when closed */
+    char request_id[JW_RA_REQUEST_ID_MAX];
+} jw_ra_sync_save;
+
+typedef struct {
+    bool ready;          /* TMP_READY; otherwise error holds the code */
+    unsigned long long bytes;
+    char tmp_path[JW_RA_SYNC_SAVE_PATH_MAX];
+    char error[JW_RA_SYNC_SAVE_ERROR_MAX];
+} jw_ra_sync_save_reply;
+
+/* Blocking probe bounded by client->timeout_ms. JW_RA_TIMEOUT means the
+   running RetroArch does not answer it (older build): treat as unsupported. */
+jw_ra_result jw_ra_get_state_save_info(const jw_ra_client *client,
+                                       jw_ra_state_save_info *info);
+
+void jw_ra_sync_save_init(jw_ra_sync_save *save);
+/* Send one SAVE_STATE_SYNC on a fresh connected socket and return at once. */
+jw_ra_result jw_ra_sync_save_send(const jw_ra_client *client, jw_ra_sync_save *save,
+                                  int slot, unsigned long long max_bytes,
+                                  long long start_by_ms);
+/* Non-blocking. JW_RA_TIMEOUT while no matching reply has arrived (replies for
+   other request IDs are discarded); JW_RA_OK with *reply filled once it has;
+   JW_RA_PARSE_ERROR for a malformed matching reply. */
+jw_ra_result jw_ra_sync_save_poll(jw_ra_sync_save *save, jw_ra_sync_save_reply *reply);
+void jw_ra_sync_save_close(jw_ra_sync_save *save);
+
 /* Exposed for tests. */
+jw_ra_result jw_ra_parse_state_save_info_reply(const char *reply,
+                                               jw_ra_state_save_info *info);
+/* JW_RA_TIMEOUT when the reply belongs to another request ID. */
+jw_ra_result jw_ra_parse_sync_save_reply(const char *reply, const char *request_id,
+                                         jw_ra_sync_save_reply *out);
 const char *jw_ra_shader_scope_token(jw_ra_shader_scope scope);
 jw_ra_result jw_ra_parse_status_reply(const char *reply, jw_ra_status *status);
 jw_ra_result jw_ra_parse_shader_reply(const char *reply,

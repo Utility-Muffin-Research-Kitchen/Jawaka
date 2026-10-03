@@ -38,6 +38,15 @@ bool jw_ra_find_slot_state(const char *states_dir, const char *rom_path,
    only States/<core_folder> is searched; flat files and other core folders are
    deliberately ignored. This prevents a core override from loading a state
    produced by another libretro core. */
+/* Build (without requiring existence) the path RetroArch uses for a slot in
+   the States/<core_folder> namespace: <stem>.stateN, or its ".png" thumbnail
+   when thumb is true. Same slot numbering as the lookups. Fails closed on an
+   unsafe core_folder or truncation. */
+bool jw_ra_slot_state_path_for_core(const char *states_dir,
+                                    const char *core_folder,
+                                    const char *rom_path, int slot, bool thumb,
+                                    char *out, size_t out_size);
+
 bool jw_ra_find_slot_state_for_core(const char *states_dir,
                                     const char *core_folder,
                                     const char *rom_path,

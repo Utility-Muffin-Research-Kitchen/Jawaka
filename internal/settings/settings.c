@@ -142,6 +142,7 @@ typedef enum {
     JW_SETTING_AUTO_SLEEP_SECONDS,
     JW_SETTING_POWER_HARD_CUT_SECONDS,
     JW_SETTING_BOOT_SPLASH_ENABLED,
+    JW_SETTING_SAVE_STATE_ON_POWER_HOLD,
     JW_SETTING_SCREENSHOTS_ENABLED,
     JW_SETTING_RECORDING_ENABLED,
     JW_SETTING_RECORDING_SPLIT,
@@ -200,6 +201,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_AUTO_SLEEP_SECONDS] = "auto_sleep_seconds",
     [JW_SETTING_POWER_HARD_CUT_SECONDS] = JW_POWER_HARD_CUT_SETTING_KEY,
     [JW_SETTING_BOOT_SPLASH_ENABLED] = "boot_splash_enabled",
+    [JW_SETTING_SAVE_STATE_ON_POWER_HOLD] = "save_state_on_power_hold",
     [JW_SETTING_SCREENSHOTS_ENABLED] = "screenshots_enabled",
     [JW_SETTING_RECORDING_ENABLED]   = "recording_enabled",
     [JW_SETTING_RECORDING_SPLIT]     = "recording_split",
@@ -1611,6 +1613,12 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->force_off_hold_index = jw__force_off_hold_index(NULL);
     ui->boot_splash_enabled = true;
     ui->boot_splash_supported = false;
+    ui->power_hold_save_enabled = false;   /* opt-in */
+#ifdef PLATFORM_MLP1
+    ui->power_hold_save_supported = true;
+#else
+    ui->power_hold_save_supported = false;
+#endif
     ui->screenshots_enabled = false;   /* opt-in */
     ui->recording_enabled   = false;   /* opt-in, same as screenshots */
     /* On by default: it is inert for clips that already fit, and without it a
@@ -1817,6 +1825,10 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                     jw__force_off_hold_index(values[JW_SETTING_POWER_HARD_CUT_SECONDS]);
             if (jw__setting_has(values, found, JW_SETTING_BOOT_SPLASH_ENABLED))
                 ui->boot_splash_enabled = (strcmp(values[JW_SETTING_BOOT_SPLASH_ENABLED], "0") != 0);
+            /* Opt-in: anything but "1" (missing, invalid) is Off, as in the daemon. */
+            if (jw__setting_has(values, found, JW_SETTING_SAVE_STATE_ON_POWER_HOLD))
+                ui->power_hold_save_enabled =
+                    (strcmp(values[JW_SETTING_SAVE_STATE_ON_POWER_HOLD], "1") == 0);
             if (jw__setting_has(values, found, JW_SETTING_SCREENSHOTS_ENABLED))
                 ui->screenshots_enabled = (strcmp(values[JW_SETTING_SCREENSHOTS_ENABLED], "1") == 0);
             if (jw__setting_has(values, found, JW_SETTING_RECORDING_ENABLED))
@@ -5355,6 +5367,7 @@ static int jw__system_rows(const jw_settings_ui *ui, jw_system_row_kind *out) {
     out[n++] = JW_SYSTEM_ROW_TIMEZONE;
     out[n++] = JW_SYSTEM_ROW_AUTO_SLEEP;
     out[n++] = JW_SYSTEM_ROW_FORCE_OFF_HOLD;
+    out[n++] = JW_SYSTEM_ROW_POWER_HOLD_SAVE;
     out[n++] = JW_SYSTEM_ROW_BOOT_SPLASH;
     out[n++] = JW_SYSTEM_ROW_SD_CARDS;
     if (ui->services_count > 0) out[n++] = JW_SYSTEM_ROW_SERVICES;
@@ -5416,6 +5429,16 @@ static void jw__render_system(const jw_settings_ui *ui, int x, int y, int w, int
 #endif
             break;
         }
+        case JW_SYSTEM_ROW_POWER_HOLD_SAVE:
+            if (ui->power_hold_save_supported) {
+                jw__render_toggle_row(&ui->system_list, x, ly, w, row,
+                                      "Save Before Power Off",
+                                      ui->power_hold_save_enabled ? "On" : "Off");
+            } else {
+                jw__render_list_row(&ui->system_list, x, ly, w, row,
+                                    "Save Before Power Off", "Unavailable", false);
+            }
+            break;
         case JW_SYSTEM_ROW_BOOT_SPLASH: {
             const char *splash = ui->boot_splash_supported
                                  ? (ui->boot_splash_enabled ? "On" : "Off")
@@ -8915,6 +8938,21 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
 #else
                     (void)dir;   /* Unavailable here: nothing to cycle or persist */
 #endif
+                } else if (kind == JW_SYSTEM_ROW_POWER_HOLD_SAVE) {
+                    (void)dir;
+                    if (!ui->power_hold_save_supported) {
+                        break;
+                    }
+                    /* The daemon re-reads this key on its settings poll. */
+                    ui->power_hold_save_enabled = !ui->power_hold_save_enabled;
+                    jw__persist_bool(ui, "save_state_on_power_hold",
+                                     ui->power_hold_save_enabled);
+                    if (status_buf && status_size > 0) {
+                        snprintf(status_buf, (size_t)status_size, "%s",
+                                 ui->power_hold_save_enabled
+                                     ? T("Hold power to shut down, then release to save")
+                                     : T("Power off will not save your game"));
+                    }
                 } else if (kind == JW_SYSTEM_ROW_BOOT_SPLASH) {
                     (void)dir;
                     jw__set_boot_splash(ui, !ui->boot_splash_enabled,

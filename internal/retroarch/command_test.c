@@ -1,8 +1,13 @@
 #include "internal/retroarch/command.h"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static void expect_supported(const char *command) {
     if (!jw_ra_raw_command_supported(command)) {
@@ -134,7 +139,154 @@ static void menu_status_tests(void) {
     }
 }
 
+/* ------------------------------------------------ power-hold sync save */
+
+static void check(int ok, const char *what) {
+    if (!ok) {
+        fprintf(stderr, "retroarch-command-test: %s\n", what);
+        exit(1);
+    }
+}
+
+static void test_state_save_info_parse(void) {
+    jw_ra_state_save_info info;
+    check(jw_ra_parse_state_save_info_reply("GET_STATE_SAVE_INFO 1 4456472 0\n", &info) ==
+              JW_RA_OK && info.supported && !info.compressed && info.bytes == 4456472ull,
+          "info: plain reply");
+    check(jw_ra_parse_state_save_info_reply("GET_STATE_SAVE_INFO 1 9068872 1", &info) ==
+              JW_RA_OK && info.supported && info.compressed,
+          "info: compressed flag");
+    check(jw_ra_parse_state_save_info_reply("GET_STATE_SAVE_INFO 1 NO", &info) == JW_RA_OK &&
+              !info.supported,
+          "info: NO");
+    check(jw_ra_parse_state_save_info_reply("GET_STATE_SAVE_INFO 2 100 0", &info) ==
+              JW_RA_UNSUPPORTED && !info.supported,
+          "info: unknown version must be unsupported");
+    check(jw_ra_parse_state_save_info_reply("GET_STATE_SAVE_INFO 1 0 0", &info) ==
+              JW_RA_PARSE_ERROR, "info: zero bytes");
+    check(jw_ra_parse_state_save_info_reply("GET_STATE_SAVE_INFO 1 -5 0", &info) ==
+              JW_RA_PARSE_ERROR, "info: negative bytes");
+    check(jw_ra_parse_state_save_info_reply("GET_STATE_SAVE_INFO 1 5 2", &info) ==
+              JW_RA_PARSE_ERROR, "info: bad compressed flag");
+    check(jw_ra_parse_state_save_info_reply("GET_STATE_SAVE_INFO 1 5 0 x", &info) ==
+              JW_RA_PARSE_ERROR, "info: trailing field");
+    check(jw_ra_parse_state_save_info_reply("GET_INFO 0 0 0", &info) == JW_RA_PARSE_ERROR,
+          "info: other command");
+}
+
+static void test_sync_save_parse(void) {
+    jw_ra_sync_save_reply r;
+    check(jw_ra_parse_sync_save_reply(
+              "SAVE_STATE_SYNC ab12 TMP_READY 4456472 /c/States/PCSX-ReARMed/Spyro (USA).state99.tmp-ab12\n",
+              "ab12", &r) == JW_RA_OK && r.ready && r.bytes == 4456472ull &&
+              strcmp(r.tmp_path, "/c/States/PCSX-ReARMed/Spyro (USA).state99.tmp-ab12") == 0,
+          "sync: TMP_READY with spaces in path");
+    check(jw_ra_parse_sync_save_reply("SAVE_STATE_SYNC ab12 ERROR LATE", "ab12", &r) ==
+              JW_RA_OK && !r.ready && strcmp(r.error, "LATE") == 0,
+          "sync: ERROR code");
+    check(jw_ra_parse_sync_save_reply("SAVE_STATE_SYNC ab123 ERROR LATE", "ab12", &r) ==
+              JW_RA_TIMEOUT, "sync: longer id is someone else's");
+    check(jw_ra_parse_sync_save_reply("SAVE_STATE_SYNC zz ERROR LATE", "ab12", &r) ==
+              JW_RA_TIMEOUT, "sync: other id ignored");
+    check(jw_ra_parse_sync_save_reply("SAVE_STATE_SYNC - ERROR BAD_ARGS", "ab12", &r) ==
+              JW_RA_TIMEOUT, "sync: id-less BAD_ARGS is not ours");
+    check(jw_ra_parse_sync_save_reply("GET_STATUS PLAYING x", "ab12", &r) == JW_RA_TIMEOUT,
+          "sync: unrelated reply ignored");
+    check(jw_ra_parse_sync_save_reply("SAVE_STATE_SYNC ab12 TMP_READY 0 /x", "ab12", &r) ==
+              JW_RA_PARSE_ERROR, "sync: zero bytes");
+    check(jw_ra_parse_sync_save_reply("SAVE_STATE_SYNC ab12 TMP_READY 12 rel/path", "ab12", &r) ==
+              JW_RA_PARSE_ERROR && !r.ready, "sync: relative path");
+    check(jw_ra_parse_sync_save_reply("SAVE_STATE_SYNC ab12 TMP_READY 12", "ab12", &r) ==
+              JW_RA_PARSE_ERROR, "sync: missing path");
+    check(jw_ra_parse_sync_save_reply("SAVE_STATE_SYNC ab12 ERROR late; rm", "ab12", &r) ==
+              JW_RA_PARSE_ERROR, "sync: malformed error code");
+    check(jw_ra_parse_sync_save_reply("SAVE_STATE_SYNC ab12 DONE", "ab12", &r) ==
+              JW_RA_PARSE_ERROR, "sync: unknown verb");
+}
+
+/* A fake RetroArch on loopback: the real send/poll path, including discarding
+   another request's reply and a datagram from a different source port. */
+static void test_sync_save_loopback(void) {
+    int server = socket(AF_INET, SOCK_DGRAM, 0);
+    check(server >= 0, "loopback: server socket");
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    check(bind(server, (struct sockaddr *)&addr, sizeof(addr)) == 0, "loopback: bind");
+    socklen_t len = sizeof(addr);
+    check(getsockname(server, (struct sockaddr *)&addr, &len) == 0, "loopback: name");
+    jw_ra_client client = { "127.0.0.1", ntohs(addr.sin_port), 500 };
+
+    jw_ra_sync_save save;
+    jw_ra_sync_save_init(&save);
+    jw_ra_sync_save_reply reply;
+    check(jw_ra_sync_save_poll(&save, &reply) == JW_RA_SOCKET_ERROR, "loopback: poll closed");
+    check(jw_ra_sync_save_send(&client, &save, 99, 5242880ull, 123456) == JW_RA_OK,
+          "loopback: send");
+    check(strlen(save.request_id) > 0, "loopback: request id");
+
+    char buf[256];
+    struct sockaddr_in peer;
+    socklen_t peer_len = sizeof(peer);
+    ssize_t n = recvfrom(server, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&peer, &peer_len);
+    check(n > 0, "loopback: server received");
+    buf[n] = '\0';
+    char want[128];
+    snprintf(want, sizeof(want), "SAVE_STATE_SYNC %s 99 5242880 123456", save.request_id);
+    check(strcmp(buf, want) == 0, "loopback: exact command line");
+
+    check(jw_ra_sync_save_poll(&save, &reply) == JW_RA_TIMEOUT, "loopback: nothing yet");
+
+    /* Same source, other id: discarded. */
+    const char *other = "SAVE_STATE_SYNC ffff ERROR LATE";
+    sendto(server, other, strlen(other), 0, (struct sockaddr *)&peer, peer_len);
+    /* Different source port, right id: the connected socket never sees it. */
+    int spoof = socket(AF_INET, SOCK_DGRAM, 0);
+    char spoofed[128];
+    snprintf(spoofed, sizeof(spoofed), "SAVE_STATE_SYNC %s TMP_READY 1 /evil", save.request_id);
+    sendto(spoof, spoofed, strlen(spoofed), 0, (struct sockaddr *)&peer, peer_len);
+    close(spoof);
+    usleep(20000);
+    check(jw_ra_sync_save_poll(&save, &reply) == JW_RA_TIMEOUT,
+          "loopback: other id and other source ignored");
+
+    char good[256];
+    snprintf(good, sizeof(good),
+             "SAVE_STATE_SYNC %s TMP_READY 4456472 /c/States/Core/Game.state99.tmp-%s",
+             save.request_id, save.request_id);
+    sendto(server, good, strlen(good), 0, (struct sockaddr *)&peer, peer_len);
+    usleep(20000);
+    check(jw_ra_sync_save_poll(&save, &reply) == JW_RA_OK && reply.ready &&
+              reply.bytes == 4456472ull && strstr(reply.tmp_path, ".state99.tmp-"),
+          "loopback: matching TMP_READY");
+    jw_ra_sync_save_close(&save);
+    check(save.fd == -1, "loopback: closed");
+
+    /* Probe: answered, then an older RetroArch that stays silent. */
+    jw_ra_state_save_info info;
+    int pid = fork();
+    check(pid >= 0, "loopback: fork");
+    if (pid == 0) {
+        peer_len = sizeof(peer);
+        n = recvfrom(server, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&peer, &peer_len);
+        const char *answer = "GET_STATE_SAVE_INFO 1 823432 0";
+        if (n > 0) sendto(server, answer, strlen(answer), 0, (struct sockaddr *)&peer, peer_len);
+        _exit(0);
+    }
+    check(jw_ra_get_state_save_info(&client, &info) == JW_RA_OK && info.supported &&
+              info.bytes == 823432ull, "loopback: probe answered");
+    waitpid(pid, NULL, 0);
+    client.timeout_ms = 100;
+    check(jw_ra_get_state_save_info(&client, &info) == JW_RA_TIMEOUT && !info.supported,
+          "loopback: silent RetroArch times out unsupported");
+    close(server);
+}
+
 int main(void) {
+    test_state_save_info_parse();
+    test_sync_save_parse();
+    test_sync_save_loopback();
     expect_supported("SET_SHADER /tmp/example.glslp");
     expect_supported("SET_SHADER\t/tmp/example.glslp");
     expect_supported("GET_CONFIG_PARAM video_shader");

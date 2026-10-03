@@ -31,6 +31,8 @@
 #include "internal/platform/raofflineproxy.h"
 #include "internal/platform/weston_initd.h"
 #include "internal/platform/wifi.h"
+#include "internal/power/power_hold_save.h"
+#include "internal/power/power_hold_save_io.h"
 #include "internal/power/power_hard_cut.h"
 #include "internal/power/suspend_inhibit.h"
 #include "internal/retroarch/command.h"
@@ -455,6 +457,35 @@ typedef struct {
     bool      power_sleep_armed;          /* power pressed while screen on → sleep on release */
     bool      power_held;                 /* power key currently held (for long-press detect) */
     long long power_down_ms;              /* when the current power press started */
+    long long last_resume_ms;             /* monotonic ms of the latest detected resume */
+    /* Save before power-button shutdown: on an opt-in RetroArch session, a
+       long press waits for the release, then RetroArch writes a fsync'd
+       temporary state that jawakad renames over the switcher slot before
+       child teardown. Policy: internal/power/power_hold_save.h. */
+    bool power_hold_save_enabled;         /* cached setting; Off unless refreshed */
+    jw_power_hold_save power_hold_save;
+    jw_ra_sync_save power_hold_save_request;
+    unsigned long long power_hold_save_bytes;   /* probed size, rounded up to a MiB */
+    long long power_hold_save_started_ms;       /* long press recognized */
+    char power_hold_save_final[PATH_MAX];       /* pinned slot path */
+    char power_hold_save_thumb[PATH_MAX];
+    char power_hold_save_tmp[PATH_MAX];         /* pinned temporary path */
+    bool power_hold_save_tmp_owned;             /* sent, not yet published or removed */
+    bool power_hold_save_reported;              /* outcome logged */
+    int  power_hold_save_release_notice_tries;  /* OSD prompt attempts (max 3) */
+    bool power_hold_save_release_notice_ok;     /* OSD acknowledged the prompt */
+    long long power_hold_save_release_notice_next_ms;
+    /* Saved outcome only: QUIT sent at this time (0 = not sent) and the bound
+       on waiting for RetroArch's own exit before the kill sequence. */
+    long long power_hold_save_quit_sent_ms;
+    long long power_hold_save_quit_deadline_ms;
+    bool power_hold_save_quit_expired;          /* grace over or QUIT failed: kill */
+    /* Host-build test hooks (scripts/power-hold-save-ipc-smoke.sh), read once
+       at start-up and never compiled into the MLP1 daemon: a Force Off Hold
+       the mock platform cannot apply, and the platform gate opened so the
+       mock can stand in for the MLP1. */
+    int  test_power_hard_cut_s;                 /* 0 = none */
+    bool test_power_hold_save_any_platform;
     jw_suspend_inhibitor suspend_inhibitor;
     jw_suspend_policy    suspend_policy;
     int       hdmi_last_connected;        /* -1 unknown, 0/1; for hotplug edge detection */
@@ -5161,6 +5192,31 @@ static void jw__advanced_shader_clear(jw_daemon_state *state) {
     state->advanced_shader_next_poll_ms = 0;
 }
 
+/* A hard cut during a power-hold save can leave "<stem>.state99.tmp-<id>" in
+   the pinned States/<core> folder. Discovery ignores the name; sweep it when
+   this game is launched again, built exactly like the eligibility pin. Only
+   RetroArch game sessions, never at boot, never for other games. */
+static void jw__power_hold_save_remove_orphans(const jw_retroarch_session *session) {
+    if (!session->rom_path[0] || !session->source_root[0] ||
+        !session->core_config_folder[0]) {
+        return;
+    }
+    char states_dir[PATH_MAX];
+    char final_path[PATH_MAX];
+    if (snprintf(states_dir, sizeof(states_dir), "%s/States", session->source_root) >=
+            (int)sizeof(states_dir) ||
+        !jw_ra_slot_state_path_for_core(states_dir, session->core_config_folder,
+                                        session->rom_path, JW_RA_GAME_SWITCHER_STATE_SLOT,
+                                        false, final_path, sizeof(final_path))) {
+        return;
+    }
+    int removed = jw_power_hold_save_remove_orphans(final_path);
+    if (removed > 0) {
+        jw_log_info("power-hold save: removed %d orphan temporary state%s for %s",
+                    removed, removed == 1 ? "" : "s", final_path);
+    }
+}
+
 static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                                         int game_id,
                                         const char *system, const char *rom_path,
@@ -5211,6 +5267,7 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                 session->core_path, session->core_id[0] ? session->core_id : "(unknown)",
                 session->core_config_folder[0] ? session->core_config_folder : "(unavailable)",
                 session->config_path, session->rom_path);
+    jw__power_hold_save_remove_orphans(session);
 }
 
 static long jw__retroarch_session_runtime_s(const jw_retroarch_session *session) {
@@ -5371,6 +5428,7 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
                 session->core_path, session->core_id[0] ? session->core_id : "(unknown)",
                 session->core_config_folder[0] ? session->core_config_folder : "(unavailable)",
                 session->rom_path);
+    jw__power_hold_save_remove_orphans(session);
 }
 
 static int jw__platform_path(char *out, size_t out_size, const jw_daemon_state *state);
@@ -10907,6 +10965,13 @@ static void jw__power_hard_cut_sync_platform(jw_daemon_state *state, bool forced
             state->power_hard_cut_effective_s = JW_POWER_HARD_CUT_STOCK_S;
             break;
     }
+#ifndef PLATFORM_MLP1
+    /* Host smoke only: the mock platform applies nothing, which the policy
+       reads as the stock 6 s cut and declines at once. */
+    if (state->test_power_hard_cut_s > 0) {
+        state->power_hard_cut_effective_s = state->test_power_hard_cut_s;
+    }
+#endif
 }
 
 static void jw__screen_set(jw_daemon_state *state, bool on) {
@@ -11290,15 +11355,391 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
     }
 }
 
+/* ── Save before power-button shutdown ─────────────────────────────────────── */
+
+#define JW_POWER_HOLD_SAVE_PROBE_TIMEOUT_MS 300u
+#define JW_PHS_MIB 1048576ull
+
+/* Settings poll, never on the hold path: a no-wait read, and anything but "1"
+   (missing, invalid, locked, unreadable) is Off. */
+static void jw__power_hold_save_refresh_setting(jw_daemon_state *state) {
+    bool enabled = false;
+    char value[8];
+    if (state->db_path &&
+        jw_db_read_setting_nowait(state->db_path, "save_state_on_power_hold",
+                                  value, sizeof(value)) == 0) {
+        enabled = strcmp(value, "1") == 0;
+    }
+    if (enabled != state->power_hold_save_enabled) {
+        jw_log_info("power-hold save: setting %s", enabled ? "on" : "off");
+    }
+    state->power_hold_save_enabled = enabled;
+}
+
+/* One banner at a time; best-effort and bounded by the OSD client timeout. */
+static bool jw__power_hold_save_notice(jw_daemon_state *state, const char *stage) {
+    if (!jw__osd_enabled(state)) {
+        return false;
+    }
+    jw_osd_client client = jw__osd_client(state);
+    if (jw_osd_client_show_stage(&client, &state->pico8_exit_confirm_until_ms,
+                                 stage, 0) != 0) {
+        jw_log_warn("power-hold save: %s OSD request failed", stage);
+        return false;
+    }
+    return true;
+}
+
+#define JW_POWER_HOLD_SAVE_RELEASE_NOTICE_TRIES 3
+#define JW_POWER_HOLD_SAVE_RELEASE_NOTICE_RETRY_MS 100
+
+/* The release prompt is the one notice the player must see in time, so it is
+   retried on following ticks while the key is still held. Logs how long after
+   the long press the OSD acknowledged it. */
+static void jw__power_hold_save_release_notice(jw_daemon_state *state, long long now) {
+    if (state->power_hold_save_release_notice_ok ||
+        state->power_hold_save_release_notice_tries >= JW_POWER_HOLD_SAVE_RELEASE_NOTICE_TRIES ||
+        now < state->power_hold_save_release_notice_next_ms) {
+        return;
+    }
+    state->power_hold_save_release_notice_tries++;
+    long long before = jw__monotonic_ms();
+    bool ok = jw__power_hold_save_notice(state, "power-save-release");
+    long long after = jw__monotonic_ms();
+    if (ok) {
+        state->power_hold_save_release_notice_ok = true;
+        jw_log_info("power-hold save: release prompt acknowledged %lldms after the long press (attempt %d, osd_ms=%lld)",
+                    after - state->power_hold_save_started_ms,
+                    state->power_hold_save_release_notice_tries, after - before);
+        return;
+    }
+    state->power_hold_save_release_notice_next_ms = after + JW_POWER_HOLD_SAVE_RELEASE_NOTICE_RETRY_MS;
+    if (state->power_hold_save_release_notice_tries >= JW_POWER_HOLD_SAVE_RELEASE_NOTICE_TRIES) {
+        jw_log_warn("power-hold save: release prompt not shown after %d attempts",
+                    state->power_hold_save_release_notice_tries);
+    }
+}
+
+static const char *jw__power_hold_save_how(const jw_daemon_state *state) {
+    return state->power_hold_save.release_ms > 0 ? "released" : "held";
+}
+
+/* Log the latched outcome once. */
+static void jw__power_hold_save_report(jw_daemon_state *state) {
+    const jw_power_hold_save *s = &state->power_hold_save;
+    if (state->power_hold_save_reported || s->phase != JW_POWER_HOLD_SAVE_DONE) {
+        return;
+    }
+    state->power_hold_save_reported = true;
+    long long elapsed = state->power_hold_save_started_ms > 0
+        ? jw__monotonic_ms() - state->power_hold_save_started_ms : 0;
+    const char *name = jw_power_hold_save_outcome_name(s->outcome);
+    /* A signal is not the player's shutdown; nobody is waiting on a banner. */
+    if (s->outcome != JW_POWER_HOLD_SAVE_OUTCOME_INTERRUPTED) {
+        jw__power_hold_save_notice(state, s->outcome == JW_POWER_HOLD_SAVE_OUTCOME_SAVED
+                                              ? "power-save-saved" : "power-save-failed");
+    }
+    if (s->outcome == JW_POWER_HOLD_SAVE_OUTCOME_SAVED) {
+        jw_log_info("power-hold save: saved elapsed_ms=%lld key=%s bytes=%llu path=%s",
+                    elapsed, jw__power_hold_save_how(state),
+                    state->power_hold_save_bytes, state->power_hold_save_final);
+    } else {
+        jw_log_warn("power-hold save: %s elapsed_ms=%lld key=%s", name, elapsed,
+                    jw__power_hold_save_how(state));
+    }
+}
+
+/* Everything the hold path may decide without touching the database. Probes
+   RetroArch once, bounded. Pins the slot and thumbnail paths on success. */
+static bool jw__power_hold_save_eligible(jw_daemon_state *state) {
+    const jw_retroarch_session *session = &state->retroarch_session;
+    if (!session->rom_path[0] || !session->source_root[0] ||
+        !session->core_config_folder[0] || !session->core_id[0]) {
+        jw_log_warn("power-hold save: session has no pinned source/core namespace");
+        return false;
+    }
+    char states_dir[PATH_MAX];
+    if (snprintf(states_dir, sizeof(states_dir), "%s/States", session->source_root) >=
+            (int)sizeof(states_dir) ||
+        !jw_ra_slot_state_path_for_core(states_dir, session->core_config_folder,
+                                        session->rom_path, JW_RA_GAME_SWITCHER_STATE_SLOT,
+                                        false, state->power_hold_save_final,
+                                        sizeof(state->power_hold_save_final)) ||
+        !jw_ra_slot_state_path_for_core(states_dir, session->core_config_folder,
+                                        session->rom_path, JW_RA_GAME_SWITCHER_STATE_SLOT,
+                                        true, state->power_hold_save_thumb,
+                                        sizeof(state->power_hold_save_thumb))) {
+        jw_log_warn("power-hold save: could not pin the switcher slot path");
+        return false;
+    }
+    char reason[JW_STORAGE_REASON_MAX] = "";
+    if (!jw_storage_path_writable(states_dir, reason, sizeof(reason))) {
+        jw_log_warn("power-hold save: states are not writable (%s)", reason);
+        return false;
+    }
+    jw_ra_client ra = jw_ra_client_default();
+    ra.timeout_ms = JW_POWER_HOLD_SAVE_PROBE_TIMEOUT_MS;
+    jw_ra_state_save_info info;
+    jw_ra_result probe = jw_ra_get_state_save_info(&ra, &info);
+    if (probe != JW_RA_OK || !info.supported || info.compressed) {
+        /* No fallback to the asynchronous save or the size-settle heuristic. */
+        jw_log_info("power-hold save: RetroArch cannot sync-save (probe=%s supported=%d compressed=%d)",
+                    jw_ra_result_string(probe), info.supported ? 1 : 0,
+                    info.compressed ? 1 : 0);
+        return false;
+    }
+    /* The estimate already rounds up to a MiB; allow the same growth. */
+    state->power_hold_save_bytes = (info.bytes + JW_PHS_MIB - 1) / JW_PHS_MIB * JW_PHS_MIB;
+    return true;
+}
+
+/* The one place a physical long press turns into shutdown. `press_ms` is the
+   key-down event timestamp. Both the still-held and the released branch come
+   through here; the released branch then feeds its release edge. */
+static void jw__power_long_press(jw_daemon_state *state, long long press_ms,
+                                 long long held_ms) {
+    bool first = !state->shutdown_requested;
+    bool handed_off = false;
+    state->power_sleep_armed = false;
+    if (first) {
+        jw_suspend_policy_long_press(&state->suspend_policy);
+        if (held_ms >= 0) {
+            jw_log_info("power: long-press (%lldms) -> clean power off", held_ms);
+        } else {
+            jw_log_info("power: long-press -> clean power off");
+        }
+        /* On MLP1 this publishes the request to the supervisor right now; a
+           refused handoff means no shutdown, so a save prompt would be a lie. */
+        handed_off = jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF,
+                                                  "power-button");
+    }
+    if (state->power_hold_save.phase != JW_POWER_HOLD_SAVE_IDLE) {
+        return;  /* duplicate hold tick, or an attempt already decided */
+    }
+    /* Off, a refused handoff, other platforms, and anything but a RetroArch
+       game get no save phase. */
+    if (!first || !handed_off || !state->power_hold_save_enabled ||
+        (strcmp(state->platform.platform_id, "mlp1") != 0 &&
+         !state->test_power_hold_save_any_platform) ||
+        !jw__has_retroarch_session(state) || g_shutdown_requested) {
+        return;
+    }
+    /* The PMIC cut to plan against is the Force Off Hold the daemon applied
+       (0 when unsupported or not applied -> the stock 6 s cut, which leaves no
+       release wait at all). */
+    int hold_s = state->power_hard_cut_effective_s;
+    long long cut_ms = jw_power_hold_save_cut_ms_for_hold_s(hold_s);
+    long long now = jw__monotonic_ms();
+    state->power_hold_save_started_ms = now;
+    bool eligible = jw__power_hold_save_eligible(state);
+    if (jw_power_hold_save_long_press(&state->power_hold_save, press_ms, now, cut_ms,
+                                      eligible, state->last_resume_ms) ==
+        JW_POWER_HOLD_SAVE_WAIT) {
+        jw_log_info("power-hold save: waiting for release (release by +%lldms; force-off hold %ds, cut %lldms)",
+                    state->power_hold_save.release_offset_ms, hold_s, cut_ms);
+        jw__power_hold_save_release_notice(state, now);
+    } else {
+        jw__power_hold_save_report(state);
+    }
+}
+
+static jw_power_hold_save_outcome jw__power_hold_save_error_outcome(const char *code) {
+    if (strcmp(code, "LATE") == 0 || strcmp(code, "TOO_LARGE") == 0) {
+        return JW_POWER_HOLD_SAVE_OUTCOME_BUDGET_INSUFFICIENT;
+    }
+    if (strcmp(code, "UNSUPPORTED") == 0 || strcmp(code, "COMPRESSED") == 0 ||
+        strcmp(code, "BUSY") == 0 || strcmp(code, "PATH") == 0 ||
+        strcmp(code, "BAD_ARGS") == 0) {
+        return JW_POWER_HOLD_SAVE_OUTCOME_UNSUPPORTED;
+    }
+    return JW_POWER_HOLD_SAVE_OUTCOME_STORAGE_ERROR;
+}
+
+static void jw__power_hold_save_start(jw_daemon_state *state, long long now) {
+    jw_power_hold_save *s = &state->power_hold_save;
+    jw_power_hold_save_request req = {
+        .state_bytes = state->power_hold_save_bytes,
+    };
+    long long deadline = 0;
+    if (!jw_power_hold_save_admit(s, &req, now, &deadline)) {
+        return;
+    }
+    /* RetroArch must begin writing while the flush and publish still fit. */
+    long long estimate = jw_power_hold_save_estimate_ms(&req);
+    long long start_by = deadline - (estimate - JW_POWER_HOLD_SAVE_SERIALIZE_MS);
+    jw_ra_client ra = jw_ra_client_default();
+    if (jw_ra_sync_save_send(&ra, &state->power_hold_save_request,
+                             JW_RA_GAME_SWITCHER_STATE_SLOT,
+                             state->power_hold_save_bytes, start_by) != JW_RA_OK ||
+        !jw_power_hold_save_tmp_path(state->power_hold_save_final,
+                                     state->power_hold_save_request.request_id,
+                                     state->power_hold_save_tmp,
+                                     sizeof(state->power_hold_save_tmp))) {
+        jw_log_warn("power-hold save: could not send the save request");
+        jw_ra_sync_save_close(&state->power_hold_save_request);
+        jw_power_hold_save_finish(s, JW_POWER_HOLD_SAVE_OUTCOME_UNSUPPORTED);
+        return;
+    }
+    state->power_hold_save_tmp_owned = true;
+    jw__power_hold_save_notice(state, "power-save-saving");
+    jw_log_info("power-hold save: saving bytes<=%llu estimate_ms=%lld window_ms=%lld",
+                state->power_hold_save_bytes, estimate, deadline - now);
+}
+
+static void jw__power_hold_save_poll(jw_daemon_state *state) {
+    jw_power_hold_save *s = &state->power_hold_save;
+    jw_ra_sync_save_reply reply;
+    jw_ra_result result = jw_ra_sync_save_poll(&state->power_hold_save_request, &reply);
+    if (result == JW_RA_TIMEOUT) {
+        return;
+    }
+    jw_ra_sync_save_close(&state->power_hold_save_request);
+    if (result == JW_RA_SOCKET_ERROR) {
+        jw_power_hold_save_finish(s, JW_POWER_HOLD_SAVE_OUTCOME_CHILD_EXITED);
+        return;
+    }
+    if (result != JW_RA_OK) {
+        jw_log_warn("power-hold save: malformed reply");
+        jw_power_hold_save_finish(s, JW_POWER_HOLD_SAVE_OUTCOME_STORAGE_ERROR);
+        return;
+    }
+    if (!reply.ready) {
+        jw_log_warn("power-hold save: RetroArch refused: %s", reply.error);
+        state->power_hold_save_tmp_owned = false;  /* RetroArch removed or never made it */
+        jw_power_hold_save_finish(s, jw__power_hold_save_error_outcome(reply.error));
+        return;
+    }
+    char error[PATH_MAX + 128];
+    jw_phs_publish_result published = jw_power_hold_save_publish(
+        state->power_hold_save_tmp, reply.tmp_path, state->power_hold_save_final,
+        state->power_hold_save_thumb, error, sizeof(error));
+    switch (published) {
+    case JW_PHS_PUBLISH_OK:
+        state->power_hold_save_tmp_owned = false;
+        state->power_hold_save_bytes = reply.bytes;
+        jw_power_hold_save_finish(s, JW_POWER_HOLD_SAVE_OUTCOME_SAVED);
+        return;
+    case JW_PHS_PUBLISH_DIR_SYNC_ERROR:
+        state->power_hold_save_tmp_owned = false;
+        jw_log_warn("power-hold save: %s", error);
+        jw_power_hold_save_finish(s, JW_POWER_HOLD_SAVE_OUTCOME_DURABILITY_UNCERTAIN);
+        return;
+    case JW_PHS_PUBLISH_REJECTED:
+    case JW_PHS_PUBLISH_THUMB_ERROR:
+    case JW_PHS_PUBLISH_RENAME_ERROR:
+        jw_log_warn("power-hold save: not published: %s", error);
+        jw_power_hold_save_finish(s, JW_POWER_HOLD_SAVE_OUTCOME_STORAGE_ERROR);
+        return;
+    }
+}
+
+/* Runs every shutdown pass before child teardown. Returns true while the save
+   phase must hold teardown back. Never blocks on RetroArch. */
+static bool jw__tick_power_hold_save(jw_daemon_state *state) {
+    jw_power_hold_save *s = &state->power_hold_save;
+    if (jw_power_hold_save_active(s)) {
+        if (g_shutdown_requested) {
+            jw_power_hold_save_abort(s, JW_POWER_HOLD_SAVE_OUTCOME_INTERRUPTED);
+        } else if (state->child_pid <= 0 || !jw__has_retroarch_session(state)) {
+            jw_power_hold_save_abort(s, JW_POWER_HOLD_SAVE_OUTCOME_CHILD_EXITED);
+        }
+    }
+    if (jw_power_hold_save_active(s)) {
+        long long now = jw__monotonic_ms();
+        switch (jw_power_hold_save_tick(s, now)) {
+        case JW_POWER_HOLD_SAVE_ADMIT_NOW:
+            jw__power_hold_save_start(state, now);
+            break;
+        case JW_POWER_HOLD_SAVE_WAIT:
+            if (s->phase == JW_POWER_HOLD_SAVE_AWAIT_RELEASE) {
+                jw__power_hold_save_release_notice(state, now);
+            } else if (s->phase == JW_POWER_HOLD_SAVE_SAVING) {
+                jw__power_hold_save_poll(state);
+            }
+            break;
+        case JW_POWER_HOLD_SAVE_SHUT_DOWN:
+            break;
+        }
+    }
+    if (jw_power_hold_save_active(s)) {
+        return true;
+    }
+    /* A late TMP_READY after a timeout is never read: the socket is gone. */
+    jw_ra_sync_save_close(&state->power_hold_save_request);
+    jw__power_hold_save_report(state);
+    return false;
+}
+
+/* Shutdown branch, saved outcome only: RetroArch's own clean exit flushes
+   SRAM, memory cards and the runtime config, which the 50 ms SIGTERM grace
+   never proved. Send QUIT once, the same way the in-game menu quits, and hold
+   the kill sequence back until RetroArch exits (reaped by the normal path,
+   writer barrier and game.finish unchanged) or the grace expires. Returns true
+   while the branch must wait. Never blocks on RetroArch. */
+static bool jw__power_hold_save_quit_grace(jw_daemon_state *state) {
+    if (state->power_hold_save.outcome != JW_POWER_HOLD_SAVE_OUTCOME_SAVED ||
+        !jw__has_retroarch_session(state) || state->power_hold_save_quit_expired) {
+        return false;
+    }
+    long long now = jw__monotonic_ms();
+    if (state->power_hold_save_quit_sent_ms == 0) {
+        jw_ra_client ra = jw_ra_client_default();
+        jw_ra_result rc = jw_ra_quit(&ra);
+        if (rc != JW_RA_OK) {
+            state->power_hold_save_quit_expired = true;
+            jw_log_warn("power-hold save: quit grace: QUIT failed (%s); killing",
+                        jw_ra_result_string(rc));
+            return false;
+        }
+        state->power_hold_save_quit_sent_ms = now;
+        state->power_hold_save_quit_deadline_ms = now + JW_POWER_HOLD_SAVE_QUIT_GRACE_MS;
+        jw_log_info("power-hold save: quit grace: sent QUIT to RetroArch pid=%d; allowing %d ms",
+                    (int)state->child_pid, JW_POWER_HOLD_SAVE_QUIT_GRACE_MS);
+        return true;
+    }
+    if (state->power_hold_save.key_down) {
+        /* A re-press starts the PMIC timer again: stop waiting for RetroArch's
+           own exit and use the measured teardown budget for the kill path. */
+        state->power_hold_save_quit_expired = true;
+        jw_log_warn("power-hold save: power key pressed during the quit grace (%lld ms in); killing",
+                    now - state->power_hold_save_quit_sent_ms);
+        return false;
+    }
+    if (now < state->power_hold_save_quit_deadline_ms) {
+        return true;
+    }
+    state->power_hold_save_quit_expired = true;
+    jw_log_warn("power-hold save: quit grace expired after %d ms; killing",
+                JW_POWER_HOLD_SAVE_QUIT_GRACE_MS);
+    return false;
+}
+
+/* After the writer group is gone: remove a temporary file nobody published. */
+static void jw__power_hold_save_cleanup_tmp(jw_daemon_state *state) {
+    if (!state->power_hold_save_tmp_owned) {
+        return;
+    }
+    state->power_hold_save_tmp_owned = false;
+    if (jw_power_hold_save_remove_tmp(state->power_hold_save_tmp) != 0) {
+        jw_log_warn("power-hold save: could not remove %s: %s",
+                    state->power_hold_save_tmp, strerror(errno));
+    }
+}
+
 static void jw__tick_auto_sleep(jw_daemon_state *state) {
     long long now = jw__monotonic_ms();
 
-    if (now >= state->autosleep_setting_next_ms) {
+    /* Settings polls touch the database (Auto Sleep with its 2 s busy wait), so
+       they run only between presses and never once shutdown has begun: the
+       hold path reads cached values. A skipped poll simply runs on release. */
+    if (now >= state->autosleep_setting_next_ms && !state->power_held &&
+        !state->shutdown_requested) {
         /* 0 means "re-read now" (start-up and wake); otherwise only a
            library.db write can have changed the setting. */
         bool forced = state->autosleep_setting_next_ms == 0;
         if (jw__db_file_changed(state->db_path, &state->autosleep_db_sig) || forced) {
             state->autosleep_timeout_s = jw__autosleep_read_timeout_s(state);
+            jw__power_hold_save_refresh_setting(state);
             state->power_hard_cut_desired_s = jw__power_hard_cut_read_s(state);
         }
         state->autosleep_setting_next_ms = now + JW_AUTOSLEEP_SETTING_POLL_MS;
@@ -11322,6 +11763,13 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
         jw_power_edge edge;
         while (jw_input_proxy_take_power_edge(&state->input_proxy, &edge)) {
             jw_input_proxy_cancel_menu(&state->input_proxy);
+            if (state->shutdown_requested) {
+                /* Already shutting down: edges only feed the save policy. A tap
+                   must not sleep and a new hold must not start anything. */
+                jw_power_hold_save_key_edge(&state->power_hold_save, edge.down,
+                                            (long long)edge.ms);
+                continue;
+            }
             if (edge.down) {
                 state->power_held = true;
                 state->power_down_ms = (long long)edge.ms;
@@ -11338,10 +11786,10 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
             long long held_ms = was_held ? (long long)edge.ms - state->power_down_ms : 0;
             state->power_held = false;
             if (was_held && held_ms >= JW_POWER_LONGPRESS_MS) {
-                state->power_sleep_armed = false;
-                jw_suspend_policy_long_press(&state->suspend_policy);
-                jw_log_info("power: long-press (%lldms) -> clean power off", held_ms);
-                jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF, "power-button");
+                /* Recognized late: the release is already queued. */
+                jw__power_long_press(state, state->power_down_ms, held_ms);
+                jw_power_hold_save_key_edge(&state->power_hold_save, false,
+                                            (long long)edge.ms);
                 return;
             }
             if (state->power_sleep_armed) {
@@ -11365,11 +11813,10 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
         /* Still held with no release edge yet: power off the moment the hold
            crosses the threshold rather than waiting for the release. */
         if (state->power_held && now - state->power_down_ms >= JW_POWER_LONGPRESS_MS) {
+            /* power_held only suppresses duplicates from here on; the save
+               policy tracks the physical key from the edges. */
             state->power_held = false;
-            state->power_sleep_armed = false;
-            jw_suspend_policy_long_press(&state->suspend_policy);
-            jw_log_info("power: long-press -> clean power off");
-            jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF, "power-button");
+            jw__power_long_press(state, state->power_down_ms, -1);
             return;
         }
     }
@@ -15868,6 +16315,11 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     }
 
     if (exited_kind == JW_CHILD_RETROARCH) {
+        if (state->power_hold_save_quit_sent_ms > 0 &&
+            !state->power_hold_save_quit_expired) {
+            jw_log_info("power-hold save: quit grace: RetroArch exited after %lld ms",
+                        jw__monotonic_ms() - state->power_hold_save_quit_sent_ms);
+        }
         jw__retroarch_session_finish(state, exited_pid, status);
         if (state->menu_pid > 0) {
             jw__terminate_menu_child(state, true);
@@ -16337,6 +16789,25 @@ int main(int argc, char *argv[]) {
     jw__perf_request_init(&state.perf_custom_request);
     jw_suspend_inhibitor_init(&state.suspend_inhibitor);
     jw_suspend_policy_init(&state.suspend_policy);
+    jw_power_hold_save_init(&state.power_hold_save);
+    jw_ra_sync_save_init(&state.power_hold_save_request);
+#ifndef PLATFORM_MLP1
+    /* Test hooks for scripts/power-hold-save-ipc-smoke.sh; host builds only. */
+    {
+        const char *cut = getenv("JAWAKA_TEST_POWER_HARD_CUT_S");
+        if (cut && cut[0]) {
+            state.test_power_hard_cut_s = atoi(cut);
+            jw_log_warn("power-hold save: TEST override: Force Off Hold reads as %d s",
+                        state.test_power_hard_cut_s);
+        }
+        const char *any = getenv("JAWAKA_TEST_POWER_HOLD_SAVE_ANY_PLATFORM");
+        if (any && strcmp(any, "1") == 0) {
+            state.test_power_hold_save_any_platform = true;
+            jw_log_warn("power-hold save: TEST override: platform gate open on %s",
+                        jw_platform_compiled_id());
+        }
+    }
+#endif
     jw_update_download_job_init(&state.update_download_job);
     jw_update_install_job_init(&state.update_install_job);
     jw_update_check_job_init(&state.update_check_job);
@@ -16681,6 +17152,7 @@ int main(int argc, char *argv[]) {
                 if (suspended > 2000) {
                     jw_log_info("resume: ~%lldms suspended, flushing input + resetting idle",
                                 suspended);
+                    state.last_resume_ms = mono;
                     jw_input_proxy_flush(&state.input_proxy);
                     jw_input_proxy_mark_activity(&state.input_proxy);
                     jw__reconcile_audio(&state, "resume-detect", true);
@@ -16703,12 +17175,20 @@ int main(int argc, char *argv[]) {
         }
         state.sigchld_seen = false;
         if (check_exits) jw__handle_child_exit(&state);
-        jw__tick_post_launch_resume(&state);
-        jw__tick_retroarch_warning(&state);
-        jw__tick_retroarch_stuck_quit(&state);
-        jw__tick_in_game_menu_prewarm(&state);
+        /* While RetroArch runs the synchronous save, nothing else talks to it:
+           a blocked request would stall this loop and every retry would queue
+           behind the save. */
+        bool power_hold_saving = jw_power_hold_save_active(&state.power_hold_save);
+        if (!power_hold_saving) {
+            jw__tick_post_launch_resume(&state);
+            jw__tick_retroarch_warning(&state);
+            jw__tick_retroarch_stuck_quit(&state);
+            jw__tick_in_game_menu_prewarm(&state);
+        }
         if (check_exits) jw__handle_menu_exit(&state);
-        jw__tick_advanced_shader(&state);
+        if (!power_hold_saving) {
+            jw__tick_advanced_shader(&state);
+        }
         if (check_exits || (!state.osd_ready && state.osd_ready_fd >= 0)) {
             jw__handle_osd_exit(&state);
         }
@@ -16736,7 +17216,9 @@ int main(int argc, char *argv[]) {
             state.cached_volume_percent = -1;
             jw__notify_launcher_levels(&state);
         }
-        jw__tick_retroarch_audio_reinit(&state);
+        if (!power_hold_saving) {
+            jw__tick_retroarch_audio_reinit(&state);
+        }
         jw__tick_rumble_reclaim(&state);
         jw__tick_suspend_inhibitors(&state);
         jw__tick_auto_sleep(&state);
@@ -16802,6 +17284,14 @@ int main(int argc, char *argv[]) {
             jw_svc_supervisor_tick(state.services);
         }
 
+        /* Save before power-button shutdown: hold teardown back while the
+           release wait or the save runs. Top-of-loop input, child reaping, and
+           service supervision above keep running. */
+        if (state.shutdown_requested && jw__tick_power_hold_save(&state)) {
+            jw__usleep(10000);
+            continue;
+        }
+
         if (state.shutdown_requested && state.child_pid <= 0 &&
             state.menu_pid <= 0) {
             break;
@@ -16829,6 +17319,10 @@ int main(int argc, char *argv[]) {
                                 (int)state.child_pid, (int)state.child_pgid);
                     (void)jw__signal_tracked_game_group(&state, SIGKILL);
                 }
+            } else if (jw__power_hold_save_quit_grace(&state)) {
+                /* QUIT sent after a saved power-hold outcome: RetroArch exits
+                   on its own and the normal path reaps it; the kill sequence
+                   below runs only once the grace has expired. */
             } else {
                 if (jw__child_kind_has_writer_barrier(state.child_kind)) {
                     (void)jw__signal_tracked_game_group(&state, SIGTERM);
@@ -16867,6 +17361,10 @@ int main(int argc, char *argv[]) {
             }
         }
     }
+
+    /* The game's writer group is gone: a temporary state that was never
+       published can go now. */
+    jw__power_hold_save_cleanup_tmp(&state);
 
     /* Quiesce, not a bare off: the worker is detached, so if a pattern is in
        flight when main returns the process dies mid-tick and the motor is

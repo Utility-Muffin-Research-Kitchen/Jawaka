@@ -1483,6 +1483,43 @@ int jw_db_get_setting(const char *db_path, const char *key,
     return 0;
 }
 
+int jw_db_read_setting_nowait(const char *db_path, const char *key,
+                              char *out, size_t out_size) {
+    if (!db_path || !db_path[0] || !key || !out || out_size == 0) return -1;
+    out[0] = '\0';
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return -1;
+    }
+    sqlite3_busy_timeout(db, 0);
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db, "SELECT value FROM settings WHERE key = ?;",
+                                -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        /* A database without a settings table has no value to report. */
+        bool no_table = rc == SQLITE_ERROR &&
+                        strstr(sqlite3_errmsg(db), "no such table") != NULL;
+        sqlite3_close(db);
+        return no_table ? 1 : -1;
+    }
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+    int result;
+    rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        const unsigned char *text = sqlite3_column_text(stmt, 0);
+        snprintf(out, out_size, "%s", text ? (const char *)text : "");
+        result = 0;
+    } else {
+        result = rc == SQLITE_DONE ? 1 : -1;
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return result;
+}
+
 int jw_db_get_settings(const char *db_path, jw_db_setting_query *queries,
                        int count) {
     if (!db_path || !queries || count < 0) return -1;
