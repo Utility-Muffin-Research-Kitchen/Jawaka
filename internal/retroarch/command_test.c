@@ -283,10 +283,145 @@ static void test_sync_save_loopback(void) {
     close(server);
 }
 
+/* ------------------------------------------------- boot-resume sync load */
+
+static void test_sync_load_parse(void) {
+    jw_ra_sync_load_reply r;
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SYNC ab12 OK 4456472\n", "ab12", &r) ==
+              JW_RA_OK && r.loaded && r.bytes == 4456472ull && r.error[0] == '\0',
+          "load: OK with bytes");
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SYNC ab12 ERROR UNSERIALIZE", "ab12", &r) ==
+              JW_RA_OK && !r.loaded && strcmp(r.error, "UNSERIALIZE") == 0,
+          "load: ERROR code");
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SYNC ab12 ERROR TOO_LARGE\r\n", "ab12", &r) ==
+              JW_RA_OK && strcmp(r.error, "TOO_LARGE") == 0,
+          "load: ERROR code with line ending");
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SYNC ab123 OK 5", "ab12", &r) ==
+              JW_RA_TIMEOUT, "load: longer id is someone else's");
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SYNC - ERROR BAD_ARGS", "ab12", &r) ==
+              JW_RA_TIMEOUT, "load: id-less BAD_ARGS is not ours");
+    check(jw_ra_parse_load_state_sync_reply("SAVE_STATE_SYNC ab12 ERROR LATE", "ab12", &r) ==
+              JW_RA_TIMEOUT, "load: the save's reply is not the load's");
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SLOT 99", "ab12", &r) ==
+              JW_RA_TIMEOUT, "load: the slot command's reply is not ours");
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SYNC ab12 OK 0", "ab12", &r) ==
+              JW_RA_PARSE_ERROR && !r.loaded, "load: zero bytes");
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SYNC ab12 OK", "ab12", &r) ==
+              JW_RA_PARSE_ERROR, "load: missing bytes");
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SYNC ab12 OK 12 extra", "ab12", &r) ==
+              JW_RA_PARSE_ERROR && !r.loaded, "load: trailing field");
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SYNC ab12 OK -3", "ab12", &r) ==
+              JW_RA_PARSE_ERROR, "load: negative bytes");
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SYNC ab12 ERROR bad code", "ab12", &r) ==
+              JW_RA_PARSE_ERROR, "load: malformed error code");
+    check(jw_ra_parse_load_state_sync_reply("LOAD_STATE_SYNC ab12 LOADED 12", "ab12", &r) ==
+              JW_RA_PARSE_ERROR, "load: unknown verb");
+}
+
+static int loopback_server(jw_ra_client *client) {
+    int server = socket(AF_INET, SOCK_DGRAM, 0);
+    check(server >= 0, "load loopback: server socket");
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    check(bind(server, (struct sockaddr *)&addr, sizeof(addr)) == 0, "load loopback: bind");
+    socklen_t len = sizeof(addr);
+    check(getsockname(server, (struct sockaddr *)&addr, &len) == 0, "load loopback: name");
+    client->host = "127.0.0.1";
+    client->port = ntohs(addr.sin_port);
+    client->timeout_ms = 500;
+    return server;
+}
+
+/* The real send/poll path: the caller's id on the wire, other ids and other
+   source ports ignored, and a RetroArch that is gone reported as such. */
+static void test_sync_load_loopback(void) {
+    jw_ra_client client;
+    int server = loopback_server(&client);
+
+    jw_ra_sync_save load;
+    jw_ra_sync_save_init(&load);
+    jw_ra_sync_load_reply reply;
+    check(jw_ra_load_state_sync_poll(&load, &reply) == JW_RA_SOCKET_ERROR,
+          "load loopback: poll closed");
+    check(jw_ra_load_state_sync(&client, &load, "bad id", 99) == JW_RA_PARSE_ERROR,
+          "load loopback: id with a space refused");
+    check(jw_ra_load_state_sync(&client, &load, "0123456789abcdef0", 99) == JW_RA_PARSE_ERROR,
+          "load loopback: overlong id refused");
+    check(jw_ra_load_state_sync(&client, &load, "a1b2c3d4e5f6", -1) == JW_RA_PARSE_ERROR,
+          "load loopback: negative slot refused");
+    check(load.fd == -1, "load loopback: nothing sent for refused arguments");
+    check(jw_ra_load_state_sync(&client, &load, "a1b2c3d4e5f6", 99) == JW_RA_OK,
+          "load loopback: send");
+
+    char buf[256];
+    struct sockaddr_in peer;
+    socklen_t peer_len = sizeof(peer);
+    ssize_t n = recvfrom(server, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&peer, &peer_len);
+    check(n > 0, "load loopback: server received");
+    buf[n] = '\0';
+    check(strcmp(buf, "LOAD_STATE_SYNC a1b2c3d4e5f6 99") == 0,
+          "load loopback: exact command line");
+    check(jw_ra_load_state_sync_poll(&load, &reply) == JW_RA_TIMEOUT, "load loopback: nothing yet");
+
+    const char *other = "LOAD_STATE_SYNC ffff OK 12";
+    sendto(server, other, strlen(other), 0, (struct sockaddr *)&peer, peer_len);
+    int spoof = socket(AF_INET, SOCK_DGRAM, 0);
+    const char *spoofed = "LOAD_STATE_SYNC a1b2c3d4e5f6 OK 12";
+    sendto(spoof, spoofed, strlen(spoofed), 0, (struct sockaddr *)&peer, peer_len);
+    close(spoof);
+    usleep(20000);
+    check(jw_ra_load_state_sync_poll(&load, &reply) == JW_RA_TIMEOUT,
+          "load loopback: other id and other source ignored");
+
+    const char *good = "LOAD_STATE_SYNC a1b2c3d4e5f6 OK 4456472";
+    sendto(server, good, strlen(good), 0, (struct sockaddr *)&peer, peer_len);
+    usleep(20000);
+    check(jw_ra_load_state_sync_poll(&load, &reply) == JW_RA_OK && reply.loaded &&
+              reply.bytes == 4456472ull, "load loopback: matching OK");
+    jw_ra_sync_save_close(&load);
+
+    /* Probe: a RetroArch with the command refuses slot -1 by id. */
+    int pid = fork();
+    check(pid >= 0, "load loopback: fork");
+    if (pid == 0) {
+        peer_len = sizeof(peer);
+        n = recvfrom(server, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&peer, &peer_len);
+        if (n > 0) {
+            buf[n] = '\0';
+            const char *answer = strcmp(buf, "LOAD_STATE_SYNC a1b2c3d4e5f6 -1") == 0
+                ? "LOAD_STATE_SYNC a1b2c3d4e5f6 ERROR BAD_ARGS" : "WRONG";
+            sendto(server, answer, strlen(answer), 0, (struct sockaddr *)&peer, peer_len);
+        }
+        _exit(0);
+    }
+    check(jw_ra_load_state_sync_probe(&client, "a1b2c3d4e5f6") == JW_RA_OK,
+          "load loopback: probe answered with BAD_ARGS");
+    waitpid(pid, NULL, 0);
+
+    /* An older RetroArch says nothing at all. */
+    client.timeout_ms = 100;
+    check(jw_ra_load_state_sync_probe(&client, "a1b2c3d4e5f6") == JW_RA_TIMEOUT,
+          "load loopback: silent RetroArch times out");
+    close(server);
+
+    /* RetroArch gone: the poll on a connected socket sees the refusal. */
+    check(jw_ra_load_state_sync(&client, &load, "a1b2c3d4e5f6", 99) == JW_RA_OK,
+          "load loopback: send to a closed port");
+    usleep(20000);
+    jw_ra_result gone = jw_ra_load_state_sync_poll(&load, &reply);
+    check(gone == JW_RA_SOCKET_ERROR || gone == JW_RA_TIMEOUT,
+          "load loopback: closed port is never a reply");
+    jw_ra_sync_save_close(&load);
+}
+
 int main(void) {
     test_state_save_info_parse();
     test_sync_save_parse();
     test_sync_save_loopback();
+    test_sync_load_parse();
+    test_sync_load_loopback();
     expect_supported("SET_SHADER /tmp/example.glslp");
     expect_supported("SET_SHADER\t/tmp/example.glslp");
     expect_supported("GET_CONFIG_PARAM video_shader");
