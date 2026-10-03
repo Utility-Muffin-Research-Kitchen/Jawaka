@@ -8,6 +8,7 @@
 #include "internal/platform/leaf_version.h"
 #include "internal/platform/paths.h"
 #include "internal/platform/platform_id.h"
+#include "internal/power/power_hard_cut.h"
 #include "internal/scrape/scrape_catalog.h"
 #include "internal/settings/appearance.h"
 #include "internal/settings/timezones.h"
@@ -139,6 +140,7 @@ typedef enum {
     JW_SETTING_COLOR_SCHEME_INDEX,
     JW_SETTING_STARTUP_TAB_INDEX,
     JW_SETTING_AUTO_SLEEP_SECONDS,
+    JW_SETTING_POWER_HARD_CUT_SECONDS,
     JW_SETTING_BOOT_SPLASH_ENABLED,
     JW_SETTING_SCREENSHOTS_ENABLED,
     JW_SETTING_RECORDING_ENABLED,
@@ -196,6 +198,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_COLOR_SCHEME_INDEX] = "color_scheme_index",
     [JW_SETTING_STARTUP_TAB_INDEX] = "startup_tab_index",
     [JW_SETTING_AUTO_SLEEP_SECONDS] = "auto_sleep_seconds",
+    [JW_SETTING_POWER_HARD_CUT_SECONDS] = JW_POWER_HARD_CUT_SETTING_KEY,
     [JW_SETTING_BOOT_SPLASH_ENABLED] = "boot_splash_enabled",
     [JW_SETTING_SCREENSHOTS_ENABLED] = "screenshots_enabled",
     [JW_SETTING_RECORDING_ENABLED]   = "recording_enabled",
@@ -442,6 +445,26 @@ static const int   kAutoSleepSeconds[] = {     0,       15,       30,       45, 
 #define JW_AUTO_SLEEP_DEFAULT 0   /* Never, by default (index into the tables above).
                                      Deep-suspend wake is not yet reliable, so
                                      auto-sleep stays opt-in until that is solid. */
+
+/* Force Off Hold options for Settings > System: how long the power button
+   must stay down before the PMIC cuts power on its own. Persisted as
+   "power_hard_cut_seconds" (the value, not the index); the daemon applies it
+   to the RK817 on the MLP1 and the row reads "Unavailable" everywhere else.
+   The four values are the four the PMIC offers (internal/power/power_hard_cut.h). */
+#ifdef PLATFORM_MLP1   /* only the cycler draws these; elsewhere the row is "Unavailable" */
+static const char *const kForceOffHoldLabels[JW_POWER_HARD_CUT_OPTION_COUNT] = {
+    JW_UI("6 sec"), JW_UI("8 sec"), JW_UI("10 sec"), JW_UI("12 sec")
+};
+#define JW_FORCE_OFF_HOLD_COUNT JW_POWER_HARD_CUT_OPTION_COUNT
+#endif
+
+/* Index of a hold time in the tables above; a missing or invalid stored value
+   reads as the 10 s default, so the row always shows a real choice. */
+static int jw__force_off_hold_index(const char *stored) {
+    int seconds = jw_power_hard_cut_parse(stored);
+    int bits = jw_power_hard_cut_bits(seconds);
+    return bits >= 0 ? bits : jw_power_hard_cut_bits(JW_POWER_HARD_CUT_DEFAULT_S);
+}
 
 /* Panel refresh rates offered in Settings > Display & Sound, low to high. The
    modeline writer scales the dot clock to any rate (782842 * hz / 1e6), so this
@@ -1585,6 +1608,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                              &ui->home_tab_visible);
     ui->home_tabs_grabbed = false;
     ui->auto_sleep_index  = JW_AUTO_SLEEP_DEFAULT;
+    ui->force_off_hold_index = jw__force_off_hold_index(NULL);
     ui->boot_splash_enabled = true;
     ui->boot_splash_supported = false;
     ui->screenshots_enabled = false;   /* opt-in */
@@ -1788,6 +1812,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                     if (kAutoSleepSeconds[i] == seconds) { ui->auto_sleep_index = i; break; }
                 }
             }
+            if (jw__setting_has(values, found, JW_SETTING_POWER_HARD_CUT_SECONDS))
+                ui->force_off_hold_index =
+                    jw__force_off_hold_index(values[JW_SETTING_POWER_HARD_CUT_SECONDS]);
             if (jw__setting_has(values, found, JW_SETTING_BOOT_SPLASH_ENABLED))
                 ui->boot_splash_enabled = (strcmp(values[JW_SETTING_BOOT_SPLASH_ENABLED], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SCREENSHOTS_ENABLED))
@@ -5327,6 +5354,7 @@ static int jw__system_rows(const jw_settings_ui *ui, jw_system_row_kind *out) {
     if (ui->language_count > 1) out[n++] = JW_SYSTEM_ROW_LANGUAGE;
     out[n++] = JW_SYSTEM_ROW_TIMEZONE;
     out[n++] = JW_SYSTEM_ROW_AUTO_SLEEP;
+    out[n++] = JW_SYSTEM_ROW_FORCE_OFF_HOLD;
     out[n++] = JW_SYSTEM_ROW_BOOT_SPLASH;
     out[n++] = JW_SYSTEM_ROW_SD_CARDS;
     if (ui->services_count > 0) out[n++] = JW_SYSTEM_ROW_SERVICES;
@@ -5371,6 +5399,21 @@ static void jw__render_system(const jw_settings_ui *ui, int x, int y, int w, int
                       ? ui->auto_sleep_index : JW_AUTO_SLEEP_DEFAULT;
             jw__render_list_row(&ui->system_list, x, ly, w, row,
                                 "Auto Sleep", kAutoSleepLabels[idx], true);
+            break;
+        }
+        case JW_SYSTEM_ROW_FORCE_OFF_HOLD: {
+#ifdef PLATFORM_MLP1
+            int idx = (ui->force_off_hold_index >= 0 &&
+                       ui->force_off_hold_index < JW_FORCE_OFF_HOLD_COUNT)
+                      ? ui->force_off_hold_index : jw__force_off_hold_index(NULL);
+            jw__render_list_row(&ui->system_list, x, ly, w, row,
+                                "Force Off Hold", kForceOffHoldLabels[idx], true);
+#else
+            /* Only the MLP1's PMIC exposes the hold time; the row stays so the
+               page reads the same on every device, like Boot Splash. */
+            jw__render_list_row(&ui->system_list, x, ly, w, row,
+                                "Force Off Hold", "Unavailable", false);
+#endif
             break;
         }
         case JW_SYSTEM_ROW_BOOT_SPLASH: {
@@ -8856,6 +8899,22 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     ui->auto_sleep_index = next;
                     /* Persist the seconds value (the daemon reads it directly). */
                     jw__persist_int(ui, "auto_sleep_seconds", kAutoSleepSeconds[next]);
+                } else if (kind == JW_SYSTEM_ROW_FORCE_OFF_HOLD) {
+#ifdef PLATFORM_MLP1
+                    int next = (ui->force_off_hold_index + dir + JW_FORCE_OFF_HOLD_COUNT)
+                               % JW_FORCE_OFF_HOLD_COUNT;
+                    int seconds = jw_power_hard_cut_options_s[next];
+                    ui->force_off_hold_index = next;
+                    /* Seconds, not the index: the daemon applies it to the PMIC
+                       within its settings poll, no IPC needed. */
+                    jw__persist_int(ui, JW_POWER_HARD_CUT_SETTING_KEY, seconds);
+                    if (status_buf && status_size > 0)
+                        snprintf(status_buf, (size_t)status_size,
+                                 T("Hold the power button %d seconds to force off"),
+                                 seconds);
+#else
+                    (void)dir;   /* Unavailable here: nothing to cycle or persist */
+#endif
                 } else if (kind == JW_SYSTEM_ROW_BOOT_SPLASH) {
                     (void)dir;
                     jw__set_boot_splash(ui, !ui->boot_splash_enabled,
