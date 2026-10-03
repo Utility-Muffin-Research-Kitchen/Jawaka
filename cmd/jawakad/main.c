@@ -11447,13 +11447,19 @@ static void jw__power_long_press(jw_daemon_state *state, long long press_ms,
         !jw__has_retroarch_session(state) || g_shutdown_requested) {
         return;
     }
-    state->power_hold_save_started_ms = jw__monotonic_ms();
+    /* The PMIC cut to plan against is the Force Off Hold the daemon applied
+       (0 when unsupported or not applied -> the stock 6 s cut, which leaves no
+       release wait at all). */
+    int hold_s = state->power_hard_cut_effective_s;
+    long long cut_ms = jw_power_hold_save_cut_ms_for_hold_s(hold_s);
+    long long now = jw__monotonic_ms();
+    state->power_hold_save_started_ms = now;
     bool eligible = jw__power_hold_save_eligible(state);
-    if (jw_power_hold_save_long_press(&state->power_hold_save, press_ms, eligible,
-                                      state->last_resume_ms) ==
+    if (jw_power_hold_save_long_press(&state->power_hold_save, press_ms, now, cut_ms,
+                                      eligible, state->last_resume_ms) ==
         JW_POWER_HOLD_SAVE_WAIT) {
-        jw_log_info("power-hold save: waiting for release (release by +%dms)",
-                    JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS);
+        jw_log_info("power-hold save: waiting for release (release by +%lldms; force-off hold %ds, cut %lldms)",
+                    state->power_hold_save.release_offset_ms, hold_s, cut_ms);
         jw__power_hold_save_notice(state, "power-save-release");
     } else {
         jw__power_hold_save_report(state);

@@ -36,8 +36,21 @@ static jw_power_hold_save_decision jw__phs_latch(jw_power_hold_save *s,
     return JW_POWER_HOLD_SAVE_SHUT_DOWN;
 }
 
+long long jw_power_hold_save_cut_ms_for_hold_s(int hold_s) {
+    if (hold_s <= 0) {
+        return JW_POWER_HOLD_SAVE_STOCK_CUT_MS;
+    }
+    return (long long)hold_s * 1000 - JW_POWER_HOLD_SAVE_CUT_EARLY_MS;
+}
+
+long long jw_power_hold_save_release_offset_ms(long long cut_ms) {
+    return cut_ms - JW_POWER_HOLD_SAVE_TEARDOWN_RESERVE_MS - JW_POWER_HOLD_SAVE_MARGIN_MS;
+}
+
 jw_power_hold_save_decision jw_power_hold_save_long_press(jw_power_hold_save *s,
                                                          long long press_ms,
+                                                         long long now_ms,
+                                                         long long cut_ms,
                                                          bool eligible,
                                                          long long last_resume_ms) {
     if (!s) {
@@ -55,6 +68,15 @@ jw_power_hold_save_decision jw_power_hold_save_long_press(jw_power_hold_save *s,
     }
     if (press_ms <= 0 || (last_resume_ms > 0 && press_ms < last_resume_ms)) {
         return jw__phs_latch(s, JW_POWER_HOLD_SAVE_OUTCOME_UNSUPPORTED);
+    }
+    s->cut_ms = cut_ms > 0 ? cut_ms : JW_POWER_HOLD_SAVE_STOCK_CUT_MS;
+    s->release_offset_ms = jw_power_hold_save_release_offset_ms(s->cut_ms);
+    s->release_boundary_ms = press_ms + s->release_offset_ms;
+    if (s->release_offset_ms <= 0 || now_ms >= s->release_boundary_ms) {
+        /* With this cut the teardown reserve already eats the time a release
+           could be waited for (the stock 6 s cut leaves 1.1 s, inside the
+           2.0 s long press): decline before showing a prompt. */
+        return jw__phs_latch(s, JW_POWER_HOLD_SAVE_OUTCOME_BUDGET_INSUFFICIENT);
     }
     /* The key is down since press_ms. When the release edge was already
        queued (a released hold recognized late), the caller feeds it through
@@ -83,7 +105,7 @@ void jw_power_hold_save_key_edge(jw_power_hold_save *s, bool down, long long edg
             (void)jw__phs_latch(s, JW_POWER_HOLD_SAVE_OUTCOME_UNSUPPORTED);
             return;
         }
-        if (edge_ms > s->press_ms + JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS) {
+        if (edge_ms > s->release_boundary_ms) {
             (void)jw__phs_latch(s, JW_POWER_HOLD_SAVE_OUTCOME_STILL_HELD);
             return;
         }
@@ -103,7 +125,7 @@ long long jw_power_hold_save_effective_deadline_ms(const jw_power_hold_save *s) 
     }
     long long deadline = s->window_deadline_ms;
     if (s->key_down && s->repress_ms > 0) {
-        long long held_cap = s->repress_ms + JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS;
+        long long held_cap = s->repress_ms + s->release_offset_ms;
         if (held_cap < deadline) {
             deadline = held_cap;
         }
@@ -121,7 +143,7 @@ jw_power_hold_save_decision jw_power_hold_save_tick(jw_power_hold_save *s,
     case JW_POWER_HOLD_SAVE_DONE:
         return JW_POWER_HOLD_SAVE_SHUT_DOWN;
     case JW_POWER_HOLD_SAVE_AWAIT_RELEASE:
-        if (now_ms >= s->press_ms + JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS) {
+        if (now_ms >= s->release_boundary_ms) {
             return jw__phs_latch(s, JW_POWER_HOLD_SAVE_OUTCOME_STILL_HELD);
         }
         return JW_POWER_HOLD_SAVE_WAIT;

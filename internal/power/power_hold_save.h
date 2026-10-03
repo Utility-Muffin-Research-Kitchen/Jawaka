@@ -17,16 +17,17 @@
    acts on the returned decisions. Constants come from the MLP1 Step 0
    measurements (umrk-workspace plans/Jawaka/save-state-on-power-hold.md). */
 
-/* PMIC hard cut measured 5.7-6.0 s after key-down (register says 6 s). */
-#define JW_POWER_HOLD_SAVE_PMIC_CUT_MS          5700
-/* Long press to kernel power-off entry, worst of four measured runs. */
-#define JW_POWER_HOLD_SAVE_TEARDOWN_RESERVE_MS  2150
+/* PMIC hard cut when nothing has applied a Force Off Hold: U-Boot's 6 s,
+   measured 5.7-6.0 s after key-down. */
+#define JW_POWER_HOLD_SAVE_STOCK_CUT_MS         5700
+/* The measured cut came up to 0.3 s before the nominal hold (6 s: 5.7-6.0,
+   10 s: 9.92-9.99, 12 s: 11.89-11.96; 2026-09-16 and 2026-10-03). */
+#define JW_POWER_HOLD_SAVE_CUT_EARLY_MS         300
+/* Shutdown request to kernel power-off entry on the supervisor path, worst of
+   four runs on 2026-09-29 (3.67-4.08 s). */
+#define JW_POWER_HOLD_SAVE_TEARDOWN_RESERVE_MS  4100
 /* Kernel power-off entry to the physical cut is unmeasured. */
 #define JW_POWER_HOLD_SAVE_MARGIN_MS            500
-/* A release must land within this long of key-down for a save to open. */
-#define JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS \
-    (JW_POWER_HOLD_SAVE_PMIC_CUT_MS - JW_POWER_HOLD_SAVE_TEARDOWN_RESERVE_MS - \
-     JW_POWER_HOLD_SAVE_MARGIN_MS)
 /* Software cap on the whole save once released. */
 #define JW_POWER_HOLD_SAVE_WINDOW_MS            8000
 /* Conservative flush rate for both MLP1 cards (measured worst 51 and 67). */
@@ -65,6 +66,9 @@ typedef struct {
     jw_power_hold_save_phase phase;
     jw_power_hold_save_outcome outcome;
     long long press_ms;          /* key-down that armed the attempt */
+    long long cut_ms;            /* PMIC cut planned against, from key-down */
+    long long release_offset_ms; /* cut - teardown reserve - margin */
+    long long release_boundary_ms; /* press_ms + release_offset_ms */
     long long release_ms;        /* first qualifying release */
     long long window_deadline_ms;
     bool key_down;               /* physical key state from edges */
@@ -79,14 +83,29 @@ typedef struct {
 
 void jw_power_hold_save_init(jw_power_hold_save *s);
 
-/* The long press was recognized. `eligible` covers the setting, a Leaf-managed
-   RetroArch game with state support, a safe namespace, writable storage, and
-   the synchronous-save capability. `last_resume_ms` is the monotonic time of
-   the latest resume from suspend (0 if none): a key-down before it spans
-   suspend and is not timing evidence. Returns WAIT to show the release prompt
-   or SHUT_DOWN when no attempt starts. Duplicate calls keep the first attempt. */
+/* PMIC cut to plan against for a Force Off Hold of `hold_s` seconds (the
+   daemon's applied value); 0 or less means unknown or not applied and yields
+   the stock cut. */
+long long jw_power_hold_save_cut_ms_for_hold_s(int hold_s);
+
+/* How long after key-down a release must land for a save to open, given the
+   cut: cut - teardown reserve - margin. At or below the long press (2.0 s) no
+   release wait fits. */
+long long jw_power_hold_save_release_offset_ms(long long cut_ms);
+
+/* The long press was recognized at `now_ms`. `cut_ms` is the PMIC cut planned
+   against (see jw_power_hold_save_cut_ms_for_hold_s). `eligible` covers the
+   setting, a Leaf-managed RetroArch game with state support, a safe namespace,
+   writable storage, and the synchronous-save capability. `last_resume_ms` is
+   the monotonic time of the latest resume from suspend (0 if none): a key-down
+   before it spans suspend and is not timing evidence. Returns WAIT to show the
+   release prompt, or SHUT_DOWN when no attempt starts, including when the
+   release boundary has already passed at `now_ms` (budget-insufficient).
+   Duplicate calls keep the first attempt. */
 jw_power_hold_save_decision jw_power_hold_save_long_press(jw_power_hold_save *s,
                                                          long long press_ms,
+                                                         long long now_ms,
+                                                         long long cut_ms,
                                                          bool eligible,
                                                          long long last_resume_ms);
 

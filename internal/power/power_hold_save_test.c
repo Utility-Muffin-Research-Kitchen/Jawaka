@@ -6,14 +6,17 @@
 #define MIB (1024ull * 1024ull)
 #define PRESS 100000LL
 #define LONG_PRESS (PRESS + 2000)
-#define BOUNDARY (PRESS + JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS)
+/* Force Off Hold 10 s: cut 9700, release offset 9700 - 4100 - 500. */
+#define CUT jw_power_hold_save_cut_ms_for_hold_s(10)
+#define OFFSET jw_power_hold_save_release_offset_ms(CUT)
+#define BOUNDARY (PRESS + OFFSET)
 
 static const jw_power_hold_save_request ps_state = { "pcsx_rearmed", 4456472ull };
 static const jw_power_hold_save_request saturn_state = { "yabasanshiro", 9068872ull };
 
 static void armed(jw_power_hold_save *s) {
     jw_power_hold_save_init(s);
-    assert(jw_power_hold_save_long_press(s, PRESS, true, 0) == JW_POWER_HOLD_SAVE_WAIT);
+    assert(jw_power_hold_save_long_press(s, PRESS, LONG_PRESS, CUT, true, 0) == JW_POWER_HOLD_SAVE_WAIT);
     assert(s->phase == JW_POWER_HOLD_SAVE_AWAIT_RELEASE && s->key_down);
 }
 
@@ -26,8 +29,15 @@ static void released(jw_power_hold_save *s, long long release_ms) {
 }
 
 static void test_constants(void) {
-    /* 5.7 s cut - 2.15 s teardown - 0.5 s margin. */
-    assert(JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS == 3050);
+    /* Cuts land up to 0.3 s before the nominal hold; unknown means stock. */
+    assert(jw_power_hold_save_cut_ms_for_hold_s(10) == 9700);
+    assert(jw_power_hold_save_cut_ms_for_hold_s(12) == 11700);
+    assert(jw_power_hold_save_cut_ms_for_hold_s(6) == 5700);
+    assert(jw_power_hold_save_cut_ms_for_hold_s(0) == JW_POWER_HOLD_SAVE_STOCK_CUT_MS);
+    assert(jw_power_hold_save_cut_ms_for_hold_s(-1) == JW_POWER_HOLD_SAVE_STOCK_CUT_MS);
+    /* 9.7 s cut - 4.1 s teardown - 0.5 s margin; the stock cut leaves 1.1 s. */
+    assert(OFFSET == 5100);
+    assert(jw_power_hold_save_release_offset_ms(JW_POWER_HOLD_SAVE_STOCK_CUT_MS) == 1100);
     assert(strcmp(jw_power_hold_save_outcome_name(
                       JW_POWER_HOLD_SAVE_OUTCOME_BUDGET_INSUFFICIENT),
                   "budget-insufficient") == 0);
@@ -42,7 +52,7 @@ static void test_ineligible_and_suspend(void) {
     jw_power_hold_save s;
     jw_power_hold_save_init(&s);
     assert(jw_power_hold_save_tick(&s, PRESS) == JW_POWER_HOLD_SAVE_SHUT_DOWN);
-    assert(jw_power_hold_save_long_press(&s, PRESS, false, 0) ==
+    assert(jw_power_hold_save_long_press(&s, PRESS, LONG_PRESS, CUT, false, 0) ==
            JW_POWER_HOLD_SAVE_SHUT_DOWN);
     assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_UNSUPPORTED);
     /* A later release cannot revive a latched attempt. */
@@ -51,19 +61,49 @@ static void test_ineligible_and_suspend(void) {
 
     /* Key-down before the last resume spans suspend: not timing evidence. */
     jw_power_hold_save_init(&s);
-    assert(jw_power_hold_save_long_press(&s, PRESS, true, PRESS + 1) ==
+    assert(jw_power_hold_save_long_press(&s, PRESS, LONG_PRESS, CUT, true, PRESS + 1) ==
            JW_POWER_HOLD_SAVE_SHUT_DOWN);
     assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_UNSUPPORTED);
     jw_power_hold_save_init(&s);
-    assert(jw_power_hold_save_long_press(&s, PRESS, true, PRESS - 1) ==
+    assert(jw_power_hold_save_long_press(&s, PRESS, LONG_PRESS, CUT, true, PRESS - 1) ==
            JW_POWER_HOLD_SAVE_WAIT);
+}
+
+static void test_cut_decides_the_wait(void) {
+    jw_power_hold_save s;
+    /* Stock 6 s cut: the boundary (press + 1.1 s) is already behind the 2.0 s
+       long press, so the attempt declines at once and no prompt is shown. */
+    jw_power_hold_save_init(&s);
+    assert(jw_power_hold_save_long_press(&s, PRESS, LONG_PRESS,
+                                         JW_POWER_HOLD_SAVE_STOCK_CUT_MS, true, 0) ==
+           JW_POWER_HOLD_SAVE_SHUT_DOWN);
+    assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_BUDGET_INSUFFICIENT);
+    /* An unknown cut (0) is treated as stock. */
+    jw_power_hold_save_init(&s);
+    assert(jw_power_hold_save_long_press(&s, PRESS, LONG_PRESS, 0, true, 0) ==
+           JW_POWER_HOLD_SAVE_SHUT_DOWN);
+    assert(s.cut_ms == JW_POWER_HOLD_SAVE_STOCK_CUT_MS);
+    /* 8 s hold: 7.7 s cut, boundary at press + 3.1 s, 1.1 s of wait. */
+    jw_power_hold_save_init(&s);
+    long long cut8 = jw_power_hold_save_cut_ms_for_hold_s(8);
+    assert(jw_power_hold_save_long_press(&s, PRESS, LONG_PRESS, cut8, true, 0) ==
+           JW_POWER_HOLD_SAVE_WAIT);
+    assert(s.release_boundary_ms == PRESS + 3100);
+    assert(jw_power_hold_save_tick(&s, PRESS + 3099) == JW_POWER_HOLD_SAVE_WAIT);
+    assert(jw_power_hold_save_tick(&s, PRESS + 3100) == JW_POWER_HOLD_SAVE_SHUT_DOWN);
+    assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_STILL_HELD);
+    /* Recognized late, after the boundary: no prompt either. */
+    jw_power_hold_save_init(&s);
+    assert(jw_power_hold_save_long_press(&s, PRESS, PRESS + 3100, cut8, true, 0) ==
+           JW_POWER_HOLD_SAVE_SHUT_DOWN);
+    assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_BUDGET_INSUFFICIENT);
 }
 
 static void test_never_saves_while_held(void) {
     jw_power_hold_save s;
     armed(&s);
     /* Duplicate hold ticks keep the first attempt. */
-    assert(jw_power_hold_save_long_press(&s, PRESS + 50, true, 0) ==
+    assert(jw_power_hold_save_long_press(&s, PRESS + 50, LONG_PRESS + 50, CUT, true, 0) ==
            JW_POWER_HOLD_SAVE_WAIT);
     assert(s.press_ms == PRESS);
     assert(jw_power_hold_save_tick(&s, LONG_PRESS) == JW_POWER_HOLD_SAVE_WAIT);
@@ -191,11 +231,11 @@ static void test_repress_caps_the_window(void) {
     released(&s, release);
     assert(jw_power_hold_save_admit(&s, &saturn_state, release + 50, NULL));
 
-    /* Re-press 1 s after release: fresh PMIC timer, cap at repress + 3050. */
+    /* Re-press 1 s after release: fresh PMIC timer, cap at repress + offset. */
     long long repress = release + 1000;
     jw_power_hold_save_key_edge(&s, true, repress);
     assert(jw_power_hold_save_effective_deadline_ms(&s) ==
-           repress + JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS);
+           repress + OFFSET);
 
     /* Releasing again removes that cap but never extends past the window. */
     jw_power_hold_save_key_edge(&s, false, repress + 400);
@@ -218,7 +258,7 @@ static void test_repress_caps_the_window(void) {
     released(&s, release);
     assert(jw_power_hold_save_admit(&s, &ps_state, release, NULL));
     jw_power_hold_save_key_edge(&s, true, release + 200);
-    long long cap = release + 200 + JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS;
+    long long cap = release + 200 + OFFSET;
     assert(jw_power_hold_save_tick(&s, cap - 1) == JW_POWER_HOLD_SAVE_WAIT);
     assert(jw_power_hold_save_tick(&s, cap) == JW_POWER_HOLD_SAVE_SHUT_DOWN);
     assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_TIMEOUT);
@@ -226,7 +266,7 @@ static void test_repress_caps_the_window(void) {
     /* A re-press before admission shrinks the budget admission sees. */
     released(&s, release);
     jw_power_hold_save_key_edge(&s, true, release + 100);
-    long long held_cap = release + 100 + JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS;
+    long long held_cap = release + 100 + OFFSET;
     assert(!jw_power_hold_save_admit(&s, &saturn_state, held_cap - 1279, NULL));
     assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_BUDGET_INSUFFICIENT);
 }
@@ -264,6 +304,7 @@ static void test_abort(void) {
 int main(void) {
     test_constants();
     test_ineligible_and_suspend();
+    test_cut_decides_the_wait();
     test_never_saves_while_held();
     test_release_timestamps();
     test_estimates();
