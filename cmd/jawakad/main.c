@@ -472,6 +472,11 @@ typedef struct {
     char power_hold_save_tmp[PATH_MAX];         /* pinned temporary path */
     bool power_hold_save_tmp_owned;             /* sent, not yet published or removed */
     bool power_hold_save_reported;              /* outcome logged */
+    /* Saved outcome only: QUIT sent at this time (0 = not sent) and the bound
+       on waiting for RetroArch's own exit before the kill sequence. */
+    long long power_hold_save_quit_sent_ms;
+    long long power_hold_save_quit_deadline_ms;
+    bool power_hold_save_quit_expired;          /* grace over or QUIT failed: kill */
     jw_suspend_inhibitor suspend_inhibitor;
     jw_suspend_policy    suspend_policy;
     int       hdmi_last_connected;        /* -1 unknown, 0/1; for hotplug edge detection */
@@ -11587,6 +11592,42 @@ static bool jw__tick_power_hold_save(jw_daemon_state *state) {
     return false;
 }
 
+/* Shutdown branch, saved outcome only: RetroArch's own clean exit flushes
+   SRAM, memory cards and the runtime config, which the 50 ms SIGTERM grace
+   never proved. Send QUIT once, the same way the in-game menu quits, and hold
+   the kill sequence back until RetroArch exits (reaped by the normal path,
+   writer barrier and game.finish unchanged) or the grace expires. Returns true
+   while the branch must wait. Never blocks on RetroArch. */
+static bool jw__power_hold_save_quit_grace(jw_daemon_state *state) {
+    if (state->power_hold_save.outcome != JW_POWER_HOLD_SAVE_OUTCOME_SAVED ||
+        !jw__has_retroarch_session(state) || state->power_hold_save_quit_expired) {
+        return false;
+    }
+    long long now = jw__monotonic_ms();
+    if (state->power_hold_save_quit_sent_ms == 0) {
+        jw_ra_client ra = jw_ra_client_default();
+        jw_ra_result rc = jw_ra_quit(&ra);
+        if (rc != JW_RA_OK) {
+            state->power_hold_save_quit_expired = true;
+            jw_log_warn("power-hold save: quit grace: QUIT failed (%s); killing",
+                        jw_ra_result_string(rc));
+            return false;
+        }
+        state->power_hold_save_quit_sent_ms = now;
+        state->power_hold_save_quit_deadline_ms = now + JW_POWER_HOLD_SAVE_QUIT_GRACE_MS;
+        jw_log_info("power-hold save: quit grace: sent QUIT to RetroArch pid=%d; allowing %d ms",
+                    (int)state->child_pid, JW_POWER_HOLD_SAVE_QUIT_GRACE_MS);
+        return true;
+    }
+    if (now < state->power_hold_save_quit_deadline_ms) {
+        return true;
+    }
+    state->power_hold_save_quit_expired = true;
+    jw_log_warn("power-hold save: quit grace expired after %d ms; killing",
+                JW_POWER_HOLD_SAVE_QUIT_GRACE_MS);
+    return false;
+}
+
 /* After the writer group is gone: remove a temporary file nobody published. */
 static void jw__power_hold_save_cleanup_tmp(jw_daemon_state *state) {
     if (!state->power_hold_save_tmp_owned) {
@@ -16188,6 +16229,11 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     }
 
     if (exited_kind == JW_CHILD_RETROARCH) {
+        if (state->power_hold_save_quit_sent_ms > 0 &&
+            !state->power_hold_save_quit_expired) {
+            jw_log_info("power-hold save: quit grace: RetroArch exited after %lld ms",
+                        jw__monotonic_ms() - state->power_hold_save_quit_sent_ms);
+        }
         jw__retroarch_session_finish(state, exited_pid, status);
         if (state->menu_pid > 0) {
             jw__terminate_menu_child(state, true);
@@ -17170,6 +17216,10 @@ int main(int argc, char *argv[]) {
                                 (int)state.child_pid, (int)state.child_pgid);
                     (void)jw__signal_tracked_game_group(&state, SIGKILL);
                 }
+            } else if (jw__power_hold_save_quit_grace(&state)) {
+                /* QUIT sent after a saved power-hold outcome: RetroArch exits
+                   on its own and the normal path reaps it; the kill sequence
+                   below runs only once the grace has expired. */
             } else {
                 if (jw__child_kind_has_writer_barrier(state.child_kind)) {
                     (void)jw__signal_tracked_game_group(&state, SIGTERM);
