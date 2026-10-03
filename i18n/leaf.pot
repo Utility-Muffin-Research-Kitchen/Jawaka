@@ -201,11 +201,19 @@ msgid "10 min"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "10 sec"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "100/120 Hz only"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "12 Hour"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "12 sec"
 msgstr ""
 
 #: internal/retroarch/shader_strings.c
@@ -272,6 +280,10 @@ msgstr ""
 msgid "528 MHz"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "6 sec"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "600 MHz"
 msgstr ""
@@ -282,6 +294,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "780 MHz"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "8 sec"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1052,6 +1068,10 @@ msgstr ""
 msgid "Font Size"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Force Off Hold"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Forget"
 msgstr ""
@@ -1182,6 +1202,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Hold Menu, then press the button.   X: Disable"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hold the power button %d seconds to force off"
 msgstr ""
 
 #: internal/settings/settings.c

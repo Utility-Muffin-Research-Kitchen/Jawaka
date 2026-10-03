@@ -26,6 +26,8 @@
 #include <stdlib.h>
 #include "internal/platform/power_request.h"
 #include "internal/platform/weston_initd.h"
+#include "internal/power/power_hard_cut.h"
+#include <linux/i2c-dev.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -4313,6 +4315,105 @@ static int jw__mlp1_apply_power_cfg_live(void) {
     return 0;
 }
 
+/* ── Force-off hold (RK817 PWRON_KEY, register 0xf7) ───────────────────────
+   Bits 5:4 pick how long the power button must stay down before the PMIC cuts
+   power on its own: 00 = 6 s, 01 = 8 s, 10 = 10 s, 11 = 12 s. Bit 6 is the
+   action (0 off, 1 restart) and bits 3:0 are unrelated; both are kept as read.
+
+   U-Boot programs this register from the device tree on EVERY boot (measured
+   2026-10-03: 0x26 written, reboot, 0x06 again), and the kernel rk808 driver
+   never touches it, so the daemon re-applies the setting after each start.
+   Writing it from userspace leaves the kernel's regmap cache for 0xf7 stale.
+   That is harmless: no driver reads the register, so nothing acts on the old
+   value; `i2cget -f -y 0 0x20 0xf7` shows the real byte, the regmap debugfs
+   dump the cached one. Stock firmware is unaffected: any boot where Leaf does
+   not start keeps U-Boot's 6 s.
+
+   Plain /dev/i2c-0 read/write with I2C_SLAVE_FORCE, no i2cset subprocess. The
+   force is needed because the rk808 driver already claims address 0x20, which
+   is also why the codec helpers above pass -f to i2cget/i2cset. */
+#define JW_MLP1_PMIC_I2C_DEV  "/dev/i2c-0"
+#define JW_MLP1_PMIC_I2C_ADDR 0x20
+
+/* One PMIC register byte (0..255) or -1. The slave address is already set on fd. */
+static int jw__mlp1_pmic_reg_read(int fd, int reg) {
+    unsigned char r = (unsigned char)reg;
+    unsigned char v = 0;
+    if (write(fd, &r, 1) != 1) return -1;
+    if (read(fd, &v, 1) != 1) return -1;
+    return v;
+}
+
+static int jw__mlp1_pmic_reg_write(int fd, int reg, int value) {
+    unsigned char buf[2] = { (unsigned char)reg, (unsigned char)value };
+    return write(fd, buf, sizeof(buf)) == (ssize_t)sizeof(buf) ? 0 : -1;
+}
+
+static void jw__mlp1_set_power_hard_cut(jw_platform_context *ctx, int seconds,
+                                        jw_platform_result *out) {
+    (void)ctx;
+    if (!jw_power_hard_cut_valid_s(seconds)) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID,
+                               "force-off hold must be 6, 8, 10 or 12 s");
+        return;
+    }
+
+    int fd = open(JW_MLP1_PMIC_I2C_DEV, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        jw_log_warn("power hard cut: open %s failed: %s; register left alone",
+                    JW_MLP1_PMIC_I2C_DEV, strerror(errno));
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "pmic i2c bus unavailable");
+        return;
+    }
+    if (ioctl(fd, I2C_SLAVE_FORCE, JW_MLP1_PMIC_I2C_ADDR) < 0) {
+        jw_log_warn("power hard cut: I2C_SLAVE_FORCE 0x%02x failed: %s; register left alone",
+                    JW_MLP1_PMIC_I2C_ADDR, strerror(errno));
+        close(fd);
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "pmic i2c address unavailable");
+        return;
+    }
+
+    int cur = jw__mlp1_pmic_reg_read(fd, JW_POWER_HARD_CUT_REG);
+    if (cur < 0) {
+        jw_log_warn("power hard cut: read 0x%02x failed: %s; register left alone",
+                    JW_POWER_HARD_CUT_REG, strerror(errno));
+        close(fd);
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "pmic register read failed");
+        return;
+    }
+
+    int want = jw_power_hard_cut_apply_reg((unsigned char)cur, seconds);
+    char message[JW_PLATFORM_MAX_MESSAGE];
+    if (want == cur) {
+        /* Already in force (a re-apply after wake, or the setting matches
+           U-Boot's value): nothing to write and nothing worth a log line. */
+        close(fd);
+        snprintf(message, sizeof(message), "power hard cut already %d s", seconds);
+        jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, seconds);
+        return;
+    }
+
+    if (jw__mlp1_pmic_reg_write(fd, JW_POWER_HARD_CUT_REG, want) != 0) {
+        jw_log_warn("power hard cut: write 0x%02x -> 0x%02x failed: %s",
+                    cur, want, strerror(errno));
+        close(fd);
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "pmic register write failed");
+        return;
+    }
+    int back = jw__mlp1_pmic_reg_read(fd, JW_POWER_HARD_CUT_REG);
+    close(fd);
+    if (back != want) {
+        jw_log_warn("power hard cut: wrote 0x%02x, register reads back 0x%02x (was 0x%02x)",
+                    want, back, cur);
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "pmic register read-back mismatch");
+        return;
+    }
+
+    jw_log_info("power hard cut: 0x%02x -> 0x%02x (%d s)", cur, want, seconds);
+    snprintf(message, sizeof(message), "power hard cut set to %d s", seconds);
+    jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, seconds);
+}
+
 static void jw__mlp1_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
                              jw_platform_result *out) {
     (void)ctx;
@@ -4399,6 +4500,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .safe_unmount_storage = jw__mlp1_safe_unmount_storage,
         .set_led = jw__mlp1_set_led,
         .get_display_mode = jw__mlp1_get_display_mode,
+        .set_power_hard_cut = jw__mlp1_set_power_hard_cut,
     };
     return &backend;
 }

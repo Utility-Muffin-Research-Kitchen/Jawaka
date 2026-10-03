@@ -31,6 +31,7 @@
 #include "internal/platform/raofflineproxy.h"
 #include "internal/platform/weston_initd.h"
 #include "internal/platform/wifi.h"
+#include "internal/power/power_hard_cut.h"
 #include "internal/power/suspend_inhibit.h"
 #include "internal/retroarch/command.h"
 #include "internal/catalog/effective.h"
@@ -437,6 +438,13 @@ typedef struct {
     int       autosleep_timeout_s;        /* cached from DB; 0 = disabled */
     int       autosleep_platform_synced_s;/* last value mirrored to stock power policy */
     long long autosleep_setting_next_ms;  /* throttle for re-reading the DB setting */
+    /* Force Off Hold (PMIC power-button cut), read in the same DB poll as
+       auto-sleep and applied through the platform backend. */
+    int       power_hard_cut_desired_s;   /* from the DB; the 10 s default when unset */
+    int       power_hard_cut_applied_s;   /* last value handed to the platform; 0 = never */
+    int       power_hard_cut_effective_s; /* hold believed in force: OK -> value, failed -> stock 6 s,
+                                             0 = unknown/unsupported. For policies that wait on
+                                             the button (power-hold save). */
     jw_standby_reason standby_reason;     /* screen-off standby state, or NONE when lit */
     long long standby_entered_ms;         /* monotonic ms for wake-input detection */
     bool      autosleep_charging_logged;  /* log the charging hold once per standby */
@@ -10841,7 +10849,8 @@ fail:
 #define JW_AUTOSLEEP_SETTING_POLL_MS  2000    /* re-read the DB setting at most this often */
 #define JW_CHARGING_STATUS_POLL_MS    1000    /* while in standby, notice unplug promptly */
 #define JW_POWER_LONGPRESS_MS         2000    /* power held this long → clean power off (before
-                                                 the PMIC hard-cut at ~6s) */
+                                                 the PMIC hard-cut: 6 s stock, 10 s by default
+                                                 once jw__power_hard_cut_sync_platform ran) */
 
 static int jw__autosleep_read_timeout_s(jw_daemon_state *state) {
     if (!state->db_path) {
@@ -10854,6 +10863,50 @@ static int jw__autosleep_read_timeout_s(jw_daemon_state *state) {
         return seconds > 0 ? seconds : 0;   /* 0 = explicitly off */
     }
     return JW_AUTOSLEEP_DEFAULT_S;
+}
+
+/* Force Off Hold from the DB; a missing or invalid value is the 10 s default
+   (plan: power-button-hard-cut-setting.md), never "leave the register alone". */
+static int jw__power_hard_cut_read_s(jw_daemon_state *state) {
+    if (!state->db_path) {
+        return JW_POWER_HARD_CUT_DEFAULT_S;
+    }
+    char val[32];
+    if (jw_db_get_setting(state->db_path, JW_POWER_HARD_CUT_SETTING_KEY, val, sizeof(val)) != 0) {
+        val[0] = '\0';
+    }
+    return jw_power_hard_cut_parse(val);
+}
+
+/* Apply the desired hold to the PMIC when it differs from what was last handed
+   over, or on a forced pass (start-up and wake: U-Boot resets the register on
+   every boot, and a re-apply that finds it unchanged is a read and no write).
+   Called only from the settings poll in jw__tick_auto_sleep, never from the
+   power-key edge handling: a hold in progress must not wait on I2C.
+   The backend logs the change, or the one warning when the bus or read-back
+   fails; a failure is not retried until the value changes or the next forced
+   pass, so a missing bus costs one line per start, not one per poll. */
+static void jw__power_hard_cut_sync_platform(jw_daemon_state *state, bool forced) {
+    if (!state) return;
+    int desired = state->power_hard_cut_desired_s;
+    if (!forced && desired == state->power_hard_cut_applied_s) return;
+
+    jw_platform_result result;
+    jw_platform_set_power_hard_cut_s(&state->platform, desired, &result);
+    state->power_hard_cut_applied_s = desired;
+    switch (result.code) {
+        case JW_PLATFORM_RESULT_OK:
+            state->power_hard_cut_effective_s = result.has_value ? result.value : desired;
+            break;
+        case JW_PLATFORM_RESULT_UNSUPPORTED:
+            state->power_hard_cut_effective_s = 0;   /* not an MLP1: nothing to apply */
+            break;
+        default:
+            /* Read or read-back failed and the register was left alone: assume
+               U-Boot's value, the shortest, so nothing counts on a longer hold. */
+            state->power_hard_cut_effective_s = JW_POWER_HARD_CUT_STOCK_S;
+            break;
+    }
 }
 
 static void jw__screen_set(jw_daemon_state *state, bool on) {
@@ -11246,9 +11299,11 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
         bool forced = state->autosleep_setting_next_ms == 0;
         if (jw__db_file_changed(state->db_path, &state->autosleep_db_sig) || forced) {
             state->autosleep_timeout_s = jw__autosleep_read_timeout_s(state);
+            state->power_hard_cut_desired_s = jw__power_hard_cut_read_s(state);
         }
         state->autosleep_setting_next_ms = now + JW_AUTOSLEEP_SETTING_POLL_MS;
         jw__autosleep_sync_platform(state);
+        jw__power_hard_cut_sync_platform(state, forced);
     }
 
     /* Power button — jawakad owns the key exclusively, so it must do everything
