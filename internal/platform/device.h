@@ -328,5 +328,13 @@ int  jw_platform_get_display_mode(jw_platform_context *ctx, int *width, int *hei
                                   int *hz);
 void jw_platform_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
                          jw_platform_result *out);
+/* Force-off hold: how long the power button must stay down before the PMIC
+   cuts power on its own (Settings > System > Force Off Hold). `seconds` is one
+   of jw_power_hard_cut_options_s (6/8/10/12). OK carries the hold now in
+   force in `value`; UNSUPPORTED where the platform has no such register
+   (everything but the MLP1); FAILED when the register could not be read, or
+   did not read back as written, in which case it was left alone. */
+void jw_platform_set_power_hard_cut_s(jw_platform_context *ctx, int seconds,
+                                      jw_platform_result *out);
 
 #endif /* JW_PLATFORM_DEVICE_H */

@@ -333,6 +333,56 @@ static int check_timezone_selection(void) {
 
 /* Render at device size with a software renderer. Sentinel pixels catch text,
    sliders, swatches or highlights escaping the allocated page rectangle. */
+/* Force Off Hold sits right after Auto Sleep (row 2 with no Language row).
+   On the MLP1 it cycles 6/8/10/12 s, persists the seconds and names them in
+   the status; everywhere else it is "Unavailable" and a press changes nothing. */
+static int check_force_off_hold(void) {
+    char db[] = "/tmp/settings-status-foh.XXXXXX";
+    int fd = mkstemp(db);
+    if (fd < 0) return fail("could not create a settings db");
+    close(fd);
+    unlink(db);
+
+    jw_settings_ui ui = {0};
+    char status[128] = "";
+    char saved[32] = "";
+    ui.open = true;
+    snprintf(ui.db_path, sizeof(ui.db_path), "%s", db);
+    ui.screen = JW_SETTINGS_SYSTEM;
+    ui.system_list.cursor = 2;
+    ui.force_off_hold_index = 2;   /* 10 s, the default */
+
+#ifdef PLATFORM_MLP1
+    jw_settings_ui_handle_button(&ui, CAT_BTN_RIGHT, status, sizeof(status), NULL);
+    if (ui.screen != JW_SETTINGS_SYSTEM) return fail("Right on Force Off Hold left System");
+    if (ui.force_off_hold_index != 3) return fail("Right did not move 10 s to 12 s");
+    if (jw_db_get_setting(db, "power_hard_cut_seconds", saved, sizeof(saved)) != 0 ||
+        strcmp(saved, "12") != 0)
+        return fail("12 s did not reach power_hard_cut_seconds");
+    if (!strstr(status, "12 seconds")) return fail("status did not name the 12 s hold");
+
+    jw_settings_ui_handle_button(&ui, CAT_BTN_RIGHT, status, sizeof(status), NULL);
+    if (ui.force_off_hold_index != 0) return fail("Right past 12 s did not wrap to 6 s");
+    saved[0] = '\0';
+    if (jw_db_get_setting(db, "power_hard_cut_seconds", saved, sizeof(saved)) != 0 ||
+        strcmp(saved, "6") != 0)
+        return fail("6 s did not reach power_hard_cut_seconds");
+
+    jw_settings_ui_handle_button(&ui, CAT_BTN_LEFT, status, sizeof(status), NULL);
+    if (ui.force_off_hold_index != 3) return fail("Left from 6 s did not wrap to 12 s");
+#else
+    jw_settings_ui_handle_button(&ui, CAT_BTN_RIGHT, status, sizeof(status), NULL);
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (ui.screen != JW_SETTINGS_SYSTEM) return fail("Force Off Hold opened something");
+    if (ui.force_off_hold_index != 2) return fail("an unavailable Force Off Hold cycled");
+    if (status[0]) return fail("an unavailable Force Off Hold set a status");
+    if (jw_db_get_setting(db, "power_hard_cut_seconds", saved, sizeof(saved)) == 0 && saved[0])
+        return fail("an unavailable Force Off Hold wrote to the database");
+#endif
+    unlink(db);
+    return 0;
+}
+
 static int check_layout_viewport(void) {
     SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
     SDL_setenv("CAT_WINDOW_WIDTH", "960", 1);
@@ -586,6 +636,7 @@ int main(void) {
     if (check_back_targets()) return 1;
     if (check_language_order()) return 1;
     if (check_language_capacity()) return 1;
+    if (check_force_off_hold()) return 1;
 
     ui.open = true;
     ui.screen = JW_SETTINGS_SCRAPE_PRIORITY;

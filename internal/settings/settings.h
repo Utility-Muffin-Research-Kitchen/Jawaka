@@ -198,6 +198,7 @@ typedef enum {
     JW_SYSTEM_ROW_LANGUAGE = 0,   /* conditional: a translation is installed */
     JW_SYSTEM_ROW_TIMEZONE,       /* opens the Time Zone picker screen */
     JW_SYSTEM_ROW_AUTO_SLEEP,
+    JW_SYSTEM_ROW_FORCE_OFF_HOLD, /* PMIC power-button cut; a cycler on MLP1, "Unavailable" elsewhere */
     /* Save the RetroArch game on a power-button shutdown. Shown everywhere,
        usable on MLP1 only: other platforms need their own button
        qualification. */
@@ -413,6 +414,7 @@ typedef struct {
     cat_list_state     home_tabs_list;
     bool               home_tabs_grabbed;   /* X grabbed the cursor row to reorder */
     int                auto_sleep_index;    /* idle-sleep timeout (index into kAutoSleep*) */
+    int                force_off_hold_index; /* power-button hard cut (index into kForceOffHold*) */
     bool               boot_splash_enabled; /* Leaf boot transition/artwork on next boot */
     bool               boot_splash_supported;
     bool               power_hold_save_enabled;   /* "save_state_on_power_hold"; Off by default */
