@@ -477,6 +477,12 @@ typedef struct {
     long long power_hold_save_quit_sent_ms;
     long long power_hold_save_quit_deadline_ms;
     bool power_hold_save_quit_expired;          /* grace over or QUIT failed: kill */
+    /* Host-build test hooks (scripts/power-hold-save-ipc-smoke.sh), read once
+       at start-up and never compiled into the MLP1 daemon: a Force Off Hold
+       the mock platform cannot apply, and the platform gate opened so the
+       mock can stand in for the MLP1. */
+    int  test_power_hard_cut_s;                 /* 0 = none */
+    bool test_power_hold_save_any_platform;
     jw_suspend_inhibitor suspend_inhibitor;
     jw_suspend_policy    suspend_policy;
     int       hdmi_last_connected;        /* -1 unknown, 0/1; for hotplug edge detection */
@@ -10956,6 +10962,13 @@ static void jw__power_hard_cut_sync_platform(jw_daemon_state *state, bool forced
             state->power_hard_cut_effective_s = JW_POWER_HARD_CUT_STOCK_S;
             break;
     }
+#ifndef PLATFORM_MLP1
+    /* Host smoke only: the mock platform applies nothing, which the policy
+       reads as the stock 6 s cut and declines at once. */
+    if (state->test_power_hard_cut_s > 0) {
+        state->power_hard_cut_effective_s = state->test_power_hard_cut_s;
+    }
+#endif
 }
 
 static void jw__screen_set(jw_daemon_state *state, bool on) {
@@ -11471,7 +11484,8 @@ static void jw__power_long_press(jw_daemon_state *state, long long press_ms,
     /* Off, a refused handoff, other platforms, and anything but a RetroArch
        game get no save phase. */
     if (!first || !handed_off || !state->power_hold_save_enabled ||
-        strcmp(state->platform.platform_id, "mlp1") != 0 ||
+        (strcmp(state->platform.platform_id, "mlp1") != 0 &&
+         !state->test_power_hold_save_any_platform) ||
         !jw__has_retroarch_session(state) || g_shutdown_requested) {
         return;
     }
@@ -16732,6 +16746,23 @@ int main(int argc, char *argv[]) {
     jw_suspend_policy_init(&state.suspend_policy);
     jw_power_hold_save_init(&state.power_hold_save);
     jw_ra_sync_save_init(&state.power_hold_save_request);
+#ifndef PLATFORM_MLP1
+    /* Test hooks for scripts/power-hold-save-ipc-smoke.sh; host builds only. */
+    {
+        const char *cut = getenv("JAWAKA_TEST_POWER_HARD_CUT_S");
+        if (cut && cut[0]) {
+            state.test_power_hard_cut_s = atoi(cut);
+            jw_log_warn("power-hold save: TEST override: Force Off Hold reads as %d s",
+                        state.test_power_hard_cut_s);
+        }
+        const char *any = getenv("JAWAKA_TEST_POWER_HOLD_SAVE_ANY_PLATFORM");
+        if (any && strcmp(any, "1") == 0) {
+            state.test_power_hold_save_any_platform = true;
+            jw_log_warn("power-hold save: TEST override: platform gate open on %s",
+                        jw_platform_compiled_id());
+        }
+    }
+#endif
     jw_update_download_job_init(&state.update_download_job);
     jw_update_install_job_init(&state.update_install_job);
     jw_update_check_job_init(&state.update_check_job);

@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
-"""Stand-in for RetroArch in the retroarch-runner-stop smoke test.
+"""Stand-in for RetroArch in the retroarch-runner-stop and power-hold-save
+smoke tests.
 
 Speaks just enough of the pinned v1.22.2 contract the runner depends on: it
 binds the network command port, and on QUIT it writes its --config file the way
 save-on-exit does and exits. FAKE_RA_MODE selects which failure the runner has
 to cope with.
+
+With FAKE_RA_SYNC_SAVE_BYTES set it also speaks the MLP1 command-menu patch's
+synchronous save (retroarch-builds, protocol 1): GET_STATE_SAVE_INFO answers
+"1 <bytes> 0" and SAVE_STATE_SYNC writes <bytes> of data to
+FAKE_RA_STATES_DIR/<rom stem>.state<slot>.tmp-<id>, fsyncs it and replies
+TMP_READY with that path. Without the variable both commands go unanswered,
+like a RetroArch built without the patch.
 """
 import os
+import re
 import signal
 import socket
 import sys
 import time
 
 PORT = 55355
+REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
 def config_path(argv):
@@ -44,6 +54,47 @@ def save(path):
     os.replace(tmp, path)
 
 
+def sync_save_reply(text, argv):
+    """Protocol-1 replies for the power-hold save, or None when not spoken."""
+    size = os.environ.get("FAKE_RA_SYNC_SAVE_BYTES")
+    if not size:
+        return None
+    if text == "GET_STATE_SAVE_INFO":
+        return "GET_STATE_SAVE_INFO 1 %d 0" % int(size)
+    if not text.startswith("SAVE_STATE_SYNC"):
+        return None
+    parts = text.split()
+    if len(parts) != 5 or not REQUEST_ID.match(parts[1]):
+        return "SAVE_STATE_SYNC - ERROR BAD_ARGS"
+    request_id, slot, max_bytes, start_by = parts[1], int(parts[2]), int(parts[3]), int(parts[4])
+    if slot < 0 or slot > 999:
+        return "SAVE_STATE_SYNC %s ERROR BAD_ARGS" % request_id
+    error = os.environ.get("FAKE_RA_SYNC_SAVE_ERROR")
+    if error:
+        return "SAVE_STATE_SYNC %s ERROR %s" % (request_id, error)
+    if time.monotonic() * 1000 > start_by:
+        return "SAVE_STATE_SYNC %s ERROR LATE" % request_id
+    data = b"S" * int(size)
+    if len(data) > max_bytes:
+        return "SAVE_STATE_SYNC %s ERROR TOO_LARGE" % request_id
+    states_dir = os.environ.get("FAKE_RA_STATES_DIR")
+    if not states_dir:
+        return "SAVE_STATE_SYNC %s ERROR PATH" % request_id
+    stem = os.path.splitext(os.path.basename(argv[-1]))[0]
+    name = "%s.state%s" % (stem, "" if slot == 0 else slot)
+    path = os.path.join(states_dir, "%s.tmp-%s" % (name, request_id))
+    os.makedirs(states_dir, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return "SAVE_STATE_SYNC %s ERROR OPEN" % request_id
+    with os.fdopen(fd, "wb") as fp:
+        fp.write(data)
+        fp.flush()
+        os.fsync(fp.fileno())
+    return "SAVE_STATE_SYNC %s TMP_READY %d %s" % (request_id, len(data), path)
+
+
 def main():
     cfg = config_path(sys.argv)
     mode = os.environ.get("FAKE_RA_MODE", "quit")
@@ -71,13 +122,17 @@ def main():
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         try:
-            data, _ = sock.recvfrom(1024)
+            data, sender = sock.recvfrom(1024)
         except socket.timeout:
             continue
         text = data.decode("utf-8", "replace").strip()
         if quit_log and text:
             with open(quit_log, "a", encoding="utf-8") as fp:
                 fp.write(text + "\n")
+        reply = sync_save_reply(text, sys.argv)
+        if reply is not None:
+            sock.sendto(reply.encode("utf-8"), sender)
+            continue
         if text == "QUIT" and mode == "quit":
             save(cfg)
             return 0
