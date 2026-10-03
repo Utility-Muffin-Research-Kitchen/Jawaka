@@ -456,6 +456,21 @@ void jw_platform_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
     jw_platform_result_set(out, JW_PLATFORM_RESULT_UNSUPPORTED, "led not supported");
 }
 
+void jw_platform_set_power_hard_cut_s(jw_platform_context *ctx, int seconds,
+                                      jw_platform_result *out) {
+    if (!ctx) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "platform not initialized");
+        return;
+    }
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->set_power_hard_cut) {
+        backend->set_power_hard_cut(ctx, seconds, out);
+        return;
+    }
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_UNSUPPORTED,
+                           "power hard cut not supported");
+}
+
 int jw_platform_storage_roots(jw_platform_context *ctx, jw_platform_storage_root *out,
                               int max) {
     if (!ctx || !out || max <= 0) {

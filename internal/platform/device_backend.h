@@ -43,6 +43,9 @@ typedef struct {
                     jw_platform_result *out);
     /* Optional: the current mode of the active output. 0 on success, -1 unknown. */
     int  (*get_display_mode)(jw_platform_context *ctx, int *width, int *height, int *hz);
+    /* Optional: see jw_platform_set_power_hard_cut_s. NULL = unsupported. */
+    void (*set_power_hard_cut)(jw_platform_context *ctx, int seconds,
+                               jw_platform_result *out);
 } jw_platform_backend;
 
 const jw_platform_backend *jw_platform_get_backend(void);
