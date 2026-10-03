@@ -383,6 +383,74 @@ static int check_force_off_hold(void) {
     return 0;
 }
 
+/* Resume Game on Boot sits right after Save Before Power Off (rows 3 and 4
+   with no Language row), switches exactly where that row does, persists
+   resume_game_on_boot, and says when the save setting has to come first. */
+static int check_boot_resume(void) {
+    char db[] = "/tmp/settings-status-resume.XXXXXX";
+    int fd = mkstemp(db);
+    if (fd < 0) return fail("could not create a settings db");
+    close(fd);
+    unlink(db);
+
+    jw_settings_ui ui = {0};
+    char status[256] = "";
+    char saved[32] = "";
+    ui.open = true;
+    snprintf(ui.db_path, sizeof(ui.db_path), "%s", db);
+    ui.screen = JW_SETTINGS_SYSTEM;
+    ui.power_hold_save_supported = true;   /* as on the MLP1 */
+
+    /* Row 3 is still Save Before Power Off. */
+    ui.system_list.cursor = 3;
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (!ui.power_hold_save_enabled || ui.boot_resume_enabled)
+        return fail("row 3 is not Save Before Power Off");
+    ui.power_hold_save_enabled = false;
+
+    ui.system_list.cursor = 4;
+    status[0] = '\0';
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (ui.screen != JW_SETTINGS_SYSTEM) return fail("Resume Game on Boot left System");
+    if (!ui.boot_resume_enabled) return fail("A did not switch Resume Game on Boot on");
+    if (jw_db_get_setting(db, "resume_game_on_boot", saved, sizeof(saved)) != 0 ||
+        strcmp(saved, "1") != 0)
+        return fail("On did not reach resume_game_on_boot");
+    if (strcmp(status, "Turn on Save Before Power Off first") != 0)
+        return fail("On with the save setting Off did not ask for it first");
+
+    jw_settings_ui_handle_button(&ui, CAT_BTN_RIGHT, status, sizeof(status), NULL);
+    if (ui.boot_resume_enabled) return fail("Right did not switch Resume Game on Boot off");
+    saved[0] = '\0';
+    if (jw_db_get_setting(db, "resume_game_on_boot", saved, sizeof(saved)) != 0 ||
+        strcmp(saved, "0") != 0)
+        return fail("Off did not reach resume_game_on_boot");
+    if (strcmp(status, "Your game will not resume at startup") != 0)
+        return fail("Off status is wrong");
+
+    ui.power_hold_save_enabled = true;
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (!ui.boot_resume_enabled) return fail("A did not switch it back on");
+    if (strcmp(status, "Continue your game when you turn on your console after saving "
+                       "with the power button. Hold B during startup to skip.") != 0)
+        return fail("On status is not the plan's text");
+
+    /* Wherever Save Before Power Off is unavailable, so is this. */
+    ui.power_hold_save_supported = false;
+    ui.boot_resume_enabled = false;
+    status[0] = '\0';
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    jw_settings_ui_handle_button(&ui, CAT_BTN_RIGHT, status, sizeof(status), NULL);
+    if (ui.boot_resume_enabled) return fail("an unavailable Resume Game on Boot switched");
+    if (status[0]) return fail("an unavailable Resume Game on Boot set a status");
+    saved[0] = '\0';
+    if (jw_db_get_setting(db, "resume_game_on_boot", saved, sizeof(saved)) != 0 ||
+        strcmp(saved, "1") != 0)
+        return fail("an unavailable Resume Game on Boot wrote to the database");
+    unlink(db);
+    return 0;
+}
+
 static int check_layout_viewport(void) {
     SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
     SDL_setenv("CAT_WINDOW_WIDTH", "960", 1);
@@ -637,6 +705,7 @@ int main(void) {
     if (check_language_order()) return 1;
     if (check_language_capacity()) return 1;
     if (check_force_off_hold()) return 1;
+    if (check_boot_resume()) return 1;
 
     ui.open = true;
     ui.screen = JW_SETTINGS_SCRAPE_PRIORITY;

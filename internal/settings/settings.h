@@ -203,6 +203,9 @@ typedef enum {
        usable on MLP1 only: other platforms need their own button
        qualification. */
     JW_SYSTEM_ROW_POWER_HOLD_SAVE,
+    /* Continue that saved game at the next start. Switchable exactly where
+       Save Before Power Off is; it does nothing unless that is On too. */
+    JW_SYSTEM_ROW_BOOT_RESUME,
     JW_SYSTEM_ROW_BOOT_SPLASH,
     JW_SYSTEM_ROW_SD_CARDS,
     JW_SYSTEM_ROW_SERVICES,       /* conditional: -> Services, was a category */
@@ -419,6 +422,7 @@ typedef struct {
     bool               boot_splash_supported;
     bool               power_hold_save_enabled;   /* "save_state_on_power_hold"; Off by default */
     bool               power_hold_save_supported; /* platform qualified the power button */
+    bool               boot_resume_enabled;       /* "resume_game_on_boot"; Off by default */
     bool               screenshots_enabled; /* Menu+L1 screenshot hotkey (daemon reads the DB key) */
     bool               recording_enabled;   /* Menu+R1 game recording hotkey (daemon reads the DB key) */
     bool               recording_split;     /* cut clips over 10MB into postable parts */

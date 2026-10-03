@@ -3609,3 +3609,27 @@ msgstr "Partie non sauvegardée"
 #, fuzzy
 msgid "Powering off"
 msgstr "Arrêt en cours"
+
+#, fuzzy
+msgid "Resume Game on Boot"
+msgstr "Reprendre la partie au démarrage"
+
+#, fuzzy
+msgid "Continue your game when you turn on your console after saving with the power button. Hold B during startup to skip."
+msgstr "Reprenez votre partie en allumant la console après l’avoir sauvegardée avec le bouton d’alimentation. Maintenez B au démarrage pour l’ignorer."
+
+#, fuzzy
+msgid "Turn on Save Before Power Off first"
+msgstr "Activez d’abord Sauvegarder avant l’arrêt"
+
+#, fuzzy
+msgid "Your game will not resume at startup"
+msgstr "Votre partie ne reprendra pas au démarrage"
+
+#, fuzzy
+msgid "Couldn't resume your game. Open it to try loading your save."
+msgstr "Impossible de reprendre votre partie. Ouvrez-la pour essayer de charger votre sauvegarde."
+
+#, fuzzy
+msgid "Resuming your game"
+msgstr "Reprise de votre partie"

@@ -8,6 +8,7 @@
 #include "internal/platform/leaf_version.h"
 #include "internal/platform/paths.h"
 #include "internal/platform/platform_id.h"
+#include "internal/power/boot_resume.h"
 #include "internal/power/power_hard_cut.h"
 #include "internal/scrape/scrape_catalog.h"
 #include "internal/settings/appearance.h"
@@ -143,6 +144,7 @@ typedef enum {
     JW_SETTING_POWER_HARD_CUT_SECONDS,
     JW_SETTING_BOOT_SPLASH_ENABLED,
     JW_SETTING_SAVE_STATE_ON_POWER_HOLD,
+    JW_SETTING_RESUME_GAME_ON_BOOT,
     JW_SETTING_SCREENSHOTS_ENABLED,
     JW_SETTING_RECORDING_ENABLED,
     JW_SETTING_RECORDING_SPLIT,
@@ -202,6 +204,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_POWER_HARD_CUT_SECONDS] = JW_POWER_HARD_CUT_SETTING_KEY,
     [JW_SETTING_BOOT_SPLASH_ENABLED] = "boot_splash_enabled",
     [JW_SETTING_SAVE_STATE_ON_POWER_HOLD] = "save_state_on_power_hold",
+    [JW_SETTING_RESUME_GAME_ON_BOOT] = JW_BOOT_RESUME_SETTING_KEY,
     [JW_SETTING_SCREENSHOTS_ENABLED] = "screenshots_enabled",
     [JW_SETTING_RECORDING_ENABLED]   = "recording_enabled",
     [JW_SETTING_RECORDING_SPLIT]     = "recording_split",
@@ -1614,6 +1617,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->boot_splash_enabled = true;
     ui->boot_splash_supported = false;
     ui->power_hold_save_enabled = false;   /* opt-in */
+    ui->boot_resume_enabled = false;       /* opt-in */
 #ifdef PLATFORM_MLP1
     ui->power_hold_save_supported = true;
 #else
@@ -1829,6 +1833,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             if (jw__setting_has(values, found, JW_SETTING_SAVE_STATE_ON_POWER_HOLD))
                 ui->power_hold_save_enabled =
                     (strcmp(values[JW_SETTING_SAVE_STATE_ON_POWER_HOLD], "1") == 0);
+            if (jw__setting_has(values, found, JW_SETTING_RESUME_GAME_ON_BOOT))
+                ui->boot_resume_enabled =
+                    (strcmp(values[JW_SETTING_RESUME_GAME_ON_BOOT], "1") == 0);
             if (jw__setting_has(values, found, JW_SETTING_SCREENSHOTS_ENABLED))
                 ui->screenshots_enabled = (strcmp(values[JW_SETTING_SCREENSHOTS_ENABLED], "1") == 0);
             if (jw__setting_has(values, found, JW_SETTING_RECORDING_ENABLED))
@@ -5368,6 +5375,7 @@ static int jw__system_rows(const jw_settings_ui *ui, jw_system_row_kind *out) {
     out[n++] = JW_SYSTEM_ROW_AUTO_SLEEP;
     out[n++] = JW_SYSTEM_ROW_FORCE_OFF_HOLD;
     out[n++] = JW_SYSTEM_ROW_POWER_HOLD_SAVE;
+    out[n++] = JW_SYSTEM_ROW_BOOT_RESUME;
     out[n++] = JW_SYSTEM_ROW_BOOT_SPLASH;
     out[n++] = JW_SYSTEM_ROW_SD_CARDS;
     if (ui->services_count > 0) out[n++] = JW_SYSTEM_ROW_SERVICES;
@@ -5437,6 +5445,17 @@ static void jw__render_system(const jw_settings_ui *ui, int x, int y, int w, int
             } else {
                 jw__render_list_row(&ui->system_list, x, ly, w, row,
                                     "Save Before Power Off", "Unavailable", false);
+            }
+            break;
+        case JW_SYSTEM_ROW_BOOT_RESUME:
+            /* Built like Save Before Power Off, and available exactly where it is. */
+            if (ui->power_hold_save_supported) {
+                jw__render_toggle_row(&ui->system_list, x, ly, w, row,
+                                      "Resume Game on Boot",
+                                      ui->boot_resume_enabled ? "On" : "Off");
+            } else {
+                jw__render_list_row(&ui->system_list, x, ly, w, row,
+                                    "Resume Game on Boot", "Unavailable", false);
             }
             break;
         case JW_SYSTEM_ROW_BOOT_SPLASH: {
@@ -8952,6 +8971,29 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                                  ui->power_hold_save_enabled
                                      ? T("Hold power to shut down, then release to save")
                                      : T("Power off will not save your game"));
+                    }
+                } else if (kind == JW_SYSTEM_ROW_BOOT_RESUME) {
+                    (void)dir;
+                    if (!ui->power_hold_save_supported) {
+                        break;
+                    }
+                    /* Read by the daemon at start-up and on its settings poll. */
+                    ui->boot_resume_enabled = !ui->boot_resume_enabled;
+                    jw__persist_bool(ui, JW_BOOT_RESUME_SETTING_KEY,
+                                     ui->boot_resume_enabled);
+                    if (status_buf && status_size > 0) {
+                        const char *status;
+                        if (!ui->boot_resume_enabled) {
+                            status = T("Your game will not resume at startup");
+                        } else if (!ui->power_hold_save_enabled) {
+                            /* On, but nothing is saved to resume from yet. */
+                            status = T("Turn on Save Before Power Off first");
+                        } else {
+                            status = T("Continue your game when you turn on your console "
+                                       "after saving with the power button. Hold B during "
+                                       "startup to skip.");
+                        }
+                        snprintf(status_buf, (size_t)status_size, "%s", status);
                     }
                 } else if (kind == JW_SYSTEM_ROW_BOOT_SPLASH) {
                     (void)dir;
