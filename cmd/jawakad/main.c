@@ -31,6 +31,7 @@
 #include "internal/platform/raofflineproxy.h"
 #include "internal/platform/weston_initd.h"
 #include "internal/platform/wifi.h"
+#include "internal/power/boot_resume.h"
 #include "internal/power/power_hold_save.h"
 #include "internal/power/power_hold_save_io.h"
 #include "internal/power/power_hard_cut.h"
@@ -188,7 +189,45 @@ typedef struct {
     int warning_attempts;
     long long warning_next_ms;
     char warning[256];
+    /* What a power-hold save arms Resume Game on Boot with, pinned when the
+       RetroArch session starts so arming reads no database and no card.
+       Empty fingerprint: the card has no persistent identity, so no resume. */
+    char source_fingerprint[JW_BOOT_RESUME_FINGERPRINT_MAX];
+    char rom_relpath[JW_BOOT_RESUME_ROM_PATH_MAX];
+    char states_path[PATH_MAX];
+    char provider[JW_BOOT_RESUME_PROVIDER_MAX];
+    /* A boot-resume session until LOAD_STATE_SYNC answers OK: no play is
+       recorded for it, since the player never got their game back. */
+    bool resume_unconfirmed;
 } jw_retroarch_session;
+
+/* Resume Game on Boot, from the startup request to the one LOAD_STATE_SYNC
+   reply. The plan's rule: the saved state loads, or RetroArch quits and the
+   launcher opens with a notice. Never a retry, another slot or a cold start. */
+typedef enum {
+    JW_BOOT_RESUME_PHASE_NONE = 0,
+    JW_BOOT_RESUME_PHASE_LAUNCHING,  /* requested; RetroArch not spawned yet */
+    JW_BOOT_RESUME_PHASE_PROBING,    /* spawned; waiting for its command port */
+    JW_BOOT_RESUME_PHASE_LOADING,    /* LOAD_STATE_SYNC sent; one reply pending */
+} jw_boot_resume_phase;
+
+typedef struct {
+    jw_boot_resume_phase phase;
+    int game_id;
+    char core_id[JW_BOOT_RESUME_CORE_ID_MAX];
+    char core_config_folder[JW_BOOT_RESUME_CORE_FOLDER_MAX];
+    char provider[JW_BOOT_RESUME_PROVIDER_MAX];
+    char source_fingerprint[JW_BOOT_RESUME_FINGERPRINT_MAX];
+    char state_path[PATH_MAX];       /* absolute; checked again before spawn */
+    char request_id[JW_BOOT_RESUME_REQUEST_ID_MAX];
+    unsigned long long state_bytes;
+    int attempts;
+    int silent_probes;               /* state probes unanswered in a row */
+    long long next_ms;
+    long long deadline_ms;
+    long long started_ms;
+    jw_ra_sync_save load;            /* the one LOAD_STATE_SYNC exchange */
+} jw_boot_resume_launch;
 
 typedef struct {
     jw_launch_target_kind kind;
@@ -486,6 +525,16 @@ typedef struct {
        mock can stand in for the MLP1. */
     int  test_power_hard_cut_s;                 /* 0 = none */
     bool test_power_hold_save_any_platform;
+    /* Resume Game on Boot: cached like the save setting, the boot this daemon
+       runs in (read once; "" when unknown), the resume in flight, and the
+       failure notice the next launcher shows. */
+    bool boot_resume_enabled;                   /* cached; Off unless refreshed */
+    char boot_id[JW_BOOT_RESUME_BOOT_ID_MAX];
+    jw_boot_resume_launch boot_resume;
+    bool boot_resume_notice_pending;
+    /* Host-build test hook (scripts/boot-resume-ipc-smoke.sh): the mock card
+       has no uuid:/fat: identity, so the primary source reads as this one. */
+    char test_source_fingerprint[JW_BOOT_RESUME_FINGERPRINT_MAX];
     jw_suspend_inhibitor suspend_inhibitor;
     jw_suspend_policy    suspend_policy;
     int       hdmi_last_connected;        /* -1 unknown, 0/1; for hotplug edge detection */
@@ -5088,6 +5137,19 @@ static bool jw__game_check_wait(jw_daemon_state *state);
 static bool jw__game_check_play_anyway(jw_daemon_state *state);
 static bool jw__game_check_cancel(jw_daemon_state *state);
 static void jw__active_game_finish(jw_daemon_state *state);
+static bool jw__game_launch_blocked_dismiss(jw_daemon_state *state);
+/* Resume Game on Boot; defined after the post-launch resume tick. */
+static bool jw__boot_resume_unconfirmed(const jw_daemon_state *state);
+static void jw__boot_resume_fail(jw_daemon_state *state, const char *why, bool quit);
+static void jw__boot_resume_arm(jw_daemon_state *state);
+static bool jw__boot_resume_spawn_matches(jw_daemon_state *state,
+                                          const jw_storage_source *source,
+                                          const jw_launch_target *target,
+                                          const char *rom_abs);
+static void jw__retroarch_session_pin_resume(jw_daemon_state *state,
+                                             const jw_storage_source *source,
+                                             const char *rom_relpath,
+                                             const char *provider);
 
 static void jw__schedule_in_game_menu_prewarm(jw_daemon_state *state,
                                               long long delay_ms) {
@@ -5652,8 +5714,17 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
 
     /* Record recents + playtime for real sessions only. A crash at launch gives
        runtime_s=0, so it never pollutes the list or playtime totals. The session
-       retains games.id so mountpoint/cache changes cannot misattribute play. */
-    jw__retroarch_session_record_play(state, session, runtime_s);
+       retains games.id so mountpoint/cache changes cannot misattribute play.
+       A boot resume whose state never loaded was not the player's game: it
+       records nothing, and its launcher carries the notice. */
+    if (jw__boot_resume_unconfirmed(state)) {
+        jw__boot_resume_fail(state, "RetroArch exited before the state loaded", false);
+    }
+    if (session->resume_unconfirmed) {
+        jw_log_info("boot resume: no play recorded for a session whose state never loaded");
+    } else {
+        jw__retroarch_session_record_play(state, session, runtime_s);
+    }
 
     state->post_launch_resume_pending = false;
     state->post_launch_resume_attempts = 0;
@@ -7425,6 +7496,12 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         if (out_error) *out_error = "savestate namespace unavailable";
         return -1;
     }
+    if (state->retroarch_session.resume_unconfirmed) {
+        /* Switching saves slot 99, which still holds the position being resumed. */
+        jw_log_warn("switch-game: the resumed game has not loaded yet");
+        if (out_error) *out_error = "game is still resuming";
+        return -1;
+    }
 
     jw_ra_client ra = jw_ra_client_default();
 
@@ -7556,6 +7633,11 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
                                            target_core_id,
                                            target_core_folder,
                                            target_warning);
+            /* Same card and core, so only the ROM in the resume identity
+               moves with the switch. */
+            snprintf(state->retroarch_session.rom_relpath,
+                     sizeof(state->retroarch_session.rom_relpath), "%s",
+                     target_game.rom_relpath);
 
             if (have_resume_state) {
                 char load_state_reply[JW_RA_REPLY_MAX];
@@ -9593,6 +9675,11 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
             setenv("JAWAKA_LAUNCH_INPUT_FAILED", "1", 1);
         else
             unsetenv("JAWAKA_LAUNCH_INPUT_FAILED");
+        /* Resume Game on Boot failed: the launcher posts its one notice. */
+        if (kind == JW_CHILD_LAUNCHER && state->boot_resume_notice_pending)
+            setenv("JAWAKA_BOOT_RESUME_FAILED", "1", 1);
+        else
+            unsetenv("JAWAKA_BOOT_RESUME_FAILED");
         /* 5-Game Mode: while active, every launcher spawn (incl. return-from-game)
            re-enters the focus screen. Pass the chosen set + style so the launcher
            renders focus mode instead of the normal tab UI. */
@@ -9616,7 +9703,10 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
         _exit(127);
     }
 
-    if (kind == JW_CHILD_LAUNCHER) state->launch_input_failed = false;
+    if (kind == JW_CHILD_LAUNCHER) {
+        state->launch_input_failed = false;
+        state->boot_resume_notice_pending = false;
+    }
     state->launcher_levels_signal = false;   /* until the new one says hello */
     state->child_pid = pid;
     state->child_kind = kind;
@@ -10562,6 +10652,16 @@ static int jw__spawn_retroarch(jw_daemon_state *state,
         goto fail;
     }
 
+    /* A boot resume starts only the game, core and card the record named and
+       startup validated. Anything that moved since is a failed resume, never
+       a substitute. */
+    bool boot_resume = state->boot_resume.phase == JW_BOOT_RESUME_PHASE_LAUNCHING &&
+                       state->boot_resume.game_id == state->pending_launch_game_id;
+    if (boot_resume &&
+        !jw__boot_resume_spawn_matches(state, rom_source, target, rom_abs)) {
+        goto fail;
+    }
+
     /* RAOfflineProxy routing ran earlier (jw__spawn_pending_game, where the
        other fail-closed blocks live); this launch carries its outcome. A
        BLOCKED result never reaches this function. */
@@ -10852,6 +10952,16 @@ static int jw__spawn_retroarch(jw_daemon_state *state,
                                 runtime_config, persist_config,
                                 audio_bluetooth, launch_warning);
     state->retroarch_session.config_snapshot = rop_snapshot;
+    jw__retroarch_session_pin_resume(state, rom_source, launch_game.rom_relpath,
+                                     target->provider);
+    if (boot_resume) {
+        state->retroarch_session.resume_unconfirmed = true;
+        state->boot_resume.phase = JW_BOOT_RESUME_PHASE_PROBING;
+        state->boot_resume.attempts = 0;
+        state->boot_resume.next_ms = jw__monotonic_ms();
+        jw_log_info("boot resume: RetroArch pid=%d started; waiting for its command port",
+                    (int)pid);
+    }
     bool post_launch_resume = switcher_resume && !entryslot_resume &&
                               core_config_folder[0];
     if (post_launch_resume) {
@@ -10865,8 +10975,9 @@ static int jw__spawn_retroarch(jw_daemon_state *state,
     }
 
     /* Let RetroArch own the first startup window before cold-starting the
-       hidden standby menu's SDL/GL/input stack. */
-    if (!post_launch_resume) {
+       hidden standby menu's SDL/GL/input stack. A resume, either kind,
+       schedules it once its state is in. */
+    if (!post_launch_resume && !boot_resume) {
         jw__schedule_in_game_menu_prewarm(state, JW_INGAME_MENU_PREWARM_DELAY_MS);
     }
     jw_log_info("RetroArch launch timings: total_ms=%lld config_ms=%lld state_resolve_ms=%lld fork_ms=%lld entryslot=%s post_resume=%s",
@@ -11361,19 +11472,30 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
 #define JW_PHS_MIB 1048576ull
 
 /* Settings poll, never on the hold path: a no-wait read, and anything but "1"
-   (missing, invalid, locked, unreadable) is Off. */
+   (missing, invalid, locked, unreadable) is Off. Resume Game on Boot is read
+   with it: the save that arms a resume consults both cached values. */
 static void jw__power_hold_save_refresh_setting(jw_daemon_state *state) {
     bool enabled = false;
+    bool resume = false;
     char value[8];
     if (state->db_path &&
         jw_db_read_setting_nowait(state->db_path, "save_state_on_power_hold",
                                   value, sizeof(value)) == 0) {
         enabled = strcmp(value, "1") == 0;
     }
+    if (state->db_path &&
+        jw_db_read_setting_nowait(state->db_path, JW_BOOT_RESUME_SETTING_KEY,
+                                  value, sizeof(value)) == 0) {
+        resume = strcmp(value, "1") == 0;
+    }
     if (enabled != state->power_hold_save_enabled) {
         jw_log_info("power-hold save: setting %s", enabled ? "on" : "off");
     }
+    if (resume != state->boot_resume_enabled) {
+        jw_log_info("boot resume: setting %s", resume ? "on" : "off");
+    }
     state->power_hold_save_enabled = enabled;
+    state->boot_resume_enabled = resume;
 }
 
 /* One banner at a time; best-effort and bounded by the OSD client timeout. */
@@ -11443,6 +11565,8 @@ static void jw__power_hold_save_report(jw_daemon_state *state) {
         jw_log_info("power-hold save: saved elapsed_ms=%lld key=%s bytes=%llu path=%s",
                     elapsed, jw__power_hold_save_how(state),
                     state->power_hold_save_bytes, state->power_hold_save_final);
+        /* The only point that arms Resume Game on Boot. */
+        jw__boot_resume_arm(state);
     } else {
         jw_log_warn("power-hold save: %s elapsed_ms=%lld key=%s", name, elapsed,
                     jw__power_hold_save_how(state));
@@ -11453,6 +11577,12 @@ static void jw__power_hold_save_report(jw_daemon_state *state) {
    RetroArch once, bounded. Pins the slot and thumbnail paths on success. */
 static bool jw__power_hold_save_eligible(jw_daemon_state *state) {
     const jw_retroarch_session *session = &state->retroarch_session;
+    /* Slot 99 still holds the shutdown position this boot is resuming; a cold
+       core saved over it would replace the player's game. */
+    if (jw__boot_resume_unconfirmed(state) || session->resume_unconfirmed) {
+        jw_log_warn("power-hold save: the resumed game has not loaded; not saving over it");
+        return false;
+    }
     if (!session->rom_path[0] || !session->source_root[0] ||
         !session->core_config_folder[0] || !session->core_id[0]) {
         jw_log_warn("power-hold save: session has no pinned source/core namespace");
@@ -12022,6 +12152,570 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
                                       JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
 }
 
+/* ── Resume Game on Boot ──────────────────────────────────────────────────────
+   One record per qualifying power-button shutdown, read and deleted once at
+   the next start, then one launch and exactly one LOAD_STATE_SYNC. Either the
+   saved state loads, or RetroArch quits and the launcher opens with a notice.
+   Plan: umrk-workspace/plans/Jawaka/auto-resume-after-power-off.md. */
+
+/* The state-info and capability probes, answered within a frame or two. */
+#define JW_BOOT_RESUME_PROBE_TIMEOUT_MS 300u
+/* A first frame can be slow, so one unanswered probe proves nothing; this
+   many in a row while GET_INFO answers is a RetroArch without the commands. */
+#define JW_BOOT_RESUME_SILENT_PROBES 3
+/* The one load reads the whole state off the card and applies it inside
+   RetroArch's command handler. A ~30 MB Dreamcast state on a slow card is the
+   long end; this only decides when silence counts as failure. */
+#define JW_BOOT_RESUME_LOAD_TIMEOUT_MS 10000LL
+
+static bool jw__boot_resume_unconfirmed(const jw_daemon_state *state) {
+    return state && state->boot_resume.phase != JW_BOOT_RESUME_PHASE_NONE;
+}
+
+static void jw__boot_resume_clear(jw_daemon_state *state) {
+    jw_ra_sync_save_close(&state->boot_resume.load);
+    memset(&state->boot_resume, 0, sizeof(state->boot_resume));
+    jw_ra_sync_save_init(&state->boot_resume.load);
+}
+
+/* A card's persistent identity, or "" when it has none worth recording. */
+static const char *jw__boot_resume_source_fingerprint(const jw_daemon_state *state,
+                                                      const jw_storage_source *source) {
+    if (!source) {
+        return "";
+    }
+#ifndef PLATFORM_MLP1
+    if (!source->filesystem_fingerprint[0] && source->primary &&
+        state->test_source_fingerprint[0]) {
+        return state->test_source_fingerprint;
+    }
+#else
+    (void)state;
+#endif
+    const char *fp = source->filesystem_fingerprint;
+    return strncmp(fp, "uuid:", 5) == 0 || strncmp(fp, "fat:", 4) == 0 ? fp : "";
+}
+
+static void jw__retroarch_session_pin_resume(jw_daemon_state *state,
+                                             const jw_storage_source *source,
+                                             const char *rom_relpath,
+                                             const char *provider) {
+    jw_retroarch_session *session = &state->retroarch_session;
+    session->source_fingerprint[0] = '\0';
+    session->states_path[0] = '\0';
+    snprintf(session->rom_relpath, sizeof(session->rom_relpath), "%s",
+             rom_relpath ? rom_relpath : "");
+    snprintf(session->provider, sizeof(session->provider), "%s",
+             provider ? provider : "");
+    if (source) {
+        snprintf(session->source_fingerprint, sizeof(session->source_fingerprint), "%s",
+                 jw__boot_resume_source_fingerprint(state, source));
+        snprintf(session->states_path, sizeof(session->states_path), "%s",
+                 source->states_path);
+    }
+}
+
+/* Saved outcome only, inside the released window and before child teardown:
+   one small file and two fsyncs, from values already in memory. No database,
+   no card scan, no read of the state. A failure costs only the automatic
+   continuation; the save itself stands. */
+static void jw__boot_resume_arm(jw_daemon_state *state) {
+    if (!state->power_hold_save_enabled || !state->boot_resume_enabled) {
+        return;
+    }
+    const jw_retroarch_session *session = &state->retroarch_session;
+    long long started = jw__monotonic_ms();
+    jw_boot_resume_record record;
+    memset(&record, 0, sizeof(record));
+    char reason[64] = "";
+    const char *why = NULL;
+    if (!state->boot_id[0]) {
+        why = "boot id unknown";
+    } else if (!session->source_fingerprint[0]) {
+        why = "card has no persistent identity";
+    } else if (!jw_boot_resume_relative_to(session->states_path,
+                                           state->power_hold_save_final,
+                                           record.state_path,
+                                           sizeof(record.state_path))) {
+        why = "state is outside the card's States folder";
+    } else {
+        snprintf(record.platform, sizeof(record.platform), "%s",
+                 state->platform.platform_id);
+        snprintf(record.boot_id, sizeof(record.boot_id), "%s", state->boot_id);
+        snprintf(record.request_id, sizeof(record.request_id), "%s",
+                 state->power_hold_save_request.request_id);
+        snprintf(record.source_fingerprint, sizeof(record.source_fingerprint), "%s",
+                 session->source_fingerprint);
+        snprintf(record.system, sizeof(record.system), "%s", session->system);
+        snprintf(record.rom_path, sizeof(record.rom_path), "%s", session->rom_relpath);
+        snprintf(record.core_id, sizeof(record.core_id), "%s", session->core_id);
+        snprintf(record.core_config_folder, sizeof(record.core_config_folder), "%s",
+                 session->core_config_folder);
+        snprintf(record.provider, sizeof(record.provider), "%s", session->provider);
+        record.slot = JW_BOOT_RESUME_SLOT;
+        record.state_bytes = state->power_hold_save_bytes;
+        if (!jw_boot_resume_record_valid(&record, record.platform,
+                                         reason, sizeof(reason))) {
+            why = reason;
+        } else if (!jw_boot_resume_write(state->state_dir, &record,
+                                         reason, sizeof(reason))) {
+            why = reason;
+        }
+    }
+    long long write_ms = jw__monotonic_ms() - started;
+    if (why) {
+        jw_log_warn("power-hold save: saved; resume not armed (%s) write_ms=%lld",
+                    why, write_ms);
+        return;
+    }
+    jw_log_info("power-hold save: resume armed request=%s write_ms=%lld rom=%s",
+                record.request_id, write_ms, record.rom_path);
+}
+
+/* A repair or recovery owns this boot: a read-only card, a held repair, a
+   repair result nobody has seen yet, or a launch LIFE-1 recovered. */
+static bool jw__boot_resume_storage_recovery(jw_daemon_state *state) {
+    if (state->storage_db_read_only || state->active_game.active) {
+        return true;
+    }
+    jw_storage_probe_env env;
+    jw_storage_probe_env_default(&env);
+    for (int i = 0; i < state->storage_monitor.count; i++) {
+        const jw_storage_health_slot *slot = &state->storage_monitor.slots[i];
+        if (!slot->valid || !slot->health.mounted) {
+            continue;
+        }
+        if (slot->health.access == JW_STORAGE_ACCESS_READ_ONLY ||
+            slot->health.repair != JW_STORAGE_REPAIR_NONE) {
+            return true;
+        }
+        jw_storage_repair_result result;
+        if (jw_storage_repair_last_result(&env, slot->health.uuid, &result) &&
+            !result.acknowledged) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void jw__boot_resume_notice(jw_daemon_state *state) {
+    if (!jw__osd_enabled(state)) {
+        return;
+    }
+    jw_osd_client client = jw__osd_client(state);
+    if (jw_osd_client_show_stage(&client, &state->pico8_exit_confirm_until_ms,
+                                 "boot-resume", 0) != 0) {
+        jw_log_warn("boot resume: OSD notice request failed");
+    }
+}
+
+/* A gate that would put a question in front of the player cancels instead:
+   nobody chose to start this game, so nobody is there to answer. */
+static void jw__boot_resume_cancel_prompts(jw_daemon_state *state) {
+    if (state->game_check_decision) {
+        (void)jw__game_check_cancel(state);
+    }
+    if (state->game_launch_blocked) {
+        (void)jw__game_launch_blocked_dismiss(state);
+    }
+}
+
+/* Anything but OK. RetroArch, when it is there, gets QUIT and the normal child
+   and group cleanup runs; the launcher it returns to carries the notice. The
+   state, its thumbnail and the saves are never touched. */
+static void jw__boot_resume_fail(jw_daemon_state *state, const char *why, bool quit) {
+    if (!jw__boot_resume_unconfirmed(state)) {
+        return;
+    }
+    long long elapsed = state->boot_resume.started_ms > 0
+        ? jw__monotonic_ms() - state->boot_resume.started_ms : 0;
+    jw_log_warn("boot resume: failed (%s) elapsed_ms=%lld request=%s; the launcher opens with a notice",
+                why ? why : "unknown", elapsed, state->boot_resume.request_id);
+    jw__boot_resume_clear(state);
+    state->boot_resume_notice_pending = true;
+    if (!quit || !jw__has_retroarch_session(state)) {
+        return;
+    }
+    jw_ra_client ra = jw_ra_client_default();
+    jw_ra_result rc = jw_ra_quit(&ra);
+    jw_log_info("boot resume: sent QUIT to RetroArch pid=%d result=%s",
+                (int)state->child_pid, jw_ra_result_string(rc));
+    if (rc != JW_RA_OK) {
+        (void)jw__signal_tracked_game_group(state, SIGTERM);
+    }
+    /* A RetroArch that never leaves is forced closed by the stuck-quit tick. */
+    state->retroarch_quit_deadline_ms = jw__monotonic_ms() + JW_RETROARCH_STUCK_QUIT_MS;
+}
+
+static void jw__boot_resume_succeed(jw_daemon_state *state, unsigned long long bytes) {
+    long long elapsed = state->boot_resume.started_ms > 0
+        ? jw__monotonic_ms() - state->boot_resume.started_ms : 0;
+    /* As the switcher resume does, unless the player opened the in-game menu
+       meanwhile: closing it resumes the game. */
+    if (!state->menu_visible) {
+        jw_ra_client ra = jw_ra_client_default();
+        (void)jw_ra_resume_direct(&ra);
+    }
+    jw_log_info("boot resume: loaded request=%s bytes=%llu elapsed_ms=%lld path=%s",
+                state->boot_resume.request_id, bytes, elapsed,
+                state->boot_resume.state_path);
+    /* From here the session is the player's game and records its play once,
+       when it ends, like any other. */
+    state->retroarch_session.resume_unconfirmed = false;
+    jw__boot_resume_clear(state);
+    jw__boot_resume_notice(state);
+    jw__schedule_in_game_menu_prewarm(state, JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
+}
+
+/* Last check before fork: the launch about to start is the one validated at
+   start-up. Called from jw__spawn_retroarch for a boot resume only. */
+static bool jw__boot_resume_spawn_matches(jw_daemon_state *state,
+                                          const jw_storage_source *source,
+                                          const jw_launch_target *target,
+                                          const char *rom_abs) {
+    const jw_boot_resume_launch *br = &state->boot_resume;
+    char expected[PATH_MAX];
+    struct stat st;
+    const char *why = NULL;
+    if (!source || !target || !rom_abs) {
+        why = "launch has no source";
+    } else if (strcmp(target->core_id, br->core_id) != 0 ||
+               strcmp(target->core_config_folder, br->core_config_folder) != 0 ||
+               strcmp(target->provider, br->provider) != 0) {
+        why = "core changed";
+    } else if (strcmp(jw__boot_resume_source_fingerprint(state, source),
+                      br->source_fingerprint) != 0) {
+        why = "card changed";
+    } else if (!jw_ra_slot_state_path_for_core(source->states_path, br->core_config_folder,
+                                               rom_abs, JW_BOOT_RESUME_SLOT, false,
+                                               expected, sizeof(expected)) ||
+               strcmp(expected, br->state_path) != 0) {
+        why = "state path changed";
+    } else if (lstat(expected, &st) != 0 || !S_ISREG(st.st_mode) ||
+               (unsigned long long)st.st_size != br->state_bytes) {
+        why = "state changed";
+    }
+    if (why) {
+        jw_log_warn("boot resume: not starting RetroArch: %s", why);
+        return false;
+    }
+    return true;
+}
+
+/* Resolve the record against this boot's cards, library and catalog, then ask
+   for the launch. False with `why` when any of it fails. */
+static bool jw__boot_resume_launch(jw_daemon_state *state,
+                                   const jw_boot_resume_record *record,
+                                   char *why, size_t why_size) {
+    jw_storage_source_list sources;
+    if (jw__storage_sources(state, &sources) != 0) {
+        snprintf(why, why_size, "card list unavailable");
+        return false;
+    }
+    /* Source ids are positional and mounts swap: only the fingerprint names
+       the card. Two cards claiming it is as good as none. */
+    const jw_storage_source *source = NULL;
+    int matches = 0;
+    for (int i = 0; i < sources.count; i++) {
+        const jw_storage_source *candidate = &sources.sources[i];
+        if (candidate->configured && candidate->available &&
+            strcmp(jw__boot_resume_source_fingerprint(state, candidate),
+                   record->source_fingerprint) == 0) {
+            source = candidate;
+            matches++;
+        }
+    }
+    if (matches != 1) {
+        snprintf(why, why_size, matches == 0 ? "card %s not found" : "card %s is ambiguous",
+                 record->source_fingerprint);
+        return false;
+    }
+    char rom_abs[PATH_MAX];
+    if (!jw_storage_relative_path_valid(record->rom_path) ||
+        jw_storage_resolve_rom(source, record->rom_path, true,
+                               rom_abs, sizeof(rom_abs)) != 0) {
+        snprintf(why, why_size, "ROM missing");
+        return false;
+    }
+    /* The library row for exactly this card and path. */
+    char rom_literal[PATH_MAX];
+    jw_game_entry game;
+    if (snprintf(rom_literal, sizeof(rom_literal), "%s/%s", source->roms_path,
+                 record->rom_path) >= (int)sizeof(rom_literal) ||
+        jw__lookup_launch_game(state, rom_literal, &game) != 0 ||
+        strcmp(game.source_id, source->id) != 0 ||
+        strcmp(game.rom_relpath, record->rom_path) != 0 ||
+        strcmp(game.system, record->system) != 0) {
+        snprintf(why, why_size, "game not in the library");
+        return false;
+    }
+    if (state->focus_boot == JW_FOCUS_BOOT_ENTER) {
+        bool in_focus = false;
+        for (int i = 0; i < state->focus_cfg.id_count; i++) {
+            in_focus = in_focus || state->focus_cfg.ids[i] == game.id;
+        }
+        if (!in_focus) {
+            snprintf(why, why_size, "5-game mode does not include this game");
+            return false;
+        }
+    }
+    /* Hardcore refuses state loads; do not start a game only to quit it. */
+    if (jw_retroarch_shared_hardcore_enabled(state->sdcard_root)) {
+        snprintf(why, why_size, "Hardcore is on");
+        return false;
+    }
+    /* The core this game launches with now, through the effective catalog,
+       must be the one that saved: same id, state folder and provider. A
+       changed selection cancels; nothing is substituted. (A requested core id
+       only selects standalone emulators, so RetroArch is resolved this way.) */
+    jw_launch_target target;
+    if (jw__resolve_launch_target(state, record->system, game.rom_path,
+                                  NULL, &target) != 0 ||
+        target.kind != JW_LAUNCH_TARGET_RETROARCH) {
+        snprintf(why, why_size, "core %s unavailable", record->core_id);
+        return false;
+    }
+    if (strcmp(target.core_id, record->core_id) != 0 ||
+        strcmp(target.core_config_folder, record->core_config_folder) != 0 ||
+        strcmp(target.provider, record->provider) != 0) {
+        snprintf(why, why_size, "core changed: %s/%s is now %s/%s",
+                 record->core_id, record->core_config_folder,
+                 target.core_id, target.core_config_folder);
+        return false;
+    }
+    char state_abs[PATH_MAX];
+    char state_reason[48];
+    if (!jw_boot_resume_state_file_ok(record, source->states_path, rom_abs,
+                                      state_abs, sizeof(state_abs),
+                                      state_reason, sizeof(state_reason))) {
+        snprintf(why, why_size, "%s", state_reason);
+        return false;
+    }
+
+    jw_boot_resume_launch *br = &state->boot_resume;
+    jw__boot_resume_clear(state);
+    br->phase = JW_BOOT_RESUME_PHASE_LAUNCHING;
+    br->game_id = game.id;
+    br->started_ms = jw__monotonic_ms();
+    br->state_bytes = record->state_bytes;
+    snprintf(br->core_id, sizeof(br->core_id), "%s", record->core_id);
+    snprintf(br->core_config_folder, sizeof(br->core_config_folder), "%s",
+             record->core_config_folder);
+    snprintf(br->provider, sizeof(br->provider), "%s", record->provider);
+    snprintf(br->source_fingerprint, sizeof(br->source_fingerprint), "%s",
+             record->source_fingerprint);
+    snprintf(br->state_path, sizeof(br->state_path), "%s", state_abs);
+    snprintf(br->request_id, sizeof(br->request_id), "%s", record->request_id);
+    jw_log_info("boot resume: launching system=%s rom=%s core=%s request=%s",
+                record->system, game.rom_path, record->core_id, record->request_id);
+
+    /* Every manual-launch gate applies: BIOS and the core check here, LIFE-1
+       and RAOfflineProxy in the spawn path, and the pinned identity again
+       right before fork. --entryslot is never used. */
+    const char *error = NULL;
+    if (jw__request_launch_game(state, record->system, game.rom_path,
+                                NULL, false, &error) != 0) {
+        jw__boot_resume_cancel_prompts(state);
+        snprintf(why, why_size, "%s", error ? error : "launch refused");
+        return false;
+    }
+    return true;
+}
+
+/* Between the request and RetroArch: a launch that needs a decision is
+   cancelled, one that ended without RetroArch is a failure, and in both cases
+   the launcher opens with the notice. */
+static void jw__tick_boot_resume_launch(jw_daemon_state *state) {
+    if (state->boot_resume.phase != JW_BOOT_RESUME_PHASE_LAUNCHING) {
+        return;
+    }
+    if (state->game_check_decision || state->game_launch_blocked) {
+        const char *why = state->game_launch_blocked
+            ? "launch needs a decision" : "sync check needs a decision";
+        jw__boot_resume_cancel_prompts(state);
+        jw__boot_resume_fail(state, why, false);
+    } else if (!state->pending_launch && !state->game_coordination_pending &&
+               state->child_pid <= 0) {
+        jw__boot_resume_fail(state, "the launch did not start", false);
+    } else {
+        return;
+    }
+    if (!state->daemon_only && state->child_pid <= 0 && !state->shutdown_requested) {
+        if (jw__spawn_child(state, JW_CHILD_LAUNCHER) != 0) {
+            jw_log_error("boot resume: could not open the launcher");
+        }
+    }
+}
+
+/* RetroArch is up: wait for its command port and for a core that can take a
+   state, prove the command exists, then send the one load and wait for its
+   one reply. Never blocks longer than one bounded probe. */
+static void jw__tick_boot_resume(jw_daemon_state *state) {
+    jw_boot_resume_launch *br = &state->boot_resume;
+    if (br->phase != JW_BOOT_RESUME_PHASE_PROBING &&
+        br->phase != JW_BOOT_RESUME_PHASE_LOADING) {
+        return;
+    }
+    if (state->shutdown_requested || g_shutdown_requested) {
+        jw_log_warn("boot resume: abandoned for shutdown request=%s", br->request_id);
+        jw__boot_resume_clear(state);
+        return;
+    }
+    if (!jw__has_retroarch_session(state)) {
+        jw__boot_resume_fail(state, "RetroArch exited before the state loaded", false);
+        return;
+    }
+    long long now = jw__monotonic_ms();
+    jw_ra_client ra = jw_ra_client_default();
+
+    if (br->phase == JW_BOOT_RESUME_PHASE_PROBING) {
+        if (br->next_ms > now) {
+            return;
+        }
+        br->attempts++;
+        ra.timeout_ms = 150u;
+        jw_ra_info info;
+        memset(&info, 0, sizeof(info));
+        jw_ra_result result = jw_ra_get_info(&ra, &info);
+        const char *step = "GET_INFO";
+        bool ready = false;
+        if (result == JW_RA_OK && info.savestate_supported) {
+            /* GET_INFO can answer before the core will serialize: wait,
+               within the same budget, for a size the load can be checked
+               against, then for proof that LOAD_STATE_SYNC exists. */
+            ra.timeout_ms = JW_BOOT_RESUME_PROBE_TIMEOUT_MS;
+            jw_ra_state_save_info save_info;
+            step = "state info";
+            result = jw_ra_get_state_save_info(&ra, &save_info);
+            if (result == JW_RA_OK && save_info.supported) {
+                step = "probe";
+                result = jw_ra_load_state_sync_probe(&ra, br->request_id);
+                ready = result == JW_RA_OK;
+            }
+            if (result == JW_RA_TIMEOUT) {
+                if (++br->silent_probes >= JW_BOOT_RESUME_SILENT_PROBES) {
+                    char why[96];
+                    snprintf(why, sizeof(why), "RetroArch cannot sync-load (%s=timeout)", step);
+                    jw__boot_resume_fail(state, why, true);
+                    return;
+                }
+            } else if (result != JW_RA_OK) {
+                char why[96];
+                snprintf(why, sizeof(why), "RetroArch cannot sync-load (%s=%s)", step,
+                         jw_ra_result_string(result));
+                jw__boot_resume_fail(state, why, true);
+                return;
+            } else {
+                br->silent_probes = 0;
+            }
+        }
+        if (!ready) {
+            if (br->attempts >= JW_SWITCHER_RESUME_MAX_ATTEMPTS) {
+                char why[96];
+                snprintf(why, sizeof(why), result != JW_RA_OK
+                             ? "RetroArch not ready (%s)" : "core cannot load states",
+                         jw_ra_result_string(result));
+                jw__boot_resume_fail(state, why, true);
+            } else {
+                br->next_ms = now + JW_SWITCHER_RESUME_RETRY_MS;
+            }
+            return;
+        }
+        if (jw_ra_load_state_sync(&ra, &br->load, br->request_id,
+                                  JW_BOOT_RESUME_SLOT) != JW_RA_OK) {
+            jw__boot_resume_fail(state, "could not send the load", true);
+            return;
+        }
+        br->phase = JW_BOOT_RESUME_PHASE_LOADING;
+        br->deadline_ms = jw__monotonic_ms() + JW_BOOT_RESUME_LOAD_TIMEOUT_MS;
+        jw_log_info("boot resume: loading slot %d request=%s after %d probe(s)",
+                    JW_BOOT_RESUME_SLOT, br->request_id, br->attempts);
+        return;
+    }
+
+    jw_ra_sync_load_reply reply;
+    jw_ra_result result = jw_ra_load_state_sync_poll(&br->load, &reply);
+    if (result == JW_RA_TIMEOUT) {
+        if (now >= br->deadline_ms) {
+            jw__boot_resume_fail(state, "timeout", true);
+        }
+        return;
+    }
+    if (result != JW_RA_OK) {
+        jw__boot_resume_fail(state, result == JW_RA_SOCKET_ERROR
+                                        ? "RetroArch went away" : "malformed reply",
+                             true);
+        return;
+    }
+    if (!reply.loaded) {
+        char why[64];
+        snprintf(why, sizeof(why), "LOAD_STATE_SYNC %s", reply.error);
+        jw__boot_resume_fail(state, why, true);
+        return;
+    }
+    jw__boot_resume_succeed(state, reply.bytes);
+}
+
+/* Start-up, once per daemon: settings, cards, catalog and the input proxy are
+   up, and no launcher or game has started. The record is deleted before
+   anything is decided; one that cannot be deleted is left for a boot that
+   can, and nothing else happens. */
+static void jw__boot_resume_at_startup(jw_daemon_state *state) {
+    jw_boot_resume_record record;
+    char reason[64];
+    jw_boot_resume_load_result loaded = jw_boot_resume_load(
+        state->state_dir, state->platform.platform_id, &record, reason, sizeof(reason));
+    if (loaded == JW_BOOT_RESUME_LOAD_ABSENT) {
+        return;
+    }
+    char consume_reason[64];
+    if (!jw_boot_resume_consume(state->state_dir, consume_reason, sizeof(consume_reason))) {
+        jw_log_warn("boot resume: record could not be removed (%s); not resuming this boot",
+                    consume_reason);
+        return;
+    }
+    if (loaded != JW_BOOT_RESUME_LOAD_VALID) {
+        jw_log_warn("boot resume: record rejected (%s) and removed", reason);
+        return;
+    }
+
+    /* The settings poll has not run yet. */
+    jw__power_hold_save_refresh_setting(state);
+    /* Held B is the player saying no; it is swallowed either way so the
+       launcher does not read it as Back. */
+    bool bypass = jw_input_proxy_take_held_button(&state->input_proxy,
+                                                  JW_INPUT_SHORTCUT_BUTTON_B);
+    jw_boot_resume_boot_facts facts = {
+        .current_boot_id = state->boot_id,
+        .save_setting_on = state->power_hold_save_enabled,
+        .resume_setting_on = state->boot_resume_enabled,
+        .storage_recovery = jw__boot_resume_storage_recovery(state),
+        .bypass_held = bypass,
+    };
+    jw_boot_resume_decision decision = jw_boot_resume_decide(&record, &facts);
+    if (decision != JW_BOOT_RESUME_PROCEED) {
+        jw_log_info("boot resume: record discarded (%s) request=%s",
+                    jw_boot_resume_decision_name(decision), record.request_id);
+        return;
+    }
+
+    /* Room for the longest reason: two core ids and two config folders. */
+    char why[768] = "";
+    if (!jw__boot_resume_launch(state, &record, why, sizeof(why))) {
+        if (jw__boot_resume_unconfirmed(state)) {
+            jw__boot_resume_fail(state, why, false);
+        } else {
+            /* Refused before a launch was asked for. */
+            jw_log_warn("boot resume: failed (%s) request=%s; the launcher opens with a notice",
+                        why, record.request_id);
+            state->boot_resume_notice_pending = true;
+        }
+        return;
+    }
+    /* Started, blocked, or waiting on service coordination. */
+    jw__tick_boot_resume_launch(state);
+}
+
 /* Deliver launch/recovery warnings through RetroArch exactly once, after its
    command socket becomes ready. Failure is bounded and never delays gameplay. */
 static void jw__tick_retroarch_warning(jw_daemon_state *state) {
@@ -12329,6 +13023,9 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
         if (!states_writable) {
             jw_log_warn("save-and-quit: states are not writable (%s); quitting without save",
                         states_reason);
+        } else if (state->retroarch_session.resume_unconfirmed) {
+            /* Slot 99 is the power-off position still being resumed. */
+            jw_log_warn("save-and-quit: the resumed game has not loaded; quitting without save");
         } else if (state->retroarch_session.core_config_folder[0] &&
             jw_ra_get_info(&ra, &info) == JW_RA_OK && info.savestate_supported) {
             char reply[JW_RA_REPLY_MAX];
@@ -14285,16 +14982,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
     }
 
     if (strcmp(type->valuestring, "game-launch-blocked-dismiss") == 0) {
-        bool dismissed = state->game_launch_blocked;
-        state->game_launch_blocked = false;
-        state->game_launch_blocked_resume_switcher = false;
-        state->pending_launch_override_unverified = false;
-        state->pending_launch_skip_check = false;
-        state->game_launch_blocked_requires_verified_stop = false;
-        state->pending_launch = false;
-        jw__pending_launch_forget_target(state);
-        state->game_launch_blocked_service_id[0] = '\0';
-        state->game_launch_blocked_reason[0] = '\0';
+        bool dismissed = jw__game_launch_blocked_dismiss(state);
         cJSON_Delete(root);
         return dismissed
             ? jw__reply_ok(client, "game-launch-blocked-dismiss", NULL)
@@ -15343,6 +16031,21 @@ static bool jw__game_check_play_anyway(jw_daemon_state *state) {
     return true;
 }
 
+/* The launcher's Cancel on a blocked launch. True when one was pending. */
+static bool jw__game_launch_blocked_dismiss(jw_daemon_state *state) {
+    bool dismissed = state->game_launch_blocked;
+    state->game_launch_blocked = false;
+    state->game_launch_blocked_resume_switcher = false;
+    state->pending_launch_override_unverified = false;
+    state->pending_launch_skip_check = false;
+    state->game_launch_blocked_requires_verified_stop = false;
+    state->pending_launch = false;
+    jw__pending_launch_forget_target(state);
+    state->game_launch_blocked_service_id[0] = '\0';
+    state->game_launch_blocked_reason[0] = '\0';
+    return dismissed;
+}
+
 static bool jw__game_check_cancel(jw_daemon_state *state) {
     if (jw__game_check_exchange(state) < 0) {
         return false;
@@ -15874,6 +16577,7 @@ static bool jw__loop_busy(const jw_daemon_state *state) {
     if (state->child_stop_deadline_ms > 0 || state->child_group_wait_started_ms > 0) return true;
     if (state->pending_menu || state->pending_launch || state->pending_app ||
         state->launch_status_pending) return true;
+    if (jw__boot_resume_unconfirmed(state)) return true;
     if (state->post_launch_resume_pending || state->in_game_menu_prewarm_pending ||
         state->advanced_shader_pending || state->retroarch_session.warning_pending) return true;
     if (state->retroarch_audio_reinit_pending || state->rumble_reclaim_ms > 0 ||
@@ -16751,6 +17455,32 @@ static int jw__publish_power_incomplete(int stuck_services, const char *stuck_re
 }
 #endif
 
+/* The boot this daemon runs in, read once: a power-hold save records it with
+   a resume, and a record from this same boot is never acted on. "" when it
+   cannot be read. Host builds take JAWAKA_TEST_BOOT_ID so a smoke can play a
+   second boot without one. */
+static void jw__read_boot_id(char *out, size_t out_size) {
+    out[0] = '\0';
+#ifndef PLATFORM_MLP1
+    const char *test = getenv("JAWAKA_TEST_BOOT_ID");
+    if (test && test[0]) {
+        snprintf(out, out_size, "%s", test);
+        jw_log_warn("boot resume: TEST override: boot id %s", out);
+        return;
+    }
+#endif
+    FILE *fp = fopen("/proc/sys/kernel/random/boot_id", "r");
+    if (!fp) {
+        return;
+    }
+    if (fgets(out, (int)out_size, fp)) {
+        out[strcspn(out, "\r\n")] = '\0';
+    } else {
+        out[0] = '\0';
+    }
+    fclose(fp);
+}
+
 int main(int argc, char *argv[]) {
     signal(SIGINT, jw__handle_signal);
     signal(SIGTERM, jw__handle_signal);
@@ -16791,6 +17521,7 @@ int main(int argc, char *argv[]) {
     jw_suspend_policy_init(&state.suspend_policy);
     jw_power_hold_save_init(&state.power_hold_save);
     jw_ra_sync_save_init(&state.power_hold_save_request);
+    jw_ra_sync_save_init(&state.boot_resume.load);
 #ifndef PLATFORM_MLP1
     /* Test hooks for scripts/power-hold-save-ipc-smoke.sh; host builds only. */
     {
@@ -16806,8 +17537,18 @@ int main(int argc, char *argv[]) {
             jw_log_warn("power-hold save: TEST override: platform gate open on %s",
                         jw_platform_compiled_id());
         }
+        /* scripts/boot-resume-ipc-smoke.sh plays two boots on one host and
+           needs a card identity the mock platform cannot read. */
+        const char *fingerprint = getenv("JAWAKA_TEST_SOURCE_FINGERPRINT");
+        if (fingerprint && fingerprint[0]) {
+            snprintf(state.test_source_fingerprint, sizeof(state.test_source_fingerprint),
+                     "%s", fingerprint);
+            jw_log_warn("boot resume: TEST override: primary card reads as %s",
+                        state.test_source_fingerprint);
+        }
     }
 #endif
+    jw__read_boot_id(state.boot_id, sizeof(state.boot_id));
     jw_update_download_job_init(&state.update_download_job);
     jw_update_install_job_init(&state.update_install_job);
     jw_update_check_job_init(&state.update_check_job);
@@ -17120,7 +17861,13 @@ int main(int argc, char *argv[]) {
 
     jw__spawn_osd(&state);
 
-    if (!state.daemon_only) {
+    /* Resume Game on Boot: before any launcher UI. A resume that started a
+       game, or is still waiting on service coordination, keeps the launcher
+       away; every other outcome opens it (with the notice when one failed). */
+    jw__boot_resume_at_startup(&state);
+
+    if (!state.daemon_only && state.child_pid <= 0 &&
+        state.boot_resume.phase != JW_BOOT_RESUME_PHASE_LAUNCHING) {
         if (jw__spawn_child(&state, JW_CHILD_LAUNCHER) != 0) {
             jw__cleanup(&state);
             return 1;
@@ -17181,6 +17928,7 @@ int main(int argc, char *argv[]) {
         bool power_hold_saving = jw_power_hold_save_active(&state.power_hold_save);
         if (!power_hold_saving) {
             jw__tick_post_launch_resume(&state);
+            jw__tick_boot_resume(&state);
             jw__tick_retroarch_warning(&state);
             jw__tick_retroarch_stuck_quit(&state);
             jw__tick_in_game_menu_prewarm(&state);
@@ -17354,6 +18102,7 @@ int main(int argc, char *argv[]) {
 
         jw__ipc_tick(&state, jw__loop_timeout_ms(&state));
         jw__game_coordination_tick(&state);
+        jw__tick_boot_resume_launch(&state);
         if (!state.daemon_only && state.child_pid <= 0 &&
             (state.game_check_decision || state.game_launch_blocked)) {
             if (jw__spawn_child(&state, JW_CHILD_LAUNCHER) != 0) {

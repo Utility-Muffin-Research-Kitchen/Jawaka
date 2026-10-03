@@ -29,12 +29,16 @@ typedef enum {
     JW_OSD_POWER_SAVE_SAVING,
     JW_OSD_POWER_SAVE_SAVED,
     JW_OSD_POWER_SAVE_FAILED,
+    /* Resume Game on Boot: the saved state loaded and play continues. Over
+       the game, so it dismisses itself. */
+    JW_OSD_BOOT_RESUME,
 } jw_osd_game_stage;
 
 /* Stages that dismiss themselves instead of waiting for hide-game-launch. */
 #define JW_OSD_GAME_STAGE_IS_TRANSIENT(stage) \
     ((stage) == JW_OSD_GAME_SETTINGS_NOT_SAVED || (stage) == JW_OSD_GAME_STORAGE_READ_ONLY || (stage) == JW_OSD_PICO8_EXIT_CONFIRM || (stage) == JW_OSD_PICO8_IMPORT_FAILED || \
-     (stage) == JW_OSD_POWER_SAVE_SAVED || (stage) == JW_OSD_POWER_SAVE_FAILED)
+     (stage) == JW_OSD_POWER_SAVE_SAVED || (stage) == JW_OSD_POWER_SAVE_FAILED || \
+     (stage) == JW_OSD_BOOT_RESUME)
 #define JW_OSD_GAME_TRANSIENT_MS 4000u
 
 /* `expires_ms` is optional: a CLOCK_MONOTONIC millisecond deadline after
