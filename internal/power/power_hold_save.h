@@ -30,6 +30,14 @@
 #define JW_POWER_HOLD_SAVE_MARGIN_MS            500
 /* Software cap on the whole save once released. */
 #define JW_POWER_HOLD_SAVE_WINDOW_MS            8000
+/* One serialization allowance for every core RetroArch can sync-save. The
+   synchronous path (serialize + write + fsync) measured 386-432 ms for a
+   4.3 MiB PS state and 915-966 ms for an 8.6 MiB Saturn state in full, so
+   1 s on top of the per-MiB flush covers the slowest measured core with room.
+   The release window is 8 s and RetroArch refuses a save past its start-by
+   deadline, so a core that is slower than this fails safe: the old quicksave
+   stays. */
+#define JW_POWER_HOLD_SAVE_SERIALIZE_MS         1000
 /* Conservative flush rate for both MLP1 cards (measured worst 51 and 67). */
 #define JW_POWER_HOLD_SAVE_FLUSH_MS_PER_MIB     70
 /* rename (<= 70 ms), directory fsync (<= 25 ms), thumbnail removal, slack. */
@@ -77,7 +85,6 @@ typedef struct {
 } jw_power_hold_save;
 
 typedef struct {
-    const char *core_id;  /* catalog core id of the running session */
     uint64_t state_bytes; /* serialize size plus format overhead; 0 = unknown */
 } jw_power_hold_save_request;
 
@@ -117,9 +124,6 @@ void jw_power_hold_save_key_edge(jw_power_hold_save *s, bool down, long long edg
 /* Advance on each daemon tick. */
 jw_power_hold_save_decision jw_power_hold_save_tick(jw_power_hold_save *s,
                                                    long long now_ms);
-
-/* Serialization allowance for a measured core, or 0 when unmeasured. */
-int jw_power_hold_save_serialize_allowance_ms(const char *core_id);
 
 /* Conservative duration for the request, or -1 when it cannot be estimated. */
 long long jw_power_hold_save_estimate_ms(const jw_power_hold_save_request *req);

@@ -11,8 +11,8 @@
 #define OFFSET jw_power_hold_save_release_offset_ms(CUT)
 #define BOUNDARY (PRESS + OFFSET)
 
-static const jw_power_hold_save_request ps_state = { "pcsx_rearmed", 4456472ull };
-static const jw_power_hold_save_request saturn_state = { "yabasanshiro", 9068872ull };
+static const jw_power_hold_save_request ps_state = { 4456472ull };
+static const jw_power_hold_save_request saturn_state = { 9068872ull };
 
 static void armed(jw_power_hold_save *s) {
     jw_power_hold_save_init(s);
@@ -140,21 +140,16 @@ static void test_release_timestamps(void) {
 }
 
 static void test_estimates(void) {
-    assert(jw_power_hold_save_serialize_allowance_ms("gambatte") == 50);
-    assert(jw_power_hold_save_serialize_allowance_ms("mupen64plus_next") == 0);
-    assert(jw_power_hold_save_serialize_allowance_ms(NULL) == 0);
-    /* 100 + 5 MiB * 70 + 150 */
-    assert(jw_power_hold_save_estimate_ms(&ps_state) == 600);
-    /* 500 + 9 MiB * 70 + 150 */
-    assert(jw_power_hold_save_estimate_ms(&saturn_state) == 1280);
-    jw_power_hold_save_request exact = { "snes9x", 2 * MIB };
-    assert(jw_power_hold_save_estimate_ms(&exact) == 50 + 2 * 70 + 150);
+    /* 1000 + 5 MiB * 70 + 150: one allowance for every core that can save. */
+    assert(jw_power_hold_save_estimate_ms(&ps_state) == 1500);
+    /* 1000 + 9 MiB * 70 + 150 */
+    assert(jw_power_hold_save_estimate_ms(&saturn_state) == 1780);
+    jw_power_hold_save_request exact = { 2 * MIB };
+    assert(jw_power_hold_save_estimate_ms(&exact) == 1000 + 2 * 70 + 150);
 
-    jw_power_hold_save_request unknown_size = { "gambatte", 0 };
-    jw_power_hold_save_request unmeasured = { "flycast", MIB };
-    jw_power_hold_save_request huge = { "gambatte", 2048ull * MIB };
+    jw_power_hold_save_request unknown_size = { 0 };
+    jw_power_hold_save_request huge = { 2048ull * MIB };
     assert(jw_power_hold_save_estimate_ms(&unknown_size) == -1);
-    assert(jw_power_hold_save_estimate_ms(&unmeasured) == -1);
     assert(jw_power_hold_save_estimate_ms(&huge) == -1);
     assert(jw_power_hold_save_estimate_ms(NULL) == -1);
 }
@@ -183,19 +178,19 @@ static void test_admission(void) {
     /* Fits exactly at the bound. */
     released(&s, release);
     deadline = release + JW_POWER_HOLD_SAVE_WINDOW_MS;
-    assert(jw_power_hold_save_admit(&s, &ps_state, deadline - 600, NULL));
+    assert(jw_power_hold_save_admit(&s, &ps_state, deadline - 1500, NULL));
 
     /* One millisecond short fails closed without sending anything. */
     released(&s, release);
-    assert(!jw_power_hold_save_admit(&s, &ps_state, deadline - 599, &deadline));
+    assert(!jw_power_hold_save_admit(&s, &ps_state, deadline - 1499, &deadline));
     assert(deadline == 0);
     assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_BUDGET_INSUFFICIENT);
     assert(jw_power_hold_save_tick(&s, release + 1) == JW_POWER_HOLD_SAVE_SHUT_DOWN);
 
-    /* Unmeasured core. */
-    jw_power_hold_save_request unmeasured = { "mupen64plus_next", 16 * MIB };
+    /* Unknown size (no probe reply) fails closed. */
+    jw_power_hold_save_request unknown = { 0 };
     released(&s, release);
-    assert(!jw_power_hold_save_admit(&s, &unmeasured, release, NULL));
+    assert(!jw_power_hold_save_admit(&s, &unknown, release, NULL));
     assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_BUDGET_INSUFFICIENT);
 
     /* Never admitted before the window closed. */
@@ -267,7 +262,7 @@ static void test_repress_caps_the_window(void) {
     released(&s, release);
     jw_power_hold_save_key_edge(&s, true, release + 100);
     long long held_cap = release + 100 + OFFSET;
-    assert(!jw_power_hold_save_admit(&s, &saturn_state, held_cap - 1279, NULL));
+    assert(!jw_power_hold_save_admit(&s, &saturn_state, held_cap - 1779, NULL));
     assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_BUDGET_INSUFFICIENT);
 }
 

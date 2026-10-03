@@ -11378,10 +11378,6 @@ static bool jw__power_hold_save_eligible(jw_daemon_state *state) {
         jw_log_warn("power-hold save: session has no pinned source/core namespace");
         return false;
     }
-    if (jw_power_hold_save_serialize_allowance_ms(session->core_id) <= 0) {
-        jw_log_info("power-hold save: core %s is not qualified", session->core_id);
-        return false;
-    }
     char states_dir[PATH_MAX];
     if (snprintf(states_dir, sizeof(states_dir), "%s/States", session->source_root) >=
             (int)sizeof(states_dir) ||
@@ -11481,7 +11477,6 @@ static jw_power_hold_save_outcome jw__power_hold_save_error_outcome(const char *
 static void jw__power_hold_save_start(jw_daemon_state *state, long long now) {
     jw_power_hold_save *s = &state->power_hold_save;
     jw_power_hold_save_request req = {
-        .core_id = state->retroarch_session.core_id,
         .state_bytes = state->power_hold_save_bytes,
     };
     long long deadline = 0;
@@ -11490,8 +11485,7 @@ static void jw__power_hold_save_start(jw_daemon_state *state, long long now) {
     }
     /* RetroArch must begin writing while the flush and publish still fit. */
     long long estimate = jw_power_hold_save_estimate_ms(&req);
-    long long start_by = deadline -
-        (estimate - jw_power_hold_save_serialize_allowance_ms(req.core_id));
+    long long start_by = deadline - (estimate - JW_POWER_HOLD_SAVE_SERIALIZE_MS);
     jw_ra_client ra = jw_ra_client_default();
     if (jw_ra_sync_save_send(&ra, &state->power_hold_save_request,
                              JW_RA_GAME_SWITCHER_STATE_SLOT,

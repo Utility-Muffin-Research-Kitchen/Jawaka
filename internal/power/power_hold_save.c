@@ -4,24 +4,6 @@
 
 #define JW_PHS_MIB (1024ull * 1024ull)
 
-typedef struct {
-    const char *core_id;
-    int serialize_ms;
-} jw__phs_core_allowance;
-
-/* Measured on MLP1 with the asynchronous command path: reply/close times were
-   GB 15-35 ms, SNES 17-32 ms, PS 25-49 ms, Saturn 250-320 ms. The synchronous
-   SAVE_STATE_SYNC path (serialize + write + fsync, secondary card) took
-   386-432 ms for PS 4.3 MiB and 915-966 ms for Saturn 8.6 MiB, so Saturn gets
-   extra headroom over its flush estimate. Unlisted cores stay unadmitted
-   until measured. */
-static const jw__phs_core_allowance jw__phs_core_allowances[] = {
-    { "gambatte",     50 },
-    { "snes9x",       50 },
-    { "pcsx_rearmed", 100 },
-    { "yabasanshiro", 500 },
-};
-
 void jw_power_hold_save_init(jw_power_hold_save *s) {
     if (!s) {
         return;
@@ -161,26 +143,8 @@ jw_power_hold_save_decision jw_power_hold_save_tick(jw_power_hold_save *s,
     return JW_POWER_HOLD_SAVE_SHUT_DOWN;
 }
 
-int jw_power_hold_save_serialize_allowance_ms(const char *core_id) {
-    if (!core_id || !core_id[0]) {
-        return 0;
-    }
-    for (size_t i = 0;
-         i < sizeof(jw__phs_core_allowances) / sizeof(jw__phs_core_allowances[0]);
-         i++) {
-        if (strcmp(jw__phs_core_allowances[i].core_id, core_id) == 0) {
-            return jw__phs_core_allowances[i].serialize_ms;
-        }
-    }
-    return 0;
-}
-
 long long jw_power_hold_save_estimate_ms(const jw_power_hold_save_request *req) {
     if (!req || req->state_bytes == 0) {
-        return -1;
-    }
-    int serialize_ms = jw_power_hold_save_serialize_allowance_ms(req->core_id);
-    if (serialize_ms <= 0) {
         return -1;
     }
     /* Cap well above any libretro state so the multiply cannot overflow. */
@@ -188,7 +152,7 @@ long long jw_power_hold_save_estimate_ms(const jw_power_hold_save_request *req) 
         return -1;
     }
     long long mib = (long long)((req->state_bytes + JW_PHS_MIB - 1) / JW_PHS_MIB);
-    return serialize_ms + mib * JW_POWER_HOLD_SAVE_FLUSH_MS_PER_MIB +
+    return JW_POWER_HOLD_SAVE_SERIALIZE_MS + mib * JW_POWER_HOLD_SAVE_FLUSH_MS_PER_MIB +
            JW_POWER_HOLD_SAVE_PUBLISH_MS;
 }
 
