@@ -472,6 +472,9 @@ typedef struct {
     char power_hold_save_tmp[PATH_MAX];         /* pinned temporary path */
     bool power_hold_save_tmp_owned;             /* sent, not yet published or removed */
     bool power_hold_save_reported;              /* outcome logged */
+    int  power_hold_save_release_notice_tries;  /* OSD prompt attempts (max 3) */
+    bool power_hold_save_release_notice_ok;     /* OSD acknowledged the prompt */
+    long long power_hold_save_release_notice_next_ms;
     /* Saved outcome only: QUIT sent at this time (0 = not sent) and the bound
        on waiting for RetroArch's own exit before the kill sequence. */
     long long power_hold_save_quit_sent_ms;
@@ -11374,14 +11377,46 @@ static void jw__power_hold_save_refresh_setting(jw_daemon_state *state) {
 }
 
 /* One banner at a time; best-effort and bounded by the OSD client timeout. */
-static void jw__power_hold_save_notice(jw_daemon_state *state, const char *stage) {
+static bool jw__power_hold_save_notice(jw_daemon_state *state, const char *stage) {
     if (!jw__osd_enabled(state)) {
-        return;
+        return false;
     }
     jw_osd_client client = jw__osd_client(state);
     if (jw_osd_client_show_stage(&client, &state->pico8_exit_confirm_until_ms,
                                  stage, 0) != 0) {
         jw_log_warn("power-hold save: %s OSD request failed", stage);
+        return false;
+    }
+    return true;
+}
+
+#define JW_POWER_HOLD_SAVE_RELEASE_NOTICE_TRIES 3
+#define JW_POWER_HOLD_SAVE_RELEASE_NOTICE_RETRY_MS 100
+
+/* The release prompt is the one notice the player must see in time, so it is
+   retried on following ticks while the key is still held. Logs how long after
+   the long press the OSD acknowledged it. */
+static void jw__power_hold_save_release_notice(jw_daemon_state *state, long long now) {
+    if (state->power_hold_save_release_notice_ok ||
+        state->power_hold_save_release_notice_tries >= JW_POWER_HOLD_SAVE_RELEASE_NOTICE_TRIES ||
+        now < state->power_hold_save_release_notice_next_ms) {
+        return;
+    }
+    state->power_hold_save_release_notice_tries++;
+    long long before = jw__monotonic_ms();
+    bool ok = jw__power_hold_save_notice(state, "power-save-release");
+    long long after = jw__monotonic_ms();
+    if (ok) {
+        state->power_hold_save_release_notice_ok = true;
+        jw_log_info("power-hold save: release prompt acknowledged %lldms after the long press (attempt %d, osd_ms=%lld)",
+                    after - state->power_hold_save_started_ms,
+                    state->power_hold_save_release_notice_tries, after - before);
+        return;
+    }
+    state->power_hold_save_release_notice_next_ms = after + JW_POWER_HOLD_SAVE_RELEASE_NOTICE_RETRY_MS;
+    if (state->power_hold_save_release_notice_tries >= JW_POWER_HOLD_SAVE_RELEASE_NOTICE_TRIES) {
+        jw_log_warn("power-hold save: release prompt not shown after %d attempts",
+                    state->power_hold_save_release_notice_tries);
     }
 }
 
@@ -11502,7 +11537,7 @@ static void jw__power_long_press(jw_daemon_state *state, long long press_ms,
         JW_POWER_HOLD_SAVE_WAIT) {
         jw_log_info("power-hold save: waiting for release (release by +%lldms; force-off hold %ds, cut %lldms)",
                     state->power_hold_save.release_offset_ms, hold_s, cut_ms);
-        jw__power_hold_save_notice(state, "power-save-release");
+        jw__power_hold_save_release_notice(state, now);
     } else {
         jw__power_hold_save_report(state);
     }
@@ -11616,7 +11651,9 @@ static bool jw__tick_power_hold_save(jw_daemon_state *state) {
             jw__power_hold_save_start(state, now);
             break;
         case JW_POWER_HOLD_SAVE_WAIT:
-            if (s->phase == JW_POWER_HOLD_SAVE_SAVING) {
+            if (s->phase == JW_POWER_HOLD_SAVE_AWAIT_RELEASE) {
+                jw__power_hold_save_release_notice(state, now);
+            } else if (s->phase == JW_POWER_HOLD_SAVE_SAVING) {
                 jw__power_hold_save_poll(state);
             }
             break;
@@ -11659,6 +11696,14 @@ static bool jw__power_hold_save_quit_grace(jw_daemon_state *state) {
         jw_log_info("power-hold save: quit grace: sent QUIT to RetroArch pid=%d; allowing %d ms",
                     (int)state->child_pid, JW_POWER_HOLD_SAVE_QUIT_GRACE_MS);
         return true;
+    }
+    if (state->power_hold_save.key_down) {
+        /* A re-press starts the PMIC timer again: stop waiting for RetroArch's
+           own exit and use the measured teardown budget for the kill path. */
+        state->power_hold_save_quit_expired = true;
+        jw_log_warn("power-hold save: power key pressed during the quit grace (%lld ms in); killing",
+                    now - state->power_hold_save_quit_sent_ms);
+        return false;
     }
     if (now < state->power_hold_save_quit_deadline_ms) {
         return true;

@@ -42,13 +42,11 @@
 #define JW_POWER_HOLD_SAVE_FLUSH_MS_PER_MIB     70
 /* rename (<= 70 ms), directory fsync (<= 25 ms), thumbnail removal, slack. */
 #define JW_POWER_HOLD_SAVE_PUBLISH_MS           150
-/* After a saved outcome only, RetroArch gets QUIT and this long to exit on
-   its own before the ordinary SIGTERM/SIGKILL sequence: its clean exit
-   flushes SRAM, memory cards and the runtime config, which the 50 ms kill
-   grace never proved. Measured on the MLP1 on 2026-10-03 (Spyro,
-   SwanStation): RetroArch gone 338 ms after QUIT, exit status 0. Spent
-   inside the released window, where the PMIC imposes no deadline. */
-#define JW_POWER_HOLD_SAVE_QUIT_GRACE_MS        1000
+/* After a saved outcome RetroArch gets QUIT so its own exit path flushes SRAM
+   and config. Measured clean exits on the MLP1 (2026-10-03): PCSX-ReARMed and
+   SwanStation 315-571 ms, yabasanshiro ~3.2 s. The key is released here, so
+   the PMIC imposes no deadline; a re-press ends the grace at once. */
+#define JW_POWER_HOLD_SAVE_QUIT_GRACE_MS        4000
 
 typedef enum {
     JW_POWER_HOLD_SAVE_IDLE = 0,

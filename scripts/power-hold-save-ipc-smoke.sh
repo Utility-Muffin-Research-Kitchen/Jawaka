@@ -339,7 +339,7 @@ run_case deaf 1 "${HOOKS[@]}" FAKE_RA_SYNC_SAVE_BYTES="$STATE_BYTES" FAKE_RA_MOD
 expect_shutdown
 expect 'power-hold save: saved elapsed_ms='
 expect 'power-hold save: quit grace: sent QUIT to RetroArch pid='
-expect 'power-hold save: quit grace expired after 1000 ms; killing'
+expect 'power-hold save: quit grace expired after 4000 ms; killing'
 expect_not 'quit grace: RetroArch exited after'
 expect 'RetroArch session terminated pid='
 [ -f "$FINAL_STATE" ] || fail "the published state is gone"
