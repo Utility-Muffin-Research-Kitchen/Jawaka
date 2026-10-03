@@ -1,5 +1,7 @@
 #include "internal/power/power_hold_save_io.h"
 
+#include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -99,4 +101,77 @@ int jw_power_hold_save_remove_tmp(const char *expected_tmp) {
         return -1;
     }
     return 0;
+}
+
+/* "<base>.tmp-<id>" with <id> 1-32 of [A-Za-z0-9_-], the request-id alphabet
+   RetroArch accepts. */
+static bool jw__phs_is_orphan_name(const char *name, const char *base, size_t base_len) {
+    static const char suffix[] = ".tmp-";
+    if (strncmp(name, base, base_len) != 0 ||
+        strncmp(name + base_len, suffix, sizeof(suffix) - 1) != 0) {
+        return false;
+    }
+    const char *id = name + base_len + sizeof(suffix) - 1;
+    size_t id_len = strlen(id);
+    if (id_len < 1 || id_len > 32) {
+        return false;
+    }
+    for (size_t i = 0; i < id_len; i++) {
+        unsigned char c = (unsigned char)id[i];
+        if (!isalnum(c) && c != '_' && c != '-') {
+            return false;
+        }
+    }
+    return true;
+}
+
+int jw_power_hold_save_remove_orphans(const char *final_path) {
+    if (!final_path || !final_path[0]) {
+        return -1;
+    }
+    char dir[4096];
+    if (snprintf(dir, sizeof(dir), "%s", final_path) >= (int)sizeof(dir)) {
+        return -1;
+    }
+    const char *base;
+    char *slash = strrchr(dir, '/');
+    if (!slash) {
+        base = final_path;
+        snprintf(dir, sizeof(dir), ".");
+    } else {
+        base = final_path + (slash - dir) + 1;
+        if (slash == dir) {
+            dir[1] = '\0';
+        } else {
+            *slash = '\0';
+        }
+    }
+    size_t base_len = strlen(base);
+    if (base_len == 0) {
+        return -1;
+    }
+    DIR *dp = opendir(dir);
+    if (!dp) {
+        return -1;
+    }
+    int removed = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dp)) != NULL) {
+        if (!jw__phs_is_orphan_name(entry->d_name, base, base_len)) {
+            continue;
+        }
+        char path[4096];
+        if (snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name) >= (int)sizeof(path)) {
+            continue;
+        }
+        struct stat st;
+        if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+            continue;   /* a symlink or directory is not our leftover */
+        }
+        if (unlink(path) == 0) {
+            removed++;
+        }
+    }
+    closedir(dp);
+    return removed;
 }

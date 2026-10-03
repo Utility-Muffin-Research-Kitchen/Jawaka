@@ -112,6 +112,47 @@ int main(void) {
     assert(jw_power_hold_save_remove_tmp(tmp) == 0);
     assert(jw_power_hold_save_remove_tmp(NULL) == 0);
 
+    /* Orphans of this stem go; the state, another stem's leftovers, names
+       outside the id alphabet or length, and symlinks stay. */
+    char orphan1[600], orphan2[600], other_orphan[600], bad_id[600], long_id[600],
+         no_id[600], link_orphan[600];
+    join(orphan1, sizeof(orphan1), "Game (USA).state99.tmp-a1b2");
+    join(orphan2, sizeof(orphan2), "Game (USA).state99.tmp-Zz_-9");
+    join(other_orphan, sizeof(other_orphan), "Other.state99.tmp-a1b2");
+    join(bad_id, sizeof(bad_id), "Game (USA).state99.tmp-a1.b2");
+    join(long_id, sizeof(long_id), "Game (USA).state99.tmp-"
+         "abcdefghijklmnopqrstuvwxyz0123456");
+    join(no_id, sizeof(no_id), "Game (USA).state99.tmp-");
+    join(link_orphan, sizeof(link_orphan), "Game (USA).state99.tmp-link1");
+    write_file(final_path, "state");
+    write_file(orphan1, "partial");
+    write_file(orphan2, "partial");
+    write_file(other_orphan, "keep");
+    write_file(bad_id, "keep");
+    write_file(long_id, "keep");
+    write_file(no_id, "keep");
+    assert(symlink(final_path, link_orphan) == 0);
+    assert(jw_power_hold_save_remove_orphans(final_path) == 2);
+    assert(access(orphan1, F_OK) != 0 && access(orphan2, F_OK) != 0);
+    assert(read_is(final_path, "state"));
+    assert(read_is(other_orphan, "keep") && read_is(bad_id, "keep") &&
+           read_is(long_id, "keep") && read_is(no_id, "keep"));
+    struct stat link_st;
+    assert(lstat(link_orphan, &link_st) == 0 && S_ISLNK(link_st.st_mode));
+    assert(read_is(final_path, "state"));
+    /* Nothing left to remove; a missing directory is reported, not fatal. */
+    assert(jw_power_hold_save_remove_orphans(final_path) == 0);
+    char missing[600];
+    join(missing, sizeof(missing), "no-such-dir/Game.state99");
+    assert(jw_power_hold_save_remove_orphans(missing) == -1);
+    assert(jw_power_hold_save_remove_orphans(NULL) == -1);
+    assert(jw_power_hold_save_remove_orphans("") == -1);
+    unlink(other_orphan);
+    unlink(bad_id);
+    unlink(long_id);
+    unlink(no_id);
+    unlink(link_orphan);
+
     unlink(final_path);
     rmdir(root);
     puts("PASS power-hold-save-io-test");

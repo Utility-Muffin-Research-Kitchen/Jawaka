@@ -5183,6 +5183,31 @@ static void jw__advanced_shader_clear(jw_daemon_state *state) {
     state->advanced_shader_next_poll_ms = 0;
 }
 
+/* A hard cut during a power-hold save can leave "<stem>.state99.tmp-<id>" in
+   the pinned States/<core> folder. Discovery ignores the name; sweep it when
+   this game is launched again, built exactly like the eligibility pin. Only
+   RetroArch game sessions, never at boot, never for other games. */
+static void jw__power_hold_save_remove_orphans(const jw_retroarch_session *session) {
+    if (!session->rom_path[0] || !session->source_root[0] ||
+        !session->core_config_folder[0]) {
+        return;
+    }
+    char states_dir[PATH_MAX];
+    char final_path[PATH_MAX];
+    if (snprintf(states_dir, sizeof(states_dir), "%s/States", session->source_root) >=
+            (int)sizeof(states_dir) ||
+        !jw_ra_slot_state_path_for_core(states_dir, session->core_config_folder,
+                                        session->rom_path, JW_RA_GAME_SWITCHER_STATE_SLOT,
+                                        false, final_path, sizeof(final_path))) {
+        return;
+    }
+    int removed = jw_power_hold_save_remove_orphans(final_path);
+    if (removed > 0) {
+        jw_log_info("power-hold save: removed %d orphan temporary state%s for %s",
+                    removed, removed == 1 ? "" : "s", final_path);
+    }
+}
+
 static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                                         int game_id,
                                         const char *system, const char *rom_path,
@@ -5233,6 +5258,7 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                 session->core_path, session->core_id[0] ? session->core_id : "(unknown)",
                 session->core_config_folder[0] ? session->core_config_folder : "(unavailable)",
                 session->config_path, session->rom_path);
+    jw__power_hold_save_remove_orphans(session);
 }
 
 static long jw__retroarch_session_runtime_s(const jw_retroarch_session *session) {
@@ -5393,6 +5419,7 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
                 session->core_path, session->core_id[0] ? session->core_id : "(unknown)",
                 session->core_config_folder[0] ? session->core_config_folder : "(unavailable)",
                 session->rom_path);
+    jw__power_hold_save_remove_orphans(session);
 }
 
 static int jw__platform_path(char *out, size_t out_size, const jw_daemon_state *state);

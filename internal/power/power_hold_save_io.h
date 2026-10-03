@@ -35,4 +35,12 @@ jw_phs_publish_result jw_power_hold_save_publish(const char *expected_tmp,
    gone. Returns 0 when nothing remains. */
 int jw_power_hold_save_remove_tmp(const char *expected_tmp);
 
+/* A hard cut mid-write can leave "<final_path>.tmp-<id>" behind. Remove
+   every regular file in final_path's directory named basename(final_path)
+   followed by ".tmp-" and 1-32 of [A-Za-z0-9_-]; nothing else is touched
+   (other stems, the state itself, symlinks). Returns the count removed, or
+   -1 when the directory cannot be opened. Call when that game is launched,
+   never at boot. */
+int jw_power_hold_save_remove_orphans(const char *final_path);
+
 #endif
