@@ -429,6 +429,17 @@ stop
 expect_not 'no play recorded'
 echo "row resume-ok: one load, UNPAUSE, gameplay"
 
+# --- Mount swap: a second card's library row still holds the mount path of --
+# --- its last scan (which runs after start-up). The card, row and ROM are ---
+# --- found by fingerprint, source id and relative path, so it resumes. -----
+PREPARE_HOOK='python3 -c "import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute(\"UPDATE games SET rom_path=? WHERE rom_relpath=?\", (\"/media/old-mount/Roms/N64/Hold Game.n64\", \"N64/Hold Game.n64\")); d.commit()" "$STATE/library.db"' \
+    boot resume-stale-path JAWAKA_TEST_BOOT_ID=boot-b "${RESUME_RA[@]}" FAKE_RA_LOAD_STATE=ok
+wait_log 'boot resume: loaded request=' 100 || fail "a stale library path stopped the resume"
+stop
+expect "RetroArch session started pid="
+expect "rom=$PRIMARY/$ROM"
+echo "row resume-stale-path: a mount swap's stale library path still resumes"
+
 # --- LOAD_STATE_SYNC fails, or this RetroArch predates it: QUIT, launcher. --
 check_load_failure() { # name load-mode want; NO_STATE_INFO=1: no GET_STATE_SAVE_INFO either
     local ra_env=("${RESUME_RA[@]}")

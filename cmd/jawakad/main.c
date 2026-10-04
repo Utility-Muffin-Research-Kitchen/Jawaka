@@ -12444,14 +12444,14 @@ static bool jw__boot_resume_launch(jw_daemon_state *state,
         snprintf(why, why_size, "ROM missing");
         return false;
     }
-    /* The library row for exactly this card and path. */
-    char rom_literal[PATH_MAX];
+    /* The library row for exactly this card and path, by the keys that
+       survive a mount swap: a second card's rom_path still holds the mount
+       path of its last scan, and that scan has not run yet this boot. The
+       launch then resolves the ROM through the row, on today's mount. */
     jw_game_entry game;
-    if (snprintf(rom_literal, sizeof(rom_literal), "%s/%s", source->roms_path,
-                 record->rom_path) >= (int)sizeof(rom_literal) ||
-        jw__lookup_launch_game(state, rom_literal, &game) != 0 ||
-        strcmp(game.source_id, source->id) != 0 ||
-        strcmp(game.rom_relpath, record->rom_path) != 0 ||
+    if (!state->db_path ||
+        jw_db_get_game_by_source_relpath(state->db_path, source->id,
+                                         record->rom_path, &game) != 0 ||
         strcmp(game.system, record->system) != 0) {
         snprintf(why, why_size, "game not in the library");
         return false;
