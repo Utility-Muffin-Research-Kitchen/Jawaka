@@ -13,6 +13,13 @@ synchronous save (retroarch-builds, protocol 1): GET_STATE_SAVE_INFO answers
 FAKE_RA_STATES_DIR/<rom stem>.state<slot>.tmp-<id>, fsyncs it and replies
 TMP_READY with that path. Without the variable both commands go unanswered,
 like a RetroArch built without the patch.
+
+FAKE_RA_LOAD_STATE adds the boot resume's side: GET_INFO answers "0 0 0" (a
+core with states), and LOAD_STATE_SYNC <id> <slot> answers "OK <size>" for
+FAKE_RA_STATES_DIR/<rom stem>.state<slot> ("ok"; ERROR OPEN when it is
+missing), "ERROR <value>" for any other value, or nothing at all ("silent",
+a RetroArch from before the command). Slot -1, the capability probe, is
+refused with BAD_ARGS by any build that has the command.
 """
 import os
 import re
@@ -95,6 +102,37 @@ def sync_save_reply(text, argv):
     return "SAVE_STATE_SYNC %s TMP_READY %d %s" % (request_id, len(data), path)
 
 
+def load_state_reply(text, argv):
+    """The boot resume's GET_INFO and LOAD_STATE_SYNC, or None when not spoken."""
+    mode = os.environ.get("FAKE_RA_LOAD_STATE")
+    if not mode:
+        return None
+    if text == "GET_INFO":
+        return "GET_INFO 0 0 0"
+    if not text.startswith("LOAD_STATE_SYNC") or mode == "silent":
+        return None
+    parts = text.split()
+    if len(parts) != 3 or not REQUEST_ID.match(parts[1]):
+        return "LOAD_STATE_SYNC - ERROR BAD_ARGS"
+    request_id = parts[1]
+    try:
+        slot = int(parts[2])
+    except ValueError:
+        return "LOAD_STATE_SYNC - ERROR BAD_ARGS"
+    if slot < 0 or slot > 999:
+        return "LOAD_STATE_SYNC %s ERROR BAD_ARGS" % request_id
+    if mode != "ok":
+        return "LOAD_STATE_SYNC %s ERROR %s" % (request_id, mode)
+    states_dir = os.environ.get("FAKE_RA_STATES_DIR", "")
+    stem = os.path.splitext(os.path.basename(argv[-1]))[0]
+    path = os.path.join(states_dir, "%s.state%s" % (stem, "" if slot == 0 else slot))
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return "LOAD_STATE_SYNC %s ERROR OPEN" % request_id
+    return "LOAD_STATE_SYNC %s OK %d" % (request_id, size)
+
+
 def main():
     cfg = config_path(sys.argv)
     mode = os.environ.get("FAKE_RA_MODE", "quit")
@@ -130,6 +168,8 @@ def main():
             with open(quit_log, "a", encoding="utf-8") as fp:
                 fp.write(text + "\n")
         reply = sync_save_reply(text, sys.argv)
+        if reply is None:
+            reply = load_state_reply(text, sys.argv)
         if reply is not None:
             sock.sendto(reply.encode("utf-8"), sender)
             continue

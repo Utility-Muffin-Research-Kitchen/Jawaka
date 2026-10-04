@@ -197,9 +197,42 @@ jw_ra_result jw_ra_sync_save_send(const jw_ra_client *client, jw_ra_sync_save *s
 jw_ra_result jw_ra_sync_save_poll(jw_ra_sync_save *save, jw_ra_sync_save_reply *reply);
 void jw_ra_sync_save_close(jw_ra_sync_save *save);
 
+/* ---- Boot resume: synchronous state load ----
+ * LOAD_STATE_SYNC <id> <slot> -> "LOAD_STATE_SYNC <id> OK <bytes>" or
+ * "LOAD_STATE_SYNC <id> ERROR <code>". RetroArch applies the state inside the
+ * command handler, so OK means the file is the running state. The id is the
+ * caller's: a boot resume reuses the id of the save it loads, so one id names
+ * both halves in the logs. The exchange handle is the sync save's (one
+ * connected socket and an id); close it with jw_ra_sync_save_close(). A
+ * RetroArch without the command never answers. */
+typedef struct {
+    bool loaded;         /* OK; otherwise error holds the code */
+    unsigned long long bytes;
+    char error[JW_RA_SYNC_SAVE_ERROR_MAX];
+} jw_ra_sync_load_reply;
+
+/* Blocking, bounded by client->timeout_ms: LOAD_STATE_SYNC <id> -1, which a
+   RetroArch that has the command refuses at once with "<id> ERROR BAD_ARGS"
+   and touches nothing. JW_RA_OK means the command exists; JW_RA_TIMEOUT means
+   this RetroArch predates it. */
+jw_ra_result jw_ra_load_state_sync_probe(const jw_ra_client *client,
+                                         const char *request_id);
+/* Send one LOAD_STATE_SYNC on a fresh connected socket and return at once.
+   `request_id` is 1-16 of [A-Za-z0-9_-]. */
+jw_ra_result jw_ra_load_state_sync(const jw_ra_client *client, jw_ra_sync_save *exchange,
+                                   const char *request_id, int slot);
+/* Non-blocking, as jw_ra_sync_save_poll(): JW_RA_TIMEOUT until the reply for
+   this id arrives, JW_RA_OK with *reply filled, JW_RA_PARSE_ERROR for a
+   malformed matching reply, JW_RA_SOCKET_ERROR once RetroArch is gone. */
+jw_ra_result jw_ra_load_state_sync_poll(jw_ra_sync_save *exchange,
+                                        jw_ra_sync_load_reply *reply);
+
 /* Exposed for tests. */
 jw_ra_result jw_ra_parse_state_save_info_reply(const char *reply,
                                                jw_ra_state_save_info *info);
+/* JW_RA_TIMEOUT when the reply belongs to another request ID. */
+jw_ra_result jw_ra_parse_load_state_sync_reply(const char *reply, const char *request_id,
+                                               jw_ra_sync_load_reply *out);
 /* JW_RA_TIMEOUT when the reply belongs to another request ID. */
 jw_ra_result jw_ra_parse_sync_save_reply(const char *reply, const char *request_id,
                                          jw_ra_sync_save_reply *out);

@@ -2727,8 +2727,9 @@ static void jw__fill_game_entry(sqlite3_stmt *stmt, jw_game_entry *out) {
     }
 }
 
+/* where_sql binds `rom_path` (or `game_id`) as ?1 and, when given, `text2` as ?2. */
 static int jw__get_game(const char *db_path, const char *where_sql,
-                        const char *rom_path, int game_id,
+                        const char *rom_path, const char *text2, int game_id,
                         jw_game_entry *out) {
     if (!db_path || !where_sql || !out) {
         return -1;
@@ -2767,6 +2768,7 @@ static int jw__get_game(const char *db_path, const char *where_sql,
 
     if (rom_path) sqlite3_bind_text(stmt, 1, rom_path, -1, SQLITE_TRANSIENT);
     else sqlite3_bind_int(stmt, 1, game_id);
+    if (text2) sqlite3_bind_text(stmt, 2, text2, -1, SQLITE_TRANSIENT);
 
     int rc = -1;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -2782,13 +2784,21 @@ static int jw__get_game(const char *db_path, const char *where_sql,
 int jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,
                                jw_game_entry *out) {
     return (rom_path && rom_path[0])
-        ? jw__get_game(db_path, "WHERE g.rom_path = ?", rom_path, 0, out)
+        ? jw__get_game(db_path, "WHERE g.rom_path = ?", rom_path, NULL, 0, out)
+        : -1;
+}
+
+int jw_db_get_game_by_source_relpath(const char *db_path, const char *source_id,
+                                     const char *rom_relpath, jw_game_entry *out) {
+    return (source_id && source_id[0] && rom_relpath && rom_relpath[0])
+        ? jw__get_game(db_path, "WHERE g.source_id = ?1 AND g.rom_relpath = ?2",
+                       source_id, rom_relpath, 0, out)
         : -1;
 }
 
 int jw_db_get_game_by_id(const char *db_path, int game_id, jw_game_entry *out) {
     return game_id > 0
-        ? jw__get_game(db_path, "WHERE g.id = ?", NULL, game_id, out)
+        ? jw__get_game(db_path, "WHERE g.id = ?", NULL, NULL, game_id, out)
         : -1;
 }
 

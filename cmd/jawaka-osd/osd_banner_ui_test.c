@@ -23,7 +23,7 @@ static const jw_osd_game_stage kStages[] = {
     JW_OSD_GAME_SETTINGS_NOT_SAVED, JW_OSD_GAME_STORAGE_READ_ONLY,
     JW_OSD_PICO8_EXIT_CONFIRM, JW_OSD_PICO8_IMPORT, JW_OSD_PICO8_IMPORT_FAILED,
     JW_OSD_POWER_SAVE_RELEASE, JW_OSD_POWER_SAVE_SAVING, JW_OSD_POWER_SAVE_SAVED,
-    JW_OSD_POWER_SAVE_FAILED,
+    JW_OSD_POWER_SAVE_FAILED, JW_OSD_BOOT_RESUME,
 };
 
 static void assert_inside(const jw_osd_rect *box, int x, int y, const SDL_Surface *row) {

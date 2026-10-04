@@ -13662,6 +13662,10 @@ int main(void) {
         const char *status_code = getenv("JAWAKA_LAUNCH_STATUS_CODE");
         if (getenv("JAWAKA_LAUNCH_INPUT_FAILED")) {
             jw__launch_notice(&state, T("Controller setup failed. Restart Leaf and try again."));
+        } else if (getenv("JAWAKA_BOOT_RESUME_FAILED")) {
+            /* Resume Game on Boot did not get the saved game back. */
+            jw__launch_notice(&state,
+                              T("Couldn't resume your game. Open it to try loading your save."));
         } else if (status_name && status_name[0] && status_code && status_code[0]) {
             char notice[256];
             snprintf(notice, sizeof(notice), T("%s launcher exited (status %s)"),
@@ -13669,6 +13673,7 @@ int main(void) {
             jw__launch_notice(&state, notice);
         }
         unsetenv("JAWAKA_LAUNCH_INPUT_FAILED");
+        unsetenv("JAWAKA_BOOT_RESUME_FAILED");
         unsetenv("JAWAKA_LAUNCH_STATUS_NAME");
         unsetenv("JAWAKA_LAUNCH_STATUS_CODE");
     }

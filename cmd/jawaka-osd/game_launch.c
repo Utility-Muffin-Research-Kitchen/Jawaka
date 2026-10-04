@@ -20,6 +20,7 @@ const char *jw_osd_game_stage_name(jw_osd_game_stage stage) {
         case JW_OSD_POWER_SAVE_SAVING: return "power-save-saving";
         case JW_OSD_POWER_SAVE_SAVED: return "power-save-saved";
         case JW_OSD_POWER_SAVE_FAILED: return "power-save-failed";
+        case JW_OSD_BOOT_RESUME: return "boot-resume";
     }
     return "unknown";
 }
@@ -77,6 +78,8 @@ bool jw_osd_game_launch_parse(const cJSON *root,
         *stage = JW_OSD_POWER_SAVE_SAVED;
     } else if (strcmp(stage_item->valuestring, "power-save-failed") == 0) {
         *stage = JW_OSD_POWER_SAVE_FAILED;
+    } else if (strcmp(stage_item->valuestring, "boot-resume") == 0) {
+        *stage = JW_OSD_BOOT_RESUME;
     } else {
         return false;
     }
@@ -189,6 +192,9 @@ void jw_osd_game_launch_text(jw_osd_game_stage stage, int pending_items,
         case JW_OSD_POWER_SAVE_FAILED:
             jw__copy(title, title_size, T("Game not saved"));
             jw__copy(action, action_size, T("Powering off"));
+            break;
+        case JW_OSD_BOOT_RESUME:
+            jw__copy(title, title_size, T("Resuming your game"));
             break;
     }
 }

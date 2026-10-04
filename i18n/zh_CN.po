@@ -3628,3 +3628,27 @@ msgstr "游戏未保存"
 #, fuzzy
 msgid "Powering off"
 msgstr "正在关机"
+
+#, fuzzy
+msgid "Resume Game on Boot"
+msgstr "开机时继续游戏"
+
+#, fuzzy
+msgid "Continue your game when you turn on your console after saving with the power button. Hold B during startup to skip."
+msgstr "用电源键存档后，下次开机即可继续游戏。开机时按住 B 键可跳过。"
+
+#, fuzzy
+msgid "Turn on Save Before Power Off first"
+msgstr "请先开启“关机前存档”"
+
+#, fuzzy
+msgid "Your game will not resume at startup"
+msgstr "开机时不会继续游戏"
+
+#, fuzzy
+msgid "Couldn't resume your game. Open it to try loading your save."
+msgstr "无法继续游戏。请打开游戏并尝试读取存档。"
+
+#, fuzzy
+msgid "Resuming your game"
+msgstr "正在继续游戏"

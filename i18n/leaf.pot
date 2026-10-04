@@ -848,6 +848,10 @@ msgstr ""
 msgid "Continue"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Continue your game when you turn on your console after saving with the power button. Hold B during startup to skip."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Controller setup failed. Restart Leaf and try again."
 msgstr ""
@@ -862,6 +866,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't install %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Couldn't resume your game. Open it to try loading your save."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2117,6 +2125,14 @@ msgid "Resume"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Resume Game on Boot"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Resuming your game"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "RetroAchievements"
 msgstr ""
 
@@ -2916,6 +2932,10 @@ msgstr ""
 msgid "Turn off your device and check the card on a computer."
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Turn on Save Before Power Off first"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Type to search"
 msgstr ""
@@ -3202,6 +3222,10 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Your device's internal storage can't record the repair. Check the card on a computer instead."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Your game will not resume at startup"
 msgstr ""
 
 #: internal/settings/storage_ui.c

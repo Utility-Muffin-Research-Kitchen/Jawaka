@@ -229,6 +229,7 @@ DAEMON_SRCS := \
 	internal/platform/paths.c \
 	internal/platform/perf_policy.c \
 	internal/platform/raofflineproxy.c \
+	internal/power/boot_resume.c \
 	internal/power/power_hold_save.c \
 	internal/power/power_hold_save_io.c \
 	internal/power/power_hard_cut.c \
@@ -501,7 +502,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test wifi-attempt-test input-shortcuts-test shortcut-dispatch-check shortcut-ipc-smoke jawaka-input-proxy-chord-test mlp1-adb-chord-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test theme-package-test user-themes-test storage-sources-test storage-health-test storage-repair-advice-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test log-heal-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test osd-view-test osd-client-test osd-layout-test osd-banner-ui-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke launch-core-pin-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test rumble-settings-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke power-hold-save-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke ra-account-test ra-account-launch-test ra-account-retroarch-test ra-account-contract-test ra-account-env-ipc-smoke flycast-ra-route-ipc-smoke settings-account-test settings-status-test states-core-test appearance-env-test jawaka-timezone-probe timezone-test mlp1-device-timezone-test legacy-migration-test shader-catalog-test shader-picker-test shader-menu-contract-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test core-selection-test launch-notice-test bios-test bios-launch-contract-check scrape-systems-test ss-client-test suspend-inhibit-test power-hold-save-test suspend-inhibit-ipc-smoke update-local-manifest-smoke update-github-check-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-theme-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl power-hard-cut-test FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test wifi-attempt-test input-shortcuts-test shortcut-dispatch-check shortcut-ipc-smoke jawaka-input-proxy-chord-test mlp1-adb-chord-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test theme-package-test user-themes-test storage-sources-test storage-health-test storage-repair-advice-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test log-heal-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test osd-view-test osd-client-test osd-layout-test osd-banner-ui-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke launch-core-pin-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test rumble-settings-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke power-hold-save-ipc-smoke boot-resume-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke ra-account-test ra-account-launch-test ra-account-retroarch-test ra-account-contract-test ra-account-env-ipc-smoke flycast-ra-route-ipc-smoke settings-account-test settings-status-test states-core-test appearance-env-test jawaka-timezone-probe timezone-test mlp1-device-timezone-test legacy-migration-test shader-catalog-test shader-picker-test shader-menu-contract-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test core-selection-test launch-notice-test bios-test bios-launch-contract-check scrape-systems-test ss-client-test suspend-inhibit-test power-hold-save-test boot-resume-test suspend-inhibit-ipc-smoke update-local-manifest-smoke update-github-check-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-theme-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl power-hard-cut-test FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -707,6 +708,9 @@ power-transition-ipc-smoke:
 
 power-hold-save-ipc-smoke: jawakad jawaka-platformctl
 	scripts/power-hold-save-ipc-smoke.sh
+
+boot-resume-ipc-smoke: jawakad jawaka-platformctl
+	scripts/boot-resume-ipc-smoke.sh
 
 # jawakad exits on SIGTERM while supervising a launcher child.
 .PHONY: daemon-shutdown-smoke
@@ -1377,6 +1381,16 @@ power-hold-save-test: | $(BUILD)/bin
 		internal/db/setting_nowait_test.c internal/db/db.c internal/db/relocation.c \
 		internal/storage/sources.c $(LDLIBS_COMMON)
 	$(BUILD)/bin/setting-nowait-test
+
+# Resume Game on Boot record: write/parse/consume, the boot-time discards and
+# the exact-slot check, on temp dirs.
+boot-resume-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/boot-resume-test \
+		internal/power/boot_resume_test.c internal/power/boot_resume.c \
+		internal/retroarch/states.c internal/storage/sources.c \
+		third_party/cjson/cJSON.c -lm
+	$(BUILD)/bin/boot-resume-test
+
 # Force Off Hold: seconds -> RK817 0xf7 bits, parse of the stored value with
 # the 10 s default on garbage, and the read-modify-write on a register byte.
 power-hard-cut-test: | $(BUILD)/bin
@@ -1670,7 +1684,9 @@ help:
 	@echo "  make jawaka-inhibitctl       Build suspend-inhibitor diagnostic helper"
 	@echo "  make suspend-inhibit-test suspend-inhibit-ipc-smoke  Run native lease/power tests"
 	@echo "  make power-hold-save-test  Run the power-hold save policy test"
+	@echo "  make boot-resume-test     Run the Resume Game on Boot record test"
 	@echo "  make power-hold-save-ipc-smoke  Drive jawakad through scripted power-key edges and a fake RetroArch (Linux container)"
+	@echo "  make boot-resume-ipc-smoke  Arm a resume with a power-hold save, then boot again through each acceptance row (Linux container)"
 	@echo "  make power-hard-cut-test  Force Off Hold value mapping and register rewrite"
 	@echo "  make wifi-ssid-test          Validate wpa_supplicant SSID conversions"
 	@echo "  make wifi-attempt-test       Validate when a Wi-Fi join attempt succeeds or fails"

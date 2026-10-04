@@ -153,6 +153,16 @@ void     jw_input_proxy_release_buttons(jw_input_proxy *proxy);
  * is emitted by the proxy tick, so this is safe to call from an event callback.
  * No-op when the proxy is watch-only or a tap is already in flight. */
 void     jw_input_proxy_emit_menu_tap(jw_input_proxy *proxy);
+/* Resume Game on Boot bypass. True when the built-in pad's `button` is down
+ * according to the proxy's own physical state: the EVIOCGKEY sample taken when
+ * it opened the pad, kept current by every event since, so a button held from
+ * before the proxy started counts without a new press. When it is held, the
+ * press is taken away from the foreground: if it was already forwarded, the
+ * virtual pad releases it now, and every later event for that button is dropped
+ * until its release, so the launcher never turns it into Back. False when the
+ * state could not be read. */
+bool     jw_input_proxy_take_held_button(jw_input_proxy *proxy,
+                                         jw_input_shortcut_button button);
 /* One power-key press or release edge, stamped with when the key actually moved
  * (kernel event time, CLOCK_MONOTONIC ms) — not when the daemon got around to
  * consuming it. The distinction matters for long-press detection: if a tick

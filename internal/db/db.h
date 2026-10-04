@@ -205,6 +205,11 @@ int  jw_db_remove_recent(const char *db_path, const char *kind, int target_id);
    normally be deleted by callers rather than stored. */
 int  jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,
                                 jw_game_entry *out);
+/* The row a card's scan keyed by (source_id, rom_relpath). Unlike rom_path,
+   which holds a second card's mount path from its last scan, this still finds
+   the game after the two MLP1 cards swap mount points. 0 when found. */
+int  jw_db_get_game_by_source_relpath(const char *db_path, const char *source_id,
+                                      const char *rom_relpath, jw_game_entry *out);
 /* Resolve a stable games.id to a full entry. Returns 0 when found, -1 when no
    row matched (e.g. a picked game whose ROM was removed) or on error. */
 int  jw_db_get_game_by_id(const char *db_path, int game_id, jw_game_entry *out);
