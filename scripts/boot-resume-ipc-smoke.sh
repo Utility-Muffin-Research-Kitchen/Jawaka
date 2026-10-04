@@ -234,6 +234,7 @@ arm() {
 
 # --- Boot A, Resume Game on Boot Off: saved, nothing armed. ----------------
 arm arm-off 0
+expect 'power-hold save: saved; Resume Game on Boot is off, nothing armed'
 expect_not 'resume armed'
 expect_not 'resume not armed'
 [ ! -e "$RECORD" ] || fail "a record was written with Resume Game on Boot Off"

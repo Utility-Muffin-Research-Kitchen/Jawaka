@@ -12220,7 +12220,14 @@ static void jw__retroarch_session_pin_resume(jw_daemon_state *state,
    no card scan, no read of the state. A failure costs only the automatic
    continuation; the save itself stands. */
 static void jw__boot_resume_arm(jw_daemon_state *state) {
-    if (!state->power_hold_save_enabled || !state->boot_resume_enabled) {
+    if (!state->power_hold_save_enabled) {
+        return;
+    }
+    if (!state->boot_resume_enabled) {
+        /* Said out loud: on the device this is the first question when a
+           game did not come back, and the session log of the shutdown is
+           rotated away after two more boots. */
+        jw_log_info("power-hold save: saved; Resume Game on Boot is off, nothing armed");
         return;
     }
     const jw_retroarch_session *session = &state->retroarch_session;
