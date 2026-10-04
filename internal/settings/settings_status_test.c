@@ -383,9 +383,10 @@ static int check_force_off_hold(void) {
     return 0;
 }
 
-/* Resume Game on Boot sits right after Save Before Power Off (rows 3 and 4
-   with no Language row), switches exactly where that row does, persists
-   resume_game_on_boot, and says when the save setting has to come first. */
+/* Save Before Power Off and Resume Game on Boot sit on the Games page after
+   Game Performance. Resume switches exactly where the save row does, persists
+   resume_game_on_boot, and says when the save setting has to come first.
+   Neither is a System row any more. */
 static int check_boot_resume(void) {
     char db[] = "/tmp/settings-status-resume.XXXXXX";
     int fd = mkstemp(db);
@@ -398,20 +399,25 @@ static int check_boot_resume(void) {
     char saved[32] = "";
     ui.open = true;
     snprintf(ui.db_path, sizeof(ui.db_path), "%s", db);
-    ui.screen = JW_SETTINGS_SYSTEM;
+    ui.screen = JW_SETTINGS_GAMES;
     ui.power_hold_save_supported = true;   /* as on the MLP1 */
 
-    /* Row 3 is still Save Before Power Off. */
-    ui.system_list.cursor = 3;
+    ui.games_list.cursor = JW_GAMES_POWER_HOLD_SAVE;
     jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
     if (!ui.power_hold_save_enabled || ui.boot_resume_enabled)
-        return fail("row 3 is not Save Before Power Off");
-    ui.power_hold_save_enabled = false;
+        return fail("the Games row did not switch Save Before Power Off");
+    if (jw_db_get_setting(db, "save_state_on_power_hold", saved, sizeof(saved)) != 0 ||
+        strcmp(saved, "1") != 0)
+        return fail("On did not reach save_state_on_power_hold");
+    if (strcmp(status, "Hold power to shut down, then release to save") != 0)
+        return fail("Save Before Power Off status is wrong");
+    jw_settings_ui_handle_button(&ui, CAT_BTN_LEFT, status, sizeof(status), NULL);
+    if (ui.power_hold_save_enabled) return fail("Left did not switch the save row off");
 
-    ui.system_list.cursor = 4;
+    ui.games_list.cursor = JW_GAMES_BOOT_RESUME;
     status[0] = '\0';
     jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
-    if (ui.screen != JW_SETTINGS_SYSTEM) return fail("Resume Game on Boot left System");
+    if (ui.screen != JW_SETTINGS_GAMES) return fail("Resume Game on Boot left Games");
     if (!ui.boot_resume_enabled) return fail("A did not switch Resume Game on Boot on");
     if (jw_db_get_setting(db, "resume_game_on_boot", saved, sizeof(saved)) != 0 ||
         strcmp(saved, "1") != 0)
@@ -447,6 +453,20 @@ static int check_boot_resume(void) {
     if (jw_db_get_setting(db, "resume_game_on_boot", saved, sizeof(saved)) != 0 ||
         strcmp(saved, "1") != 0)
         return fail("an unavailable Resume Game on Boot wrote to the database");
+
+    /* The System page no longer has them: walking every row there changes
+       neither key. */
+    ui.power_hold_save_supported = true;
+    ui.power_hold_save_enabled = false;
+    ui.boot_resume_enabled = false;
+    ui.screen = JW_SETTINGS_SYSTEM;
+    for (int row = 0; row < 8; row++) {
+        ui.system_list.cursor = row;
+        jw_settings_ui_handle_button(&ui, CAT_BTN_RIGHT, status, sizeof(status), NULL);
+        ui.screen = JW_SETTINGS_SYSTEM;
+    }
+    if (ui.power_hold_save_enabled || ui.boot_resume_enabled)
+        return fail("a System row still switches a power-off setting");
     unlink(db);
     return 0;
 }

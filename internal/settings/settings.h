@@ -175,16 +175,21 @@ typedef enum {
 #define JW_ACCOUNTS_ROW_COUNT         2
 
 /* Games page (was Game Art). Artwork first because scraping is what the page is
-   opened for; the two settings that describe how games run, and the accounts
-   that serve games, follow. */
+   opened for; the settings that describe how games run, and the accounts that
+   serve games, follow. */
 #define JW_GAMES_SCRAPE_DOWNLOAD 0
 #define JW_GAMES_SCRAPE_QUEUE    1
 #define JW_GAMES_ARTWORK         2
 #define JW_GAMES_REGION          3
 #define JW_GAMES_PERFORMANCE     4   /* was General > Game Performance */
-#define JW_GAMES_RESET_RETROARCH 5   /* was General > Reset RetroArch Config */
-#define JW_GAMES_ACCOUNTS        6   /* -> Accounts, was a top-level category */
-#define JW_GAMES_ROW_COUNT       7
+/* Save the RetroArch game on a power-button shutdown, and continue it at the
+   next start. Shown everywhere, switchable on MLP1 only: other platforms need
+   their own button qualification. Both were System rows. */
+#define JW_GAMES_POWER_HOLD_SAVE 5
+#define JW_GAMES_BOOT_RESUME     6
+#define JW_GAMES_RESET_RETROARCH 7   /* was General > Reset RetroArch Config */
+#define JW_GAMES_ACCOUNTS        8   /* -> Accounts, was a top-level category */
+#define JW_GAMES_ROW_COUNT       9
 /* Capacity for the priority editors (catalogs are 10 entries each today). */
 #define JW_SCRAPE_PRIO_SLOTS  16
 
@@ -199,13 +204,6 @@ typedef enum {
     JW_SYSTEM_ROW_TIMEZONE,       /* opens the Time Zone picker screen */
     JW_SYSTEM_ROW_AUTO_SLEEP,
     JW_SYSTEM_ROW_FORCE_OFF_HOLD, /* PMIC power-button cut; a cycler on MLP1, "Unavailable" elsewhere */
-    /* Save the RetroArch game on a power-button shutdown. Shown everywhere,
-       usable on MLP1 only: other platforms need their own button
-       qualification. */
-    JW_SYSTEM_ROW_POWER_HOLD_SAVE,
-    /* Continue that saved game at the next start. Switchable exactly where
-       Save Before Power Off is; it does nothing unless that is On too. */
-    JW_SYSTEM_ROW_BOOT_RESUME,
     JW_SYSTEM_ROW_BOOT_SPLASH,
     JW_SYSTEM_ROW_SD_CARDS,
     JW_SYSTEM_ROW_SERVICES,       /* conditional: -> Services, was a category */
