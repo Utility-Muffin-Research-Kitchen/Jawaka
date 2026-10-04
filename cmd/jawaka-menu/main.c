@@ -1348,6 +1348,17 @@ static void jw__draw_ingame_underlay(SDL_Rect content, int top, int bottom) {
                           content.w - CAT_S(16), bottom - top, CAT_S(14), panel);
 }
 
+/* The status bar for a page whose title sits on the header underlay (drawn
+   from CAT_S(4) to content.y - CAT_S(4)). Centred in that band: at
+   Catastrophe's default y the pill hangs past the underlay's bottom edge. */
+static void jw__draw_ingame_header_status(cat_status_bar_opts *sb, SDL_Rect content) {
+    int top    = CAT_S(4);
+    int bottom = content.y - CAT_S(4);
+    sb->use_y      = true;
+    sb->y_position = top + (bottom - top - CAT_DS(CAT__PILL_SIZE)) / 2;
+    cat_draw_status_bar(sb);
+}
+
 static void jw__draw_ingame_list_focus(int x, int y, int w, int h, void *user) {
     (void)user;
     int pill_h = h - CAT_S(4);
@@ -1421,6 +1432,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
     SDL_Rect content = cat_get_content_rect(true, true, false);
     jw__draw_ingame_underlay(content, CAT_S(4), content.y - CAT_S(4));   /* behind the title */
     cat_draw_screen_title(state->game_title[0] ? state->game_title : T("Game"), &sb);
+    jw__draw_ingame_header_status(&sb, content);
 
     int pad       = CAT_S(24);
     int x         = content.x + pad;
@@ -1730,6 +1742,7 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
     SDL_Rect content = cat_get_content_rect(true, true, false);
     jw__draw_ingame_underlay(content, CAT_S(4), content.y - CAT_S(4));   /* behind the title */
     cat_draw_screen_title(T("Performance"), &sb);
+    jw__draw_ingame_header_status(&sb, content);
 
     int pad = CAT_S(24);
     int x = content.x + pad;
@@ -2073,6 +2086,7 @@ static void jw__render_ingame_shader(const jw_ingame_state *state,
     SDL_Rect content = cat_get_content_rect(true, true, false);
     jw__draw_ingame_underlay(content, CAT_S(4), content.y - CAT_S(4));
     cat_draw_screen_title(T("Shader"), &sb);
+    jw__draw_ingame_header_status(&sb, content);
     jw__draw_ingame_underlay(content, content.y + CAT_S(4),
                              content.y + content.h - CAT_S(8));
 
@@ -2811,6 +2825,21 @@ static void jw__handle_ingame_switcher_input(const char *socket_path,
     }
 }
 
+/* Status-bar prefs plus the values the menu cannot read live: volume (the
+   daemon's last persisted level), Bluetooth and Wi-Fi. The process stays
+   resident for the whole game, so each reveal reloads them or a mid-game volume
+   change would show the level from game start. Battery needs none of this:
+   Catastrophe reads it on every draw. */
+static void jw__ingame_load_status_bar(const char *db_path, jw_ingame_state *state) {
+    jw_settings_load_status_prefs(db_path, &state->status_bar, &state->show_hints);
+    /* Supply the wifi strength ourselves so Catastrophe doesn't shell out for
+       it — same source as the launcher. */
+    if (state->status_bar.show_wifi) {
+        state->status_bar.wifi_supplied = true;
+        state->status_bar.wifi_strength = jw_wifi_strength_now();
+    }
+}
+
 static void jw__ingame_show_switcher(const char *socket_path, const char *db_path,
                                      jw_ingame_state *state) {
     state->status[0] = '\0';
@@ -2875,13 +2904,7 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
     jw_ingame_state state;
     memset(&state, 0, sizeof(state));
     state.db_path = db_path;
-    jw_settings_load_status_prefs(db_path, &state.status_bar, &state.show_hints);
-    /* Supply the wifi strength ourselves (one-shot for the menu's lifetime) so
-       Catastrophe doesn't shell out for it — same source as the launcher. */
-    if (state.status_bar.show_wifi) {
-        state.status_bar.wifi_supplied = true;
-        state.status_bar.wifi_strength = jw_wifi_strength_now();
-    }
+    jw__ingame_load_status_bar(db_path, &state);
     jw__ingame_free_imagery(&state); /* init texture/slot bookkeeping */
     g_kms_crtc = jw__kms_probe_crtc(); /* warm-up: pay the slow DRM probe once */
 
@@ -2949,6 +2972,9 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
         jw_log_info("in-game menu refresh timings: refresh_ms=%lld command=%s",
                     refresh_done_ms - refresh_start_ms,
                     state.session.command_result);
+        /* After the first frame so menu open time is unchanged; the loop's
+           first render repaints with the fresh values. */
+        jw__ingame_load_status_bar(db_path, &state);
 
         bool running = true;
         while (running && !g_hide_requested) {
