@@ -63,4 +63,41 @@ static inline pid_t jw_ledd_spawn(const char *path, char *const argv[]) {
     _exit(127);
 }
 
+/* When ledd exits on its own, jawakad restarts it so a crash mid-session does
+   not leave the ring dark. A helper that dies at once would turn that into a
+   SIGCHLD-driven loop of forks, so the restart is decided here:
+     - exit status 2 is ledd's answer to bad arguments or an effect it does
+       not know (an older ledd beside a newer jawakad); a retry gets the same
+       answer, so it is not restarted;
+     - an exit within JW_LEDD_QUICK_EXIT_MS of the start is quick, and the
+       third quick exit inside JW_LEDD_QUICK_WINDOW_MS stops the restarts;
+     - a helper that ran longer comes back at once.
+   jawakad clears the count whenever the lighting is set again. */
+#define JW_LEDD_EXIT_USAGE        2
+#define JW_LEDD_QUICK_EXIT_MS     10000LL
+#define JW_LEDD_QUICK_WINDOW_MS   60000LL
+#define JW_LEDD_QUICK_EXIT_LIMIT  3
+
+typedef struct {
+    int quick_exits;
+    long long first_quick_ms;
+} jw_ledd_restarts;
+
+static inline void jw_ledd_restarts_reset(jw_ledd_restarts *r) {
+    r->quick_exits = 0;
+    r->first_quick_ms = 0;
+}
+
+static inline int jw_ledd_should_restart(jw_ledd_restarts *r, int usage_exit,
+                                         long long ran_ms, long long now_ms) {
+    if (usage_exit) return 0;
+    if (ran_ms >= JW_LEDD_QUICK_EXIT_MS) return 1;
+    if (r->quick_exits == 0 || now_ms - r->first_quick_ms > JW_LEDD_QUICK_WINDOW_MS) {
+        r->quick_exits = 0;
+        r->first_quick_ms = now_ms;
+    }
+    r->quick_exits++;
+    return r->quick_exits < JW_LEDD_QUICK_EXIT_LIMIT;
+}
+
 #endif
