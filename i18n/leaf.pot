@@ -600,6 +600,10 @@ msgstr ""
 msgid "Battery"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Battery Level"
+msgstr ""
+
 #: internal/platform/platform_common.c
 msgid "Battery Saver"
 msgstr ""
@@ -1054,6 +1058,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Filter"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Fixed"
 msgstr ""
 
 #: internal/settings/settings.c

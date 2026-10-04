@@ -2,7 +2,9 @@ name: LED effects engine lifetime
 
 # jawaka-ledd must stop, and hand the LED ring back, when the jawakad that
 # started it dies. An orphaned ledd kept the session log open on the SD card
-# and the next shutdown could not remount the card read-only.
+# and the next shutdown could not remount the card read-only. jawakad must not
+# restart a ledd that dies at once in a loop, and Battery Level's reader,
+# palette, and write decision run here too (led-battery-test).
 
 on:
   pull_request:
@@ -18,3 +20,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make ledd-spawn-test
+      - run: make led-battery-test

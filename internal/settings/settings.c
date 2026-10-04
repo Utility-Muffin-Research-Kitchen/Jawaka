@@ -579,7 +579,18 @@ static const char *kLedModeLabels[JW_LED_MODE_COUNT] = {
     JW_UI("Sweep"),
     JW_UI("Fountain"),
     JW_UI("Hiccup"),
+    JW_UI("Battery Level"),
 };
+
+/* Battery Level is drawn by jawaka-ledd, which ships for the MLP1 only.
+   Elsewhere the Mode cycle skips it rather than offering a choice that would
+   leave the ring on the Static baseline. */
+static bool jw__led_mode_offered(int mode) {
+    if (mode == JW_LED_MODE_BATTERY) {
+        return strcmp(jw_platform_compiled_id(), "mlp1") == 0;
+    }
+    return mode >= 0 && mode < JW_LED_MODE_COUNT;
+}
 
 
 /* ─── Helpers ──────────────────────────────────────────────────────────── */
@@ -3064,13 +3075,22 @@ static void jw__render_lighting(const jw_settings_ui *ui, int x, int y, int w, i
                           "Enable", ui->led_enabled ? "On" : "Off");
     jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_MODE,
                         "Mode", kLedModeLabels[mode], true);
-    jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_COLOR,
-                        "Color", NULL, false);
-    jw__render_color_swatch(x, ly, w, JW_LIGHTING_COLOR, ui->led_color);
+    /* Battery Level picks the color from the charge and has one rhythm, so
+       Color and Speed say so instead of offering a choice. Their saved values
+       stay as they are for the next mode that uses them. */
+    bool battery = mode == JW_LED_MODE_BATTERY;
+    if (battery) {
+        jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_COLOR,
+                            "Color", "Automatic", false);
+    } else {
+        jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_COLOR,
+                            "Color", NULL, false);
+        jw__render_color_swatch(x, ly, w, JW_LIGHTING_COLOR, ui->led_color);
+    }
     jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_BRIGHTNESS,
                         "Brightness", bright, true);
     jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_SPEED,
-                        "Speed", speed, true);
+                        "Speed", battery ? "Fixed" : speed, !battery);
 }
 
 static void jw__refresh_wifi(jw_settings_ui *ui) {
@@ -7906,10 +7926,18 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
                 int row = ui->lighting_list.cursor;
                 bool changed = true;
+                bool battery = ui->led_mode == JW_LED_MODE_BATTERY;
                 if (row == JW_LIGHTING_ENABLE) {
                     ui->led_enabled = !ui->led_enabled;
                 } else if (row == JW_LIGHTING_MODE) {
-                    ui->led_mode = (ui->led_mode + dir + JW_LED_MODE_COUNT) % JW_LED_MODE_COUNT;
+                    int next = ui->led_mode;
+                    do {
+                        next = (next + dir + JW_LED_MODE_COUNT) % JW_LED_MODE_COUNT;
+                    } while (!jw__led_mode_offered(next));
+                    ui->led_mode = next;
+                } else if (battery &&
+                           (row == JW_LIGHTING_COLOR || row == JW_LIGHTING_SPEED)) {
+                    changed = false;
                 } else if (row == JW_LIGHTING_COLOR) {
                     if (button == CAT_BTN_A)
                         changed = jw__pick_color(ui, &ui->led_color, "led_color", -1);

@@ -13,6 +13,7 @@ const char *jw_led_mode_name(jw_led_mode mode) {
         case JW_LED_MODE_SWEEP:    return "sweep";
         case JW_LED_MODE_FOUNTAIN: return "fountain";
         case JW_LED_MODE_HICCUP:   return "hiccup";
+        case JW_LED_MODE_BATTERY:  return "battery";
         case JW_LED_MODE_STATIC:
         default:                   return "FOREVER";
     }
@@ -27,6 +28,7 @@ bool jw_led_mode_parse(const char *name, jw_led_mode *out) {
     if (strcmp(name, "sweep") == 0)    { *out = JW_LED_MODE_SWEEP;    return true; }
     if (strcmp(name, "fountain") == 0) { *out = JW_LED_MODE_FOUNTAIN; return true; }
     if (strcmp(name, "hiccup") == 0)   { *out = JW_LED_MODE_HICCUP;   return true; }
+    if (strcmp(name, "battery") == 0)  { *out = JW_LED_MODE_BATTERY;  return true; }
     return false;
 }
 

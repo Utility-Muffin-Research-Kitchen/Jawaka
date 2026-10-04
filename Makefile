@@ -659,6 +659,15 @@ ledd-spawn-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ledd-spawn-test internal/platform/ledd_spawn_test.c
 	$(BUILD)/bin/ledd-spawn-test $(BUILD)/bin/ledd-spawn-test-ledd
 
+# Battery Level's reader, palette, flash, and write decision (battery.h), with
+# temporary capacity files and no LED writes.
+.PHONY: led-battery-test
+led-battery-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/led-battery-test \
+		cmd/jawaka-ledd/battery_test.c internal/platform/platform_common.c \
+		internal/i18n/i18n.c internal/core/log.c
+	$(BUILD)/bin/led-battery-test
+
 storage-health-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/storage-health-test \
 		internal/storage/health_test.c internal/storage/health.c internal/core/log.c
@@ -1501,7 +1510,7 @@ $(BUILD)/bin/jawaka-inhibitctl: $(INHIBIT_CTL_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(INHIBIT_CTL_SRCS)
 
 ifeq ($(PLATFORM),mlp1)
-$(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c | $(BUILD)/bin
+$(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c cmd/jawaka-ledd/battery.h | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ cmd/jawaka-ledd/main.c
 
 $(BUILD)/build-manifest.json: $(ALL_BINS) FORCE
