@@ -15,7 +15,10 @@
 #   JAWAKA_TEST_SOURCE_FINGERPRINT=<fp> the mock card's persistent identity
 # plus the power-hold save's two (see that smoke) for the arming boot, and the
 # mock proxy's JAWAKA_MOCK_HELD_BUTTONS=b for the bypass row. The fake
-# RetroArch speaks LOAD_STATE_SYNC when FAKE_RA_LOAD_STATE is set.
+# RetroArch speaks LOAD_STATE_SYNC when FAKE_RA_LOAD_STATE is set. A fixture
+# RAOfflineProxy service pak and a fake /leaf/health endpoint on 8080 (as in
+# raofflineproxy-bridge-ipc-smoke.sh) cover a save made through the proxy,
+# which must resume through it: the state is casual, and Hardcore refuses it.
 #
 # Daemon smokes run in a Linux container (gcc:14 --init), not on the Mac.
 set -euo pipefail
@@ -42,12 +45,18 @@ STATE_BYTES=1048576
 CARD="uuid:SMOKE-CARD"
 RECORD="$STATE/boot-resume.json"
 SEED="$TMP_DIR/seed"
+SEEDP="$TMP_DIR/seed-proxy"
+PAK="$PRIMARY/Apps/mac/RAOfflineProxy.pak"
+SERVICE_ID="org.umrk.raofflineproxy"
+HEALTH_PY="$TMP_DIR/fake-health.py"
+HEALTH_PID=""
 CASE=""
 LOG=""
 
 cleanup() {
     status=$?
     set +e
+    [ -n "$HEALTH_PID" ] && kill "$HEALTH_PID" 2>/dev/null
     smoke_daemon_stop || status=1
     pkill -f "$TMP_DIR" 2>/dev/null
     if [ "$status" -ne 0 ]; then
@@ -88,6 +97,51 @@ cat >"$FAKE_RA" <<EOF
 exec python3 "$FAKE_RA_PY" "\$@"
 EOF
 chmod 755 "$FAKE_RA"
+
+mkdir -p "$PAK/bin" "$SEEDP"
+printf '%s\n' \
+  "{\"id\":\"$SERVICE_ID\",\"name\":\"RAOfflineProxy\",\"platform\":\"mac\",\"pak_version\":\"0.0.0\",\"service\":{\"schema\":1,\"id\":\"$SERVICE_ID\",\"run\":{\"path\":\"bin/raofflineproxy-fixture\",\"args\":[]},\"default_enabled\":false,\"stop_grace_ms\":300,\"restart\":\"no\",\"lifecycle\":{\"game\":\"ignore\"}}}" \
+  >"$PAK/pak.json"
+cat >"$PAK/bin/raofflineproxy-fixture" <<'EOF'
+#!/bin/sh
+exec tail -f /dev/null
+EOF
+chmod 755 "$PAK/bin/raofflineproxy-fixture"
+cat >"$HEALTH_PY" <<'EOF'
+import http.server
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"service":"org.umrk.raofflineproxy","protocol":"leaf-health-1","ready":true}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+http.server.HTTPServer(("127.0.0.1", 8080), Handler).serve_forever()
+EOF
+health_up() {
+    [ -n "$HEALTH_PID" ] && return 0
+    python3 "$HEALTH_PY" &
+    HEALTH_PID=$!
+    local i
+    for i in $(seq 1 100); do
+        python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/leaf/health", timeout=0.2)' \
+            2>/dev/null && return 0
+        sleep 0.05
+    done
+    fail "fake health endpoint never answered"
+}
+health_down() {
+    [ -n "$HEALTH_PID" ] || return 0
+    kill "$HEALTH_PID" 2>/dev/null
+    wait "$HEALTH_PID" 2>/dev/null || true
+    HEALTH_PID=""
+}
 
 python3 - "$DEFAULTS" "$CORE_FOLDER" <<'CATALOG'
 import json, pathlib, sys
@@ -204,8 +258,23 @@ expect_daemon_gone() {
 
 # arm NAME RESUME(0|1): boot A, a released power-hold save with the save
 # setting On and Resume Game on Boot as given.
-arm() {
-    local name="$1" resume="$2"
+# enable_proxy: "Start with Leaf" plus Run, as the bridge smoke does.
+enable_proxy() {
+    request "{\"v\":1,\"op\":\"enable\",\"id\":\"en\",\"service_id\":\"$SERVICE_ID\"}" |
+        grep -F '"ok":true' >/dev/null || fail "could not enable the proxy service"
+    request "{\"v\":1,\"op\":\"run\",\"id\":\"run\",\"service_id\":\"$SERVICE_ID\"}" |
+        grep -F '"ok":true' >/dev/null || fail "could not run the proxy service"
+    local i status=""
+    for i in $(seq 1 500); do
+        status="$(request "{\"v\":1,\"op\":\"status\",\"id\":\"st\",\"service_id\":\"$SERVICE_ID\"}")"
+        printf '%s' "$status" | grep -q '"effective_state":"running"' && return 0
+        sleep 0.02
+    done
+    fail "the proxy service never ran"
+}
+
+arm() { # name resume(0|1) [proxy(0|1)]
+    local name="$1" resume="$2" proxy="${3:-0}"
     rm -rf "$STATE" "$PRIMARY/States"
     mkdir -p "$STATE" "$PRIMARY/States"
     start_daemon "$name" JAWAKA_TEST_BOOT_ID=boot-a \
@@ -216,6 +285,10 @@ arm() {
     wait_log 'power-hold save: setting on' 80 || fail "save setting never read as on"
     if [ "$resume" = 1 ]; then
         wait_log 'boot resume: setting on' 80 || fail "resume setting never read as on"
+    fi
+    if [ "$proxy" = 1 ]; then
+        health_up
+        enable_proxy
     fi
     request "{\"type\":\"launch-game\",\"system\":\"N64\",\"rom_path\":\"$ROM\"}" |
         grep -F '"type":"ok"' >/dev/null || fail "launch-game refused"
@@ -244,6 +317,8 @@ echo "row arm-off: saved, no record"
 arm arm 1
 expect 'power-hold save: resume armed request='
 expect 'write_ms='
+expect 'route=direct'
+expect 'RAOfflineProxy: direct launch'
 [ -f "$RECORD" ] || fail "no record at $RECORD"
 [ -f "$FINAL_STATE" ] || fail "no saved state at $FINAL_STATE"
 python3 - "$RECORD" "$STATE_BYTES" "$CARD" <<'PY' || fail "record does not name the save"
@@ -254,7 +329,7 @@ want = {"schema": 1, "platform": "mac", "boot_id": "boot-a",
         "rom_path": "N64/Hold Game.n64", "core_id": "fixture_ra",
         "core_config_folder": "Fixture RA", "provider": "", "slot": 99,
         "state_path": "Fixture RA/Hold Game.state99",
-        "state_bytes": int(sys.argv[2])}
+        "state_bytes": int(sys.argv[2]), "offline_proxy": False}
 for key, value in want.items():
     if r.get(key) != value:
         sys.exit("%s=%r, want %r" % (key, r.get(key), value))
@@ -268,18 +343,33 @@ REQUEST_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["r
 cp "$RECORD" "$SEED/boot-resume.json"
 cp "$STATE/library.db" "$SEED/library.db"
 cp "$FINAL_STATE" "$SEED/state99"
+[ -f "$STATE/services-control.db" ] && cp "$STATE/services-control.db" "$SEED/"
 echo "row arm: saved, record armed request=$REQUEST_ID"
+
+# --- Boot A through RAOfflineProxy: the record says the save was casual. ---
+arm arm-proxy 1 1
+expect 'RAOfflineProxy: service healthy; proxied launch'
+expect 'power-hold save: resume armed request='
+expect 'route=offline-proxy'
+python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["offline_proxy"] is True else 1)' \
+    "$RECORD" || fail "a proxied save was not recorded as one"
+cp "$RECORD" "$SEEDP/boot-resume.json"
+cp "$STATE/library.db" "$STATE/services-control.db" "$SEEDP/"
+cp "$FINAL_STATE" "$SEEDP/state99"
+health_down
+echo "row arm-proxy: a save through the proxy records the route"
 
 # boot NAME [NAME=VALUE ...]: boot B with the armed record, the library and
 # settings from boot A, and the saved state back in place.
-boot() {
-    local name="$1"
+boot() { # name [NAME=VALUE ...]; BOOT_SEED picks the armed boot (default $SEED)
+    local name="$1" seed="${BOOT_SEED:-$SEED}"
     shift
     rm -rf "$STATE"
     mkdir -p "$STATE" "$STATES_DIR"
-    cp "$SEED/library.db" "$STATE/library.db"
-    cp "$SEED/boot-resume.json" "$RECORD"
-    cp "$SEED/state99" "$FINAL_STATE"
+    cp "$seed/library.db" "$STATE/library.db"
+    [ -f "$seed/services-control.db" ] && cp "$seed/services-control.db" "$STATE/"
+    cp "$seed/boot-resume.json" "$RECORD"
+    cp "$seed/state99" "$FINAL_STATE"
     rm -f "$FINAL_STATE.png"
     if [ -n "${PREPARE_HOOK:-}" ]; then
         eval "$PREPARE_HOOK"
@@ -298,7 +388,9 @@ PY
 }
 
 expect_record_gone() { [ ! -e "$RECORD" ] || fail "the record is still there"; }
-expect_state_untouched() { cmp -s "$FINAL_STATE" "$SEED/state99" || fail "the saved state changed"; }
+expect_state_untouched() {
+    cmp -s "$FINAL_STATE" "${BOOT_SEED:-$SEED}/state99" || fail "the saved state changed"
+}
 expect_no_launch() {
     expect_not 'RetroArch session started'
     expect_not 'boot resume: launching'
@@ -451,6 +543,8 @@ check_load_failure() { # name load-mode want; NO_STATE_INFO=1: no GET_STATE_SAVE
     expect 'boot resume: sent QUIT to RetroArch pid='
     expect 'the launcher opens with a notice'
     expect 'boot resume: no play recorded'
+    expect 'boot resume: RetroArch config not kept'
+    expect_not 'RetroArch shared config backed up'
     grep -q -x 'QUIT' "$RA_COMMANDS" || fail "$1: no QUIT"
     [ "$(grep -c '^LOAD_STATE_SYNC .* 99$' "$RA_COMMANDS")" -le 1 ] || fail "$1: the load was retried"
     grep -q -x 'UNPAUSE' "$RA_COMMANDS" && fail "$1: unpaused a failed resume"
@@ -467,5 +561,40 @@ NO_STATE_INFO=1 check_load_failure load-oldest-retroarch silent \
     'RetroArch cannot sync-load (state info=timeout)'
 grep -q '^LOAD_STATE_SYNC' "$RA_COMMANDS" && fail "the oldest RetroArch was probed for the load"
 echo "row load-failure: error, busy and older RetroArch builds quit to the launcher"
+
+# --- Saved through the proxy: the boot waits for it and resumes casual. ---
+health_up
+BOOT_SEED="$SEEDP" boot resume-proxy JAWAKA_TEST_BOOT_ID=boot-b "${RESUME_RA[@]}" FAKE_RA_LOAD_STATE=ok
+wait_log 'boot resume: loaded request=' 150 || fail "the proxied save did not resume"
+stop
+expect 'boot resume: saved through the achievements proxy; waiting'
+expect 'boot resume: achievements proxy ready after'
+expect 'route=offline-proxy'
+expect 'RAOfflineProxy: service healthy; proxied launch'
+ready_line="$(grep -n -F 'achievements proxy ready after' "$LOG" | head -1 | cut -d: -f1)"
+launch_line="$(grep -n -F 'RAOfflineProxy: service healthy; proxied launch' "$LOG" | head -1 | cut -d: -f1)"
+[ "$ready_line" -lt "$launch_line" ] || fail "launched before the proxy was ready"
+BOOT_SEED="$SEEDP" expect_state_untouched
+echo "row resume-proxy: waits for the proxy, launches through it, loads"
+
+# --- The proxy never becomes healthy: launcher with the notice, and no -----
+# --- Hardcore launch that would refuse the state. --------------------------
+health_down
+BOOT_SEED="$SEEDP" boot resume-proxy-down JAWAKA_TEST_BOOT_ID=boot-b "${RESUME_RA[@]}" FAKE_RA_LOAD_STATE=ok
+wait_log 'boot resume: failed (the achievements proxy did not come up)' 150 ||
+    fail "a proxy that never came up did not fail the resume"
+stop
+expect_no_launch
+expect_record_gone
+echo "row resume-proxy-down: no healthy proxy, launcher with the notice"
+
+# --- The proxy was switched off since the save: same, at once. -------------
+BOOT_SEED="$SEEDP" PREPARE_HOOK='if [ -f "$SEED/services-control.db" ]; then cp "$SEED/services-control.db" "$STATE/"; else rm -f "$STATE/services-control.db"; fi' \
+    boot resume-proxy-off JAWAKA_TEST_BOOT_ID=boot-b "${RESUME_RA[@]}" FAKE_RA_LOAD_STATE=ok
+wait_log 'boot resume: failed (the achievements proxy is off)' 50 ||
+    fail "a disabled proxy did not fail the resume"
+stop
+expect_no_launch
+echo "row resume-proxy-off: proxy disabled, launcher with the notice"
 
 echo "PASS boot-resume-ipc-smoke"

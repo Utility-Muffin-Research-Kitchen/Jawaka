@@ -60,6 +60,7 @@ static jw_boot_resume_record sample(void) {
 static void roundtrip(void) {
     jw_boot_resume_record in = sample();
     snprintf(in.provider, sizeof(in.provider), "shared/ScummVM.pak");
+    in.offline_proxy = true;
     assert(jw_boot_resume_write(root, &in, reason, sizeof(reason)));
     assert(strcmp(reason, "ok") == 0);
     assert(exists(JW_BOOT_RESUME_FILENAME));
@@ -78,7 +79,8 @@ static void roundtrip(void) {
     assert(jw_boot_resume_write(root, &next, reason, sizeof(reason)));
     assert(jw_boot_resume_load(root, "mlp1", &out, reason, sizeof(reason)) ==
            JW_BOOT_RESUME_LOAD_VALID);
-    assert(strcmp(out.request_id, "ffff00001111") == 0 && out.provider[0] == '\0');
+    assert(strcmp(out.request_id, "ffff00001111") == 0 && out.provider[0] == '\0' &&
+           !out.offline_proxy);
 
     /* The record belongs to the platform that wrote it. */
     assert(jw_boot_resume_load(root, "tg5040", &out, reason, sizeof(reason)) ==
@@ -130,7 +132,7 @@ static char *record_with(const char *rom, const char *folder, const char *provid
     snprintf(buf, sizeof(buf),
              GOOD_PREFIX "\"rom_path\":%s,\"core_id\":\"pcsx_rearmed\","
              "\"core_config_folder\":%s,\"provider\":%s,\"slot\":%s,"
-             "\"state_path\":%s,\"state_bytes\":%s}",
+             "\"state_path\":%s,\"state_bytes\":%s,\"offline_proxy\":false}",
              rom, folder, provider, slot, state, bytes);
     return buf;
 }
@@ -176,6 +178,13 @@ static void rejects(void) {
     expect_invalid(record_with(rom, folder, "\"\"", "99", state, "12.5"), "fields");
     expect_invalid(record_with(rom, folder, "\"\"", "\"99\"", state, "4456472"), "fields");
     expect_invalid(record_with(rom, folder, "\"\"", "1000", state, "4456472"), "fields");
+    /* offline_proxy is a JSON boolean, never a string or a number. */
+    char proxy_text[2100];
+    snprintf(proxy_text, sizeof(proxy_text), "%s", good);
+    char *flag = strstr(proxy_text, "\"offline_proxy\":false");
+    assert(flag);
+    memcpy(flag, "\"offline_proxy\":0    ", 21);
+    expect_invalid(proxy_text, "fields");
 
     /* Absolute and traversal paths. */
     expect_invalid(record_with("\"/mnt/sdcard/Roms/PS/Spyro (USA).chd\"", folder, "\"\"",

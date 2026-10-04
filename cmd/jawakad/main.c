@@ -206,6 +206,9 @@ typedef struct {
    launcher opens with a notice. Never a retry, another slot or a cold start. */
 typedef enum {
     JW_BOOT_RESUME_PHASE_NONE = 0,
+    /* The save went through RAOfflineProxy: hold the launch until that
+       service is up, so the game starts casual again and can take its state. */
+    JW_BOOT_RESUME_PHASE_WAITING_PROXY,
     JW_BOOT_RESUME_PHASE_LAUNCHING,  /* requested; RetroArch not spawned yet */
     JW_BOOT_RESUME_PHASE_PROBING,    /* spawned; waiting for its command port */
     JW_BOOT_RESUME_PHASE_LOADING,    /* LOAD_STATE_SYNC sent; one reply pending */
@@ -220,7 +223,10 @@ typedef struct {
     char source_fingerprint[JW_BOOT_RESUME_FINGERPRINT_MAX];
     char state_path[PATH_MAX];       /* absolute; checked again before spawn */
     char request_id[JW_BOOT_RESUME_REQUEST_ID_MAX];
+    char system[JW_BOOT_RESUME_SYSTEM_MAX];
+    char db_rom_path[PATH_MAX];      /* the library row's own key */
     unsigned long long state_bytes;
+    bool offline_proxy;              /* must launch through RAOfflineProxy */
     int attempts;
     int silent_probes;               /* state probes unanswered in a row */
     long long next_ms;
@@ -5689,7 +5695,12 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
     }
 
     bool switcher_transition = state->pending_launch && state->pending_launch_resume_switcher;
-    if (session->config_path[0] && session->persist_config && !switcher_transition) {
+    /* A boot resume whose state never loaded was not a session the player
+       configured anything in; writing its config back would only replace
+       their lines with RetroArch's defaults (Hardcore among them). */
+    if (session->resume_unconfirmed && session->config_path[0]) {
+        jw_log_info("boot resume: RetroArch config not kept from a session whose state never loaded");
+    } else if (session->config_path[0] && session->persist_config && !switcher_transition) {
         char error[256];
         if (jw_backup_retroarch_config(session->config_path, state->sdcard_root,
                                        &session->config_snapshot,
@@ -12261,6 +12272,7 @@ static void jw__boot_resume_arm(jw_daemon_state *state) {
         snprintf(record.provider, sizeof(record.provider), "%s", session->provider);
         record.slot = JW_BOOT_RESUME_SLOT;
         record.state_bytes = state->power_hold_save_bytes;
+        record.offline_proxy = session->config_snapshot.proxied;
         if (!jw_boot_resume_record_valid(&record, record.platform,
                                          reason, sizeof(reason))) {
             why = reason;
@@ -12275,8 +12287,9 @@ static void jw__boot_resume_arm(jw_daemon_state *state) {
                     why, write_ms);
         return;
     }
-    jw_log_info("power-hold save: resume armed request=%s write_ms=%lld rom=%s",
-                record.request_id, write_ms, record.rom_path);
+    jw_log_info("power-hold save: resume armed request=%s write_ms=%lld rom=%s route=%s",
+                record.request_id, write_ms, record.rom_path,
+                record.offline_proxy ? "offline-proxy" : "direct");
 }
 
 /* A repair or recovery owns this boot: a read-only card, a held repair, a
@@ -12401,9 +12414,51 @@ static bool jw__boot_resume_spawn_matches(jw_daemon_state *state,
     } else if (lstat(expected, &st) != 0 || !S_ISREG(st.st_mode) ||
                (unsigned long long)st.st_size != br->state_bytes) {
         why = "state changed";
+    } else if (br->offline_proxy && !state->pending_rop_snapshot.proxied) {
+        why = "the launch would not go through the achievements proxy";
     }
     if (why) {
         jw_log_warn("boot resume: not starting RetroArch: %s", why);
+        return false;
+    }
+    return true;
+}
+
+/* How long a resume saved through RAOfflineProxy waits for that service at
+   start-up. It autostarts on the first loop pass; the bound is for a proxy
+   that never becomes healthy, which ends in the launcher, not a Hardcore
+   session that would refuse the state. */
+#define JW_BOOT_RESUME_PROXY_WAIT_MS 10000LL
+
+static const jw_svc_supervised *jw__boot_resume_proxy_entry(const jw_daemon_state *state) {
+    return state->services
+        ? jw_svc_supervisor_find(state->services, JW_ROP_SERVICE_ID) : NULL;
+}
+
+/* Installed, valid and set to start with Leaf: it will come up this boot. */
+static bool jw__boot_resume_proxy_enabled(const jw_svc_supervised *entry) {
+    return entry && entry->pak_present && entry->manifest_valid &&
+           !entry->on_secondary_root &&
+           (entry->desired_enabled || entry->session_run);
+}
+
+/* Ask for the launch the pinned resume describes. */
+static bool jw__boot_resume_request(jw_daemon_state *state, char *why, size_t why_size) {
+    jw_boot_resume_launch *br = &state->boot_resume;
+    br->phase = JW_BOOT_RESUME_PHASE_LAUNCHING;
+    jw_log_info("boot resume: launching system=%s rom=%s core=%s request=%s route=%s",
+                br->system, br->db_rom_path, br->core_id, br->request_id,
+                br->offline_proxy ? "offline-proxy" : "direct");
+
+    /* Every manual-launch gate applies: BIOS and the core check here, LIFE-1
+       and RAOfflineProxy in the spawn path, and the pinned identity (and,
+       for a proxied save, the proxied route) again right before fork.
+       --entryslot is never used. */
+    const char *error = NULL;
+    if (jw__request_launch_game(state, br->system, br->db_rom_path,
+                                NULL, false, &error) != 0) {
+        jw__boot_resume_cancel_prompts(state);
+        snprintf(why, why_size, "%s", error ? error : "launch refused");
         return false;
     }
     return true;
@@ -12501,10 +12556,10 @@ static bool jw__boot_resume_launch(jw_daemon_state *state,
 
     jw_boot_resume_launch *br = &state->boot_resume;
     jw__boot_resume_clear(state);
-    br->phase = JW_BOOT_RESUME_PHASE_LAUNCHING;
     br->game_id = game.id;
     br->started_ms = jw__monotonic_ms();
     br->state_bytes = record->state_bytes;
+    br->offline_proxy = record->offline_proxy;
     snprintf(br->core_id, sizeof(br->core_id), "%s", record->core_id);
     snprintf(br->core_config_folder, sizeof(br->core_config_folder), "%s",
              record->core_config_folder);
@@ -12513,37 +12568,63 @@ static bool jw__boot_resume_launch(jw_daemon_state *state,
              record->source_fingerprint);
     snprintf(br->state_path, sizeof(br->state_path), "%s", state_abs);
     snprintf(br->request_id, sizeof(br->request_id), "%s", record->request_id);
-    jw_log_info("boot resume: launching system=%s rom=%s core=%s request=%s",
-                record->system, game.rom_path, record->core_id, record->request_id);
+    snprintf(br->system, sizeof(br->system), "%s", record->system);
+    snprintf(br->db_rom_path, sizeof(br->db_rom_path), "%s", game.rom_path);
 
-    /* Every manual-launch gate applies: BIOS and the core check here, LIFE-1
-       and RAOfflineProxy in the spawn path, and the pinned identity again
-       right before fork. --entryslot is never used. */
-    const char *error = NULL;
-    if (jw__request_launch_game(state, record->system, game.rom_path,
-                                NULL, false, &error) != 0) {
-        jw__boot_resume_cancel_prompts(state);
-        snprintf(why, why_size, "%s", error ? error : "launch refused");
-        return false;
+    if (br->offline_proxy) {
+        /* Services autostart on the first loop pass, after this. */
+        if (!jw__boot_resume_proxy_enabled(jw__boot_resume_proxy_entry(state))) {
+            jw__boot_resume_clear(state);
+            snprintf(why, why_size, "the achievements proxy is off");
+            return false;
+        }
+        br->phase = JW_BOOT_RESUME_PHASE_WAITING_PROXY;
+        br->deadline_ms = br->started_ms + JW_BOOT_RESUME_PROXY_WAIT_MS;
+        jw_log_info("boot resume: saved through the achievements proxy; waiting up to %lld ms for it",
+                    JW_BOOT_RESUME_PROXY_WAIT_MS);
+        return true;
     }
-    return true;
+    return jw__boot_resume_request(state, why, why_size);
 }
 
 /* Between the request and RetroArch: a launch that needs a decision is
    cancelled, one that ended without RetroArch is a failure, and in both cases
    the launcher opens with the notice. */
 static void jw__tick_boot_resume_launch(jw_daemon_state *state) {
-    if (state->boot_resume.phase != JW_BOOT_RESUME_PHASE_LAUNCHING) {
-        return;
-    }
-    if (state->game_check_decision || state->game_launch_blocked) {
-        const char *why = state->game_launch_blocked
-            ? "launch needs a decision" : "sync check needs a decision";
-        jw__boot_resume_cancel_prompts(state);
-        jw__boot_resume_fail(state, why, false);
-    } else if (!state->pending_launch && !state->game_coordination_pending &&
-               state->child_pid <= 0) {
-        jw__boot_resume_fail(state, "the launch did not start", false);
+    jw_boot_resume_launch *br = &state->boot_resume;
+    if (br->phase == JW_BOOT_RESUME_PHASE_WAITING_PROXY) {
+        const jw_svc_supervised *entry = jw__boot_resume_proxy_entry(state);
+        long long now = jw__monotonic_ms();
+        if (!jw__boot_resume_proxy_enabled(entry)) {
+            jw__boot_resume_fail(state, "the achievements proxy is off", false);
+        } else if (jw__raofflineproxy_entry_live(entry) &&
+                   entry->state == JW_SVC_STATE_RUNNING &&
+                   jw_raofflineproxy_health_ready(JW_ROP_HEALTH_HOST,
+                                                  JW_ROP_HEALTH_PORT, 50)) {
+            jw_log_info("boot resume: achievements proxy ready after %lld ms",
+                        now - br->started_ms);
+            char why[768];
+            if (jw__boot_resume_request(state, why, sizeof(why))) {
+                return;
+            }
+            jw__boot_resume_fail(state, why, false);
+        } else if (now >= br->deadline_ms) {
+            jw__boot_resume_fail(state, "the achievements proxy did not come up", false);
+        } else {
+            return;
+        }
+    } else if (br->phase == JW_BOOT_RESUME_PHASE_LAUNCHING) {
+        if (state->game_check_decision || state->game_launch_blocked) {
+            const char *why = state->game_launch_blocked
+                ? "launch needs a decision" : "sync check needs a decision";
+            jw__boot_resume_cancel_prompts(state);
+            jw__boot_resume_fail(state, why, false);
+        } else if (!state->pending_launch && !state->game_coordination_pending &&
+                   state->child_pid <= 0) {
+            jw__boot_resume_fail(state, "the launch did not start", false);
+        } else {
+            return;
+        }
     } else {
         return;
     }
@@ -17869,12 +17950,13 @@ int main(int argc, char *argv[]) {
     jw__spawn_osd(&state);
 
     /* Resume Game on Boot: before any launcher UI. A resume that started a
-       game, or is still waiting on service coordination, keeps the launcher
-       away; every other outcome opens it (with the notice when one failed). */
+       game, or is still waiting on the achievements proxy or on service
+       coordination, keeps the launcher away; every other outcome opens it
+       (with the notice when one failed). */
     jw__boot_resume_at_startup(&state);
 
     if (!state.daemon_only && state.child_pid <= 0 &&
-        state.boot_resume.phase != JW_BOOT_RESUME_PHASE_LAUNCHING) {
+        state.boot_resume.phase == JW_BOOT_RESUME_PHASE_NONE) {
         if (jw__spawn_child(&state, JW_CHILD_LAUNCHER) != 0) {
             jw__cleanup(&state);
             return 1;

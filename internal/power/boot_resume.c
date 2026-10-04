@@ -28,7 +28,7 @@
 
 /* A record is a dozen short fields; anything this big is not one. */
 #define JW_BOOT_RESUME_FILE_MAX (16u * 1024u)
-#define JW_BOOT_RESUME_FIELD_COUNT 13
+#define JW_BOOT_RESUME_FIELD_COUNT 14
 /* Doubles are exact below 2^53; no state comes near it. */
 #define JW_BOOT_RESUME_BYTES_MAX 9007199254740992ull
 
@@ -193,7 +193,8 @@ bool jw_boot_resume_write(const char *dir, const jw_boot_resume_record *record,
         !cJSON_AddStringToObject(root, "provider", record->provider) ||
         !cJSON_AddNumberToObject(root, "slot", record->slot) ||
         !cJSON_AddStringToObject(root, "state_path", record->state_path) ||
-        !cJSON_AddNumberToObject(root, "state_bytes", (double)record->state_bytes)) {
+        !cJSON_AddNumberToObject(root, "state_bytes", (double)record->state_bytes) ||
+        !cJSON_AddBoolToObject(root, "offline_proxy", record->offline_proxy)) {
         cJSON_Delete(root);
         jw__reason(reason, reason_size, "encode-failed");
         return false;
@@ -409,8 +410,12 @@ jw_boot_resume_load_result jw_boot_resume_load(const char *dir, const char *plat
                !jw__copy_string(root, "state_path", out->state_path,
                                 sizeof(out->state_path), false) ||
                !jw__copy_count(root, "slot", &slot) || slot > 999 ||
-               !jw__copy_count(root, "state_bytes", &out->state_bytes)) {
+               !jw__copy_count(root, "state_bytes", &out->state_bytes) ||
+               !cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(root, "offline_proxy"))) {
         bad = "fields";
+    } else {
+        out->offline_proxy =
+            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "offline_proxy"));
     }
     cJSON_Delete(root);
     if (!bad) {

@@ -55,6 +55,10 @@ typedef struct {
     int slot;
     char state_path[JW_BOOT_RESUME_PATH_MAX];       /* relative to the source's States root */
     unsigned long long state_bytes;
+    /* The save ran through the RAOfflineProxy, which forces casual play. The
+       state then only loads in a casual session, so the boot launch has to
+       go through the proxy too: Hardcore refuses every state load. */
+    bool offline_proxy;
 } jw_boot_resume_record;
 
 typedef enum {
