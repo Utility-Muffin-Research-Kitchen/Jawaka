@@ -419,6 +419,8 @@ typedef struct {
     bool direct_drm_active;
     bool direct_drm_weston_stopped;
     pid_t ledd_pid;            /* jawaka-ledd custom LED effect engine, -1 when idle */
+    long long ledd_started_ms; /* monotonic start of the running ledd */
+    jw_ledd_restarts ledd_restarts;
     int cached_brightness_percent;
     int cached_volume_percent;
     long long platform_cache_read_ms;  /* last full hardware read, 0 = never */
@@ -7956,7 +7958,7 @@ static void jw__handle_osd_exit(jw_daemon_state *state) {
     }
 }
 
-static void jw__apply_led_config(jw_daemon_state *state, const jw_led_config *led);
+static void jw__spawn_ledd_for(jw_daemon_state *state, const jw_led_config *led);
 
 static void jw__handle_ledd_exit(jw_daemon_state *state) {
     if (!state || state->ledd_pid <= 0) {
@@ -7970,19 +7972,29 @@ static void jw__handle_ledd_exit(jw_daemon_state *state) {
     }
 
     state->ledd_pid = -1;
+    bool usage_exit = false;
     if (WIFEXITED(status)) {
+        usage_exit = WEXITSTATUS(status) == JW_LEDD_EXIT_USAGE;
         jw_log_info("jawaka-ledd exited status=%d", WEXITSTATUS(status));
     } else if (WIFSIGNALED(status)) {
         jw_log_warn("jawaka-ledd terminated signal=%d", WTERMSIG(status));
     }
 
-    /* Re-apply the cached LED config so a mid-session crash recovers the effect.
-       jw__apply_led_config calls jw__stop_ledd first, which no-ops now that
-       ledd_pid is cleared. */
-    if (!state->shutdown_requested && !g_shutdown_requested &&
-        state->led_configured) {
-        jw__apply_led_config(state, &state->cached_led);
+    if (state->shutdown_requested || g_shutdown_requested ||
+        !state->led_configured) {
+        return;
     }
+    /* Restart the helper alone so a mid-session crash recovers the effect.
+       The platform baseline has not changed, so it is not written again: a
+       full re-apply rewrites the stock LED config on /oem every time. */
+    long long now = jw__monotonic_ms();
+    if (!jw_ledd_should_restart(&state->ledd_restarts, usage_exit,
+                                now - state->ledd_started_ms, now)) {
+        jw_log_warn("jawaka-ledd %s; not restarting it until the lighting is set again",
+                    usage_exit ? "rejected its arguments" : "keeps exiting at start");
+        return;
+    }
+    jw__spawn_ledd_for(state, &state->cached_led);
 }
 
 static bool jw__osd_enabled(const jw_daemon_state *state) {
@@ -8400,6 +8412,7 @@ static int jw__spawn_ledd(jw_daemon_state *state, const char *effect,
     pid_t pid = jw_ledd_spawn(path, argv);
     if (pid < 0) { jw_log_warn("ledd fork failed: %s", strerror(errno)); return -1; }
     state->ledd_pid = pid;
+    state->ledd_started_ms = jw__monotonic_ms();
     jw_log_info("spawned jawaka-ledd %s pid=%d", effect, (int)pid);
     return 0;
 }
@@ -8417,6 +8430,19 @@ static const char *jw__leaf_ledd_effect_name(const jw_led_config *led) {
     }
 }
 
+/* Start the effect engine when the config needs it: every mode in Leaf mode,
+   only the custom effects otherwise. */
+static void jw__spawn_ledd_for(jw_daemon_state *state, const jw_led_config *led) {
+    const char *effect = jw__leaf_ledd_effect_name(led);
+    if (!effect && led->enabled && jw_led_mode_is_effect(led->mode)) {
+        effect = jw_led_mode_name(led->mode);
+    }
+    if (effect) {
+        jw__spawn_ledd(state, effect,
+                       led->r, led->g, led->b, led->brightness, led->speed);
+    }
+}
+
 /* Apply an LED config: stop any running effect, write the platform baseline
    config, then spawn the custom effect engine when the selected mode needs it. */
 static void jw__apply_led_config(jw_daemon_state *state, const jw_led_config *led) {
@@ -8428,14 +8454,9 @@ static void jw__apply_led_config(jw_daemon_state *state, const jw_led_config *le
     jw_platform_result result;
     jw_platform_set_led(&state->platform, &base, &result);
 
-    const char *leaf_effect = jw__leaf_ledd_effect_name(led);
-    if (leaf_effect) {
-        jw__spawn_ledd(state, leaf_effect,
-                       led->r, led->g, led->b, led->brightness, led->speed);
-    } else if (led->enabled && jw_led_mode_is_effect(led->mode)) {
-        jw__spawn_ledd(state, jw_led_mode_name(led->mode),
-                       led->r, led->g, led->b, led->brightness, led->speed);
-    }
+    /* A new setting gets a fresh helper, so earlier quick exits stop counting. */
+    jw_ledd_restarts_reset(&state->ledd_restarts);
+    jw__spawn_ledd_for(state, led);
     state->cached_led = *led;
     state->led_configured = true;
 }

@@ -1,26 +1,13 @@
 /* jawaka-ledd must not outlive the daemon that started it. A daemon killed on
    the MLP1 left its ledd reparented to init, holding the session log on the
-   card, and the next shutdown could not remount the card read-only.
+   card, and the next shutdown could not remount the card read-only. Nor may
+   jawakad restart a ledd that dies at once in a loop.
 
    Usage: ledd-spawn-test <host-built jawaka-ledd> */
 #include "internal/platform/ledd_spawn.h"
 
 #include <stdio.h>
 
-#if !defined(__linux__)
-int main(void) {
-    puts("ledd-spawn-test: skipped, the parent-death signal is Linux-only");
-    return 0;
-}
-#else
-
-#include <errno.h>
-#include <stdbool.h>
-#include <stdlib.h>
-#include <sys/wait.h>
-#include <time.h>
-
-static const char *g_ledd;
 static int g_failures;
 
 #define CHECK(cond, ...)                                              \
@@ -32,6 +19,60 @@ static int g_failures;
             g_failures++;                                             \
         }                                                             \
     } while (0)
+
+/* Pure logic, so it runs on every host. */
+static void test_restart_decision(void) {
+    jw_ledd_restarts r;
+    jw_ledd_restarts_reset(&r);
+
+    CHECK(!jw_ledd_should_restart(&r, 1, 50000, 100000),
+          "a ledd that rejected its arguments is not restarted");
+
+    /* A long-running ledd always comes back, and does not count. */
+    for (int i = 0; i < 5; i++) {
+        CHECK(jw_ledd_should_restart(&r, 0, JW_LEDD_QUICK_EXIT_MS, 100000 + i),
+              "crash after a long run %d is restarted", i);
+    }
+    CHECK(r.quick_exits == 0, "long runs are not quick exits");
+
+    /* Quick exits: the third inside a minute stops the restarts. */
+    CHECK(jw_ledd_should_restart(&r, 0, 10, 200000), "first quick exit is restarted");
+    CHECK(jw_ledd_should_restart(&r, 0, 10, 200100), "second quick exit is restarted");
+    CHECK(!jw_ledd_should_restart(&r, 0, 10, 200200), "third quick exit gives up");
+
+    /* Quick exits spread wider than the window start over. */
+    jw_ledd_restarts_reset(&r);
+    CHECK(jw_ledd_should_restart(&r, 0, 10, 300000), "quick exit 1");
+    CHECK(jw_ledd_should_restart(&r, 0, 10, 330000), "quick exit 2");
+    CHECK(jw_ledd_should_restart(&r, 0, 10, 300000 + JW_LEDD_QUICK_WINDOW_MS + 1),
+          "a quick exit after the window starts a new count");
+    CHECK(jw_ledd_should_restart(&r, 0, 10, 300000 + JW_LEDD_QUICK_WINDOW_MS + 2),
+          "second exit of the new count");
+
+    /* A new setting clears the count. */
+    jw_ledd_restarts_reset(&r);
+    CHECK(jw_ledd_should_restart(&r, 0, 10, 500000), "count cleared by a reset");
+}
+
+#if !defined(__linux__)
+int main(void) {
+    test_restart_decision();
+    if (g_failures) {
+        fprintf(stderr, "ledd-spawn-test: %d failure(s)\n", g_failures);
+        return 1;
+    }
+    puts("ledd-spawn-test: restart decision ok; parent-death checks skipped, they are Linux-only");
+    return 0;
+}
+#else
+
+#include <errno.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <time.h>
+
+static const char *g_ledd;
 
 static void sleep_ms(long ms) {
     struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
@@ -196,6 +237,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    test_restart_decision();
     test_killed_daemon_takes_ledd_with_it(false);
     test_killed_daemon_takes_ledd_with_it(true);
     test_parent_already_gone_is_refused();

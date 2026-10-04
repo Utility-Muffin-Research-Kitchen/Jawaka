@@ -14,7 +14,8 @@
  * dies without stopping the effect stops it all the same.
  *
  * Usage: jawaka-ledd <effect> <r> <g> <b> <brightness 0-10> <speed 0-10>
- *   effects: off static breath rainbow comet sweep fountain hiccup
+ *   effects: off static breath rainbow comet sweep fountain hiccup battery
+ *   (battery ignores the color and speed; see battery.h)
  *
  * Standalone + MLP1-specific (like device_mlp1.c): pure libc + sysfs, no deps.
  */
@@ -27,8 +28,22 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "battery.h"
+
+/* CLOCK_BOOTTIME counts time spent suspended; Battery Level sleeps on it so a
+   resume ends the sleep at once. The host build (ledd-spawn-test, macOS
+   included) never suspends, so CLOCK_MONOTONIC stands in there, as in
+   jawakad. On Linux a missing CLOCK_BOOTTIME is a build error, not a silent
+   fallback. */
+#if !defined(__linux__) && !defined(CLOCK_BOOTTIME)
+#define CLOCK_BOOTTIME CLOCK_MONOTONIC
+#endif
+
 #define JW_LED_COUNT      8
+/* Overridable so a host run can point the helper at a fixture. */
+#ifndef JW_LED_MMRGBALL
 #define JW_LED_MMRGBALL   "/sys/class/leds/aw20036_led/mmrgball"
+#endif
 #define JW_LED_DAEMON     "loong_light"
 
 /* Sub-LED resolution: the moving dot's position is tracked in 1/256 of an LED
@@ -251,6 +266,65 @@ static long jw__effect_interval_ms(const char *effect, int speed) {
     return JW_LED_TICK_MS;
 }
 
+static long long jw__clock_ms(clockid_t clock) {
+    struct timespec ts;
+    clock_gettime(clock, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Relative sleep measured on CLOCK_BOOTTIME: after a suspend longer than the
+   time left it returns as the device resumes. It is not an alarm clock, so it
+   never wakes the device. A signal ends it early (EINTR) so SIGTERM still
+   stops the helper at once. */
+static void jw__sleep_boottime_ms(long long ms) {
+    struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
+#if defined(__linux__)
+    clock_nanosleep(CLOCK_BOOTTIME, 0, &ts, NULL);
+#else
+    nanosleep(&ts, NULL);
+#endif
+}
+
+/* Battery Level. Errors go dark rather than ending the helper: jawakad would
+   only start it again. */
+static void jw__run_battery(const jw_effect_params *p) {
+    uint32_t frame[JW_LED_COUNT];
+    uint32_t last = 0;
+    bool have_written = false;
+    bool lit = true;
+    long long last_write_ms = 0;
+    long long prev_gap_ms = jw__clock_ms(CLOCK_BOOTTIME) - jw__clock_ms(CLOCK_MONOTONIC);
+    long long sampled_ms = jw__clock_ms(CLOCK_BOOTTIME);
+    int percent = jw_ledd_battery_read(JW_LEDD_CAPACITY_PATH);
+
+    while (g_running) {
+        long long now_ms = jw__clock_ms(CLOCK_BOOTTIME);
+        /* BOOTTIME pulls ahead of MONOTONIC only while suspended. */
+        long long gap_ms = now_ms - jw__clock_ms(CLOCK_MONOTONIC);
+        bool resumed = gap_ms - prev_gap_ms > 1000;
+        prev_gap_ms = gap_ms;
+        if (resumed || now_ms - sampled_ms >= JW_LEDD_BATTERY_SAMPLE_MS) {
+            percent = jw_ledd_battery_read(JW_LEDD_CAPACITY_PATH);
+            sampled_ms = now_ms;
+        }
+
+        bool flashing = jw_ledd_battery_flashing(percent, p->alpha_max);
+        if (!flashing) lit = true;   /* the low band always opens lit */
+        uint32_t color = jw_ledd_battery_color(percent, p->alpha_max, lit);
+        if (jw_ledd_battery_should_write(have_written, last, color, resumed,
+                                         now_ms - last_write_ms)) {
+            for (int i = 0; i < JW_LED_COUNT; i++) frame[i] = color;
+            jw__write_frame(frame);
+            last = color;
+            have_written = true;
+            last_write_ms = now_ms;
+        }
+        if (flashing) lit = !lit;
+        jw__sleep_boottime_ms(flashing ? JW_LEDD_BATTERY_FLASH_MS
+                                       : JW_LEDD_BATTERY_SAMPLE_MS);
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc < 7) {
         fprintf(stderr, "usage: %s <effect> <r> <g> <b> <brightness 0-10> <speed 0-10>\n", argv[0]);
@@ -293,6 +367,12 @@ int main(int argc, char **argv) {
 
     g_daemon_pid = jw__find_daemon(JW_LED_DAEMON);
     if (g_daemon_pid > 0) kill(g_daemon_pid, SIGSTOP);
+
+    if (strcmp(effect, "battery") == 0) {
+        jw__run_battery(&p);
+        jw__thaw();
+        return 0;
+    }
 
     struct timespec sleep_for = {
         .tv_sec  = interval_ms / 1000,

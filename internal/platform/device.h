@@ -48,6 +48,9 @@ typedef enum {
     JW_LED_MODE_SWEEP,
     JW_LED_MODE_FOUNTAIN,
     JW_LED_MODE_HICCUP,
+    /* Appended, never inserted: the wire names are persisted, and this one
+       must stay inside the effect range so jawakad hands it to the helper. */
+    JW_LED_MODE_BATTERY,      /* color follows the charge (MLP1 helper only) */
     JW_LED_MODE_COUNT
 } jw_led_mode;
 
