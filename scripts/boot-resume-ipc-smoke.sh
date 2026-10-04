@@ -273,8 +273,32 @@ enable_proxy() {
     fail "the proxy service never ran"
 }
 
-arm() { # name resume(0|1) [proxy(0|1)]
-    local name="$1" resume="$2" proxy="${3:-0}"
+# hold_library_busy: a writer holds library.db exclusively (as a library scan
+# does) across a settings poll, then lets go. The cached settings must hold.
+hold_library_busy() {
+    rm -f "$TMP_DIR/busy-locked" "$TMP_DIR/busy-release"
+    python3 - "$STATE/library.db" "$TMP_DIR/busy-locked" "$TMP_DIR/busy-release" <<'PY' &
+import os, sqlite3, sys, time
+db = sqlite3.connect(sys.argv[1], isolation_level=None, timeout=5)
+db.execute("BEGIN EXCLUSIVE")
+db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('smoke_busy','1')")
+open(sys.argv[2], "w").close()
+deadline = time.time() + 15
+while not os.path.exists(sys.argv[3]) and time.time() < deadline:
+    time.sleep(0.05)
+db.execute("ROLLBACK")
+PY
+    local locker=$!
+    wait_log 'power-hold save: library busy; keeping the cached settings' 80 ||
+        fail "the settings poll never met the busy library"
+    touch "$TMP_DIR/busy-release"
+    wait "$locker" || fail "the library lock helper failed"
+    wait_log 'power-hold save: library readable again' 80 ||
+        fail "the settings were not re-read after the library was free"
+}
+
+arm() { # name resume(0|1) [proxy(0|1)] [busy(0|1)]
+    local name="$1" resume="$2" proxy="${3:-0}" busy="${4:-0}"
     rm -rf "$STATE" "$PRIMARY/States"
     mkdir -p "$STATE" "$PRIMARY/States"
     start_daemon "$name" JAWAKA_TEST_BOOT_ID=boot-a \
@@ -299,6 +323,7 @@ arm() { # name resume(0|1) [proxy(0|1)]
         sleep 0.02
     done
     [ -s "$RUNTIME/ra-ready" ] || fail "fake RetroArch never bound its port"
+    [ "$busy" = 1 ] && hold_library_busy
     sleep 0.2
     printf '%s\n' "down +0" "up +2600" >>"$EDGES"
     expect_daemon_gone
@@ -345,6 +370,13 @@ cp "$STATE/library.db" "$SEED/library.db"
 cp "$FINAL_STATE" "$SEED/state99"
 [ -f "$STATE/services-control.db" ] && cp "$STATE/services-control.db" "$SEED/"
 echo "row arm: saved, record armed request=$REQUEST_ID"
+
+# --- Boot A with the library busy mid-game (a scan): settings stay On. ----
+arm arm-busy 1 0 1
+expect_not 'power-hold save: setting off'
+expect_not 'boot resume: setting off'
+expect 'power-hold save: resume armed request='
+echo "row arm-busy: a locked library keeps both settings; saved and armed"
 
 # --- Boot A through RAOfflineProxy: the record says the save was casual. ---
 arm arm-proxy 1 1
@@ -500,7 +532,7 @@ echo "row refused: missing/empty/short state, other slot, unknown card, missing 
 # --- Both On, the record intact: one LOAD_STATE_SYNC, then gameplay. -------
 boot resume-ok JAWAKA_TEST_BOOT_ID=boot-b "${RESUME_RA[@]}" FAKE_RA_LOAD_STATE=ok
 wait_log 'boot resume: loaded request=' 100 || fail "the state never loaded"
-expect "boot resume: launching system=N64 rom=$ROM core=fixture_ra request=$REQUEST_ID"
+expect "boot resume: launching system=N64 rom=$PRIMARY/$ROM core=fixture_ra request=$REQUEST_ID"
 expect 'RetroArch session started pid='
 expect "core_id=fixture_ra core_folder=Fixture RA"
 expect_record_gone

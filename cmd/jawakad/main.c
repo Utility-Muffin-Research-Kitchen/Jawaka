@@ -225,6 +225,7 @@ typedef struct {
     char request_id[JW_BOOT_RESUME_REQUEST_ID_MAX];
     char system[JW_BOOT_RESUME_SYSTEM_MAX];
     char db_rom_path[PATH_MAX];      /* the library row's own key */
+    char rom_abs[PATH_MAX];          /* the ROM on the card as mounted this boot */
     unsigned long long state_bytes;
     bool offline_proxy;              /* must launch through RAOfflineProxy */
     int attempts;
@@ -508,6 +509,7 @@ typedef struct {
        temporary state that jawakad renames over the switcher slot before
        child teardown. Policy: internal/power/power_hold_save.h. */
     bool power_hold_save_enabled;         /* cached setting; Off unless refreshed */
+    bool power_hold_settings_unread;      /* the last poll found the library busy */
     jw_power_hold_save power_hold_save;
     jw_ra_sync_save power_hold_save_request;
     unsigned long long power_hold_save_bytes;   /* probed size, rounded up to a MiB */
@@ -11482,23 +11484,37 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
 #define JW_POWER_HOLD_SAVE_PROBE_TIMEOUT_MS 300u
 #define JW_PHS_MIB 1048576ull
 
-/* Settings poll, never on the hold path: a no-wait read, and anything but "1"
-   (missing, invalid, locked, unreadable) is Off. Resume Game on Boot is read
-   with it: the save that arms a resume consults both cached values. */
-static void jw__power_hold_save_refresh_setting(jw_daemon_state *state) {
-    bool enabled = false;
-    bool resume = false;
+/* One no-wait read: a missing row or anything but "1" is Off. A read the
+   library cannot answer now leaves *on alone and returns false. */
+static bool jw__power_hold_save_read_flag(const char *db_path, const char *key,
+                                          bool *on) {
     char value[8];
-    if (state->db_path &&
-        jw_db_read_setting_nowait(state->db_path, "save_state_on_power_hold",
-                                  value, sizeof(value)) == 0) {
-        enabled = strcmp(value, "1") == 0;
+    int rc = db_path ? jw_db_read_setting_nowait(db_path, key, value, sizeof(value)) : 1;
+    if (rc < 0) {
+        return false;
     }
-    if (state->db_path &&
-        jw_db_read_setting_nowait(state->db_path, JW_BOOT_RESUME_SETTING_KEY,
-                                  value, sizeof(value)) == 0) {
-        resume = strcmp(value, "1") == 0;
+    *on = rc == 0 && strcmp(value, "1") == 0;
+    return true;
+}
+
+/* Settings poll, never on the hold path: a no-wait read. Resume Game on Boot
+   is read with it: the save that arms a resume consults both cached values.
+   A library that is busy (a scan or another writer holds it) keeps the cached
+   values and returns false, so the caller reads again: a lock is not the
+   player switching the save off. */
+static bool jw__power_hold_save_refresh_setting(jw_daemon_state *state) {
+    bool enabled = state->power_hold_save_enabled;
+    bool resume = state->boot_resume_enabled;
+    bool read = jw__power_hold_save_read_flag(state->db_path,
+                                              "save_state_on_power_hold", &enabled);
+    read = jw__power_hold_save_read_flag(state->db_path, JW_BOOT_RESUME_SETTING_KEY,
+                                         &resume) && read;
+    if (!read && !state->power_hold_settings_unread) {
+        jw_log_info("power-hold save: library busy; keeping the cached settings");
+    } else if (read && state->power_hold_settings_unread) {
+        jw_log_info("power-hold save: library readable again; settings re-read");
     }
+    state->power_hold_settings_unread = !read;
     if (enabled != state->power_hold_save_enabled) {
         jw_log_info("power-hold save: setting %s", enabled ? "on" : "off");
     }
@@ -11507,6 +11523,7 @@ static void jw__power_hold_save_refresh_setting(jw_daemon_state *state) {
     }
     state->power_hold_save_enabled = enabled;
     state->boot_resume_enabled = resume;
+    return read;
 }
 
 /* One banner at a time; best-effort and bounded by the OSD client timeout. */
@@ -11880,7 +11897,9 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
         bool forced = state->autosleep_setting_next_ms == 0;
         if (jw__db_file_changed(state->db_path, &state->autosleep_db_sig) || forced) {
             state->autosleep_timeout_s = jw__autosleep_read_timeout_s(state);
-            jw__power_hold_save_refresh_setting(state);
+            if (!jw__power_hold_save_refresh_setting(state)) {
+                state->autosleep_db_sig.valid = false;  /* read again next poll */
+            }
             state->power_hard_cut_desired_s = jw__power_hard_cut_read_s(state);
         }
         state->autosleep_setting_next_ms = now + JW_AUTOSLEEP_SETTING_POLL_MS;
@@ -12447,7 +12466,7 @@ static bool jw__boot_resume_request(jw_daemon_state *state, char *why, size_t wh
     jw_boot_resume_launch *br = &state->boot_resume;
     br->phase = JW_BOOT_RESUME_PHASE_LAUNCHING;
     jw_log_info("boot resume: launching system=%s rom=%s core=%s request=%s route=%s",
-                br->system, br->db_rom_path, br->core_id, br->request_id,
+                br->system, br->rom_abs, br->core_id, br->request_id,
                 br->offline_proxy ? "offline-proxy" : "direct");
 
     /* Every manual-launch gate applies: BIOS and the core check here, LIFE-1
@@ -12570,6 +12589,7 @@ static bool jw__boot_resume_launch(jw_daemon_state *state,
     snprintf(br->request_id, sizeof(br->request_id), "%s", record->request_id);
     snprintf(br->system, sizeof(br->system), "%s", record->system);
     snprintf(br->db_rom_path, sizeof(br->db_rom_path), "%s", game.rom_path);
+    snprintf(br->rom_abs, sizeof(br->rom_abs), "%s", rom_abs);
 
     if (br->offline_proxy) {
         /* Services autostart on the first loop pass, after this. */
@@ -12767,8 +12787,18 @@ static void jw__boot_resume_at_startup(jw_daemon_state *state) {
         return;
     }
 
-    /* The settings poll has not run yet. */
-    jw__power_hold_save_refresh_setting(state);
+    /* The settings poll has not run yet. A busy library gets a short grace:
+       nothing waits on the daemon before the launcher starts. */
+    bool settings_read = jw__power_hold_save_refresh_setting(state);
+    for (int tries = 0; !settings_read && tries < 10; tries++) {
+        jw__usleep(50000);
+        settings_read = jw__power_hold_save_refresh_setting(state);
+    }
+    if (!settings_read) {
+        jw_log_warn("boot resume: settings unreadable (library busy); "
+                    "not resuming this boot request=%s", record.request_id);
+        return;
+    }
     /* Held B is the player saying no; it is swallowed either way so the
        launcher does not read it as Back. */
     bool bypass = jw_input_proxy_take_held_button(&state->input_proxy,
