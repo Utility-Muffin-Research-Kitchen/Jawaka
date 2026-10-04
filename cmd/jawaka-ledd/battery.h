@@ -2,12 +2,9 @@
  * reports. Pure logic, shared by main.c and battery_test.c so the test runs
  * the production code; the loop that drives it lives in main.c.
  *
- * Cost is the point of the shape. Every mmrgball write is ~44 interrupts on
- * the LED's I2C bus even when nothing changed, and ~20 helper wakeups when
- * all eight LEDs change, while a band spans 20% of charge. So the steady
- * bands read the capacity every 5 s and write only when the color changes,
- * after a resume, or on a slow safety refresh. Only the flashing low band
- * writes every second. */
+ * A band spans 20% of charge, so the steady bands read the capacity once per
+ * steady pass and write under the policy in steady.h. Only the flashing low
+ * band writes every second. */
 #ifndef JW_LEDD_BATTERY_H
 #define JW_LEDD_BATTERY_H
 
@@ -15,15 +12,15 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "steady.h"
+
 /* Overridable so a test-only device build can read a fixture instead of the
    gauge. */
 #ifndef JW_LEDD_CAPACITY_PATH
 #define JW_LEDD_CAPACITY_PATH "/sys/class/power_supply/battery/capacity"
 #endif
 
-#define JW_LEDD_BATTERY_SAMPLE_MS   5000LL   /* capacity read; steady-band pass */
 #define JW_LEDD_BATTERY_FLASH_MS    1000LL   /* one flash phase per pass */
-#define JW_LEDD_BATTERY_REFRESH_MS  60000LL  /* rewrite an unchanged frame */
 
 typedef struct {
     uint8_t r, g, b;
@@ -77,16 +74,6 @@ static inline uint32_t jw_ledd_battery_color(int percent, int alpha_max, bool fl
     if (alpha_max > 255) alpha_max = 255;
     return ((uint32_t)alpha_max << 24) | ((uint32_t)band.r << 16) |
            ((uint32_t)band.g << 8) | (uint32_t)band.b;
-}
-
-/* Whether this pass writes the ring. An unchanged frame is skipped; a resume
-   writes it anyway in case the chip lost its registers in suspend, and the
-   slow refresh covers anything else that might have touched them. */
-static inline bool jw_ledd_battery_should_write(bool have_written, uint32_t last,
-                                                uint32_t next, bool resumed,
-                                                long long since_write_ms) {
-    if (!have_written || resumed || next != last) return true;
-    return since_write_ms >= JW_LEDD_BATTERY_REFRESH_MS;
 }
 
 #endif

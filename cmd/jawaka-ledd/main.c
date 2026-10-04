@@ -16,6 +16,7 @@
  * Usage: jawaka-ledd <effect> <r> <g> <b> <brightness 0-10> <speed 0-10>
  *   effects: off static breath rainbow comet sweep fountain hiccup battery
  *   (battery ignores the color and speed; see battery.h)
+ *   off, static, and battery write only when the frame changes (steady.h).
  *
  * Standalone + MLP1-specific (like device_mlp1.c): pure libc + sysfs, no deps.
  */
@@ -29,6 +30,7 @@
 #include <unistd.h>
 
 #include "battery.h"
+#include "steady.h"
 
 /* CLOCK_BOOTTIME counts time spent suspended; Battery Level sleeps on it so a
    resume ends the sleep at once. The host build (ledd-spawn-test, macOS
@@ -250,12 +252,9 @@ static void jw__fx_hiccup(uint32_t out[JW_LED_COUNT], int t, int step,
      - breath, hiccup, fountain: 100 ms; a uniform pulse or a fill level
        reads the same at 10 fps. Fountain drops to its hold time at top speed
        so no fill level is skipped.
-     - off, static: the frame never changes. The AW20036 latches its
-       registers, so a slow refresh is enough. */
+   off, static, and battery do not use it: their frame changes rarely or
+   never, and jw__run_steady writes it only when it does. */
 static long jw__effect_interval_ms(const char *effect, int speed) {
-    if (strcmp(effect, "off") == 0 || strcmp(effect, "static") == 0) {
-        return 1000;
-    }
     if (strcmp(effect, "breath") == 0 || strcmp(effect, "hiccup") == 0) {
         return 100;
     }
@@ -285,9 +284,13 @@ static void jw__sleep_boottime_ms(long long ms) {
 #endif
 }
 
-/* Battery Level. Errors go dark rather than ending the helper: jawakad would
-   only start it again. */
-static void jw__run_battery(const jw_effect_params *p) {
+/* off, static, and Battery Level: frames that change rarely or never. Each
+   pass (5 s, or 1 s while the low-battery flash runs) works out the frame and
+   writes it only when steady.h says so. Battery read errors go dark rather
+   than ending the helper: jawakad would only start it again. */
+static void jw__run_steady(const char *effect, const jw_effect_params *p) {
+    bool battery = strcmp(effect, "battery") == 0;
+    bool off = strcmp(effect, "off") == 0;
     uint32_t frame[JW_LED_COUNT];
     uint32_t last = 0;
     bool have_written = false;
@@ -295,7 +298,7 @@ static void jw__run_battery(const jw_effect_params *p) {
     long long last_write_ms = 0;
     long long prev_gap_ms = jw__clock_ms(CLOCK_BOOTTIME) - jw__clock_ms(CLOCK_MONOTONIC);
     long long sampled_ms = jw__clock_ms(CLOCK_BOOTTIME);
-    int percent = jw_ledd_battery_read(JW_LEDD_CAPACITY_PATH);
+    int percent = battery ? jw_ledd_battery_read(JW_LEDD_CAPACITY_PATH) : -1;
 
     while (g_running) {
         long long now_ms = jw__clock_ms(CLOCK_BOOTTIME);
@@ -303,16 +306,18 @@ static void jw__run_battery(const jw_effect_params *p) {
         long long gap_ms = now_ms - jw__clock_ms(CLOCK_MONOTONIC);
         bool resumed = gap_ms - prev_gap_ms > 1000;
         prev_gap_ms = gap_ms;
-        if (resumed || now_ms - sampled_ms >= JW_LEDD_BATTERY_SAMPLE_MS) {
+        if (battery && (resumed || now_ms - sampled_ms >= JW_LEDD_STEADY_PASS_MS)) {
             percent = jw_ledd_battery_read(JW_LEDD_CAPACITY_PATH);
             sampled_ms = now_ms;
         }
 
-        bool flashing = jw_ledd_battery_flashing(percent, p->alpha_max);
+        bool flashing = battery && jw_ledd_battery_flashing(percent, p->alpha_max);
         if (!flashing) lit = true;   /* the low band always opens lit */
-        uint32_t color = jw_ledd_battery_color(percent, p->alpha_max, lit);
-        if (jw_ledd_battery_should_write(have_written, last, color, resumed,
-                                         now_ms - last_write_ms)) {
+        uint32_t color = battery ? jw_ledd_battery_color(percent, p->alpha_max, lit)
+                       : off     ? jw__argb(0, 0, 0, 0)
+                                 : jw__argb(p->alpha_max, p->r, p->g, p->b);
+        if (jw_ledd_should_write(have_written, last, color, resumed,
+                                 now_ms - last_write_ms)) {
             for (int i = 0; i < JW_LED_COUNT; i++) frame[i] = color;
             jw__write_frame(frame);
             last = color;
@@ -321,7 +326,7 @@ static void jw__run_battery(const jw_effect_params *p) {
         }
         if (flashing) lit = !lit;
         jw__sleep_boottime_ms(flashing ? JW_LEDD_BATTERY_FLASH_MS
-                                       : JW_LEDD_BATTERY_SAMPLE_MS);
+                                       : JW_LEDD_STEADY_PASS_MS);
     }
 }
 
@@ -368,8 +373,9 @@ int main(int argc, char **argv) {
     g_daemon_pid = jw__find_daemon(JW_LED_DAEMON);
     if (g_daemon_pid > 0) kill(g_daemon_pid, SIGSTOP);
 
-    if (strcmp(effect, "battery") == 0) {
-        jw__run_battery(&p);
+    if (strcmp(effect, "off") == 0 || strcmp(effect, "static") == 0 ||
+        strcmp(effect, "battery") == 0) {
+        jw__run_steady(effect, &p);
         jw__thaw();
         return 0;
     }
@@ -383,9 +389,7 @@ int main(int argc, char **argv) {
     int t = 0;
     long head = 0;
     while (g_running) {
-        if (strcmp(effect, "off") == 0)           jw__fx_fill(frame, 0, 0, 0, 0);
-        else if (strcmp(effect, "static") == 0)   jw__fx_fill(frame, p.alpha_max, p.r, p.g, p.b);
-        else if (strcmp(effect, "breath") == 0)   jw__fx_breath(frame, t, &p, speed);
+        if (strcmp(effect, "breath") == 0)        jw__fx_breath(frame, t, &p, speed);
         else if (strcmp(effect, "rainbow") == 0)  jw__fx_rainbow(frame, t, &p, speed);
         else if (strcmp(effect, "comet") == 0)    jw__fx_comet(frame, head, &p, 1);
         else if (strcmp(effect, "sweep") == 0)    jw__fx_comet(frame, head, &p, 0);

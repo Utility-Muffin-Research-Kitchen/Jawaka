@@ -1,5 +1,6 @@
-/* Battery Level's reader, palette, flash, and write decision, run against the
-   production code in battery.h with temporary capacity files. No LED writes.
+/* Battery Level's reader, palette, and flash (battery.h), and the write
+   decision static, off, and Battery Level share (steady.h), run against the
+   production code with temporary capacity files. No LED writes.
 
    Usage: led-battery-test */
 #include "battery.h"
@@ -114,26 +115,26 @@ static void test_brightness(void) {
 static void test_write_decision(void) {
     uint32_t blue = jw_ledd_battery_color(90, 255, true);
     uint32_t green = jw_ledd_battery_color(70, 255, true);
-    long long refresh = JW_LEDD_BATTERY_REFRESH_MS;
+    long long refresh = JW_LEDD_REFRESH_MS;
 
-    CHECK(jw_ledd_battery_should_write(false, 0, blue, false, 0), "first frame is written");
-    CHECK(!jw_ledd_battery_should_write(true, blue, blue, false, 5000),
+    CHECK(jw_ledd_should_write(false, 0, blue, false, 0), "first frame is written");
+    CHECK(!jw_ledd_should_write(true, blue, blue, false, 5000),
           "unchanged frame is skipped");
-    CHECK(!jw_ledd_battery_should_write(true, blue, blue, false, refresh - 1),
+    CHECK(!jw_ledd_should_write(true, blue, blue, false, refresh - 1),
           "unchanged frame is skipped until the refresh");
-    CHECK(jw_ledd_battery_should_write(true, blue, blue, false, refresh),
+    CHECK(jw_ledd_should_write(true, blue, blue, false, refresh),
           "refresh rewrites an unchanged frame");
-    CHECK(jw_ledd_battery_should_write(true, blue, green, false, 0), "band change is written");
-    CHECK(jw_ledd_battery_should_write(true, blue, blue, true, 0), "resume forces a write");
+    CHECK(jw_ledd_should_write(true, blue, green, false, 0), "band change is written");
+    CHECK(jw_ledd_should_write(true, blue, blue, true, 0), "resume forces a write");
 
     /* Brightness 0 through a whole minute of 5 s passes: one write. */
     int writes = 0;
     bool have_written = false;
     uint32_t last = 0;
     long long last_write = 0;
-    for (long long now = 0; now < refresh; now += JW_LEDD_BATTERY_SAMPLE_MS) {
+    for (long long now = 0; now < refresh; now += JW_LEDD_STEADY_PASS_MS) {
         uint32_t color = jw_ledd_battery_color(10, 0, (now / 5000) % 2 == 0);
-        if (jw_ledd_battery_should_write(have_written, last, color, false, now - last_write)) {
+        if (jw_ledd_should_write(have_written, last, color, false, now - last_write)) {
             writes++;
             have_written = true;
             last = color;
@@ -141,6 +142,36 @@ static void test_write_decision(void) {
         }
     }
     CHECK(writes == 1, "brightness 0 wrote %d times in a minute, want 1", writes);
+}
+
+/* static and off never change their frame: five minutes of 5 s passes write
+   at the start and on each refresh, where they used to write every second. */
+static int steady_writes(uint32_t color, long long resume_at) {
+    int writes = 0;
+    bool have_written = false;
+    uint32_t last = 0;
+    long long last_write = 0;
+    for (long long now = 0; now < 5 * JW_LEDD_REFRESH_MS; now += JW_LEDD_STEADY_PASS_MS) {
+        bool resumed = now == resume_at;
+        if (jw_ledd_should_write(have_written, last, color, resumed, now - last_write)) {
+            writes++;
+            have_written = true;
+            last = color;
+            last_write = now;
+        }
+    }
+    return writes;
+}
+
+static void test_static_and_off(void) {
+    uint32_t green = 0x7F23DC00u;   /* static 35 220 0 at brightness 5 */
+    int w = steady_writes(green, -1);
+    CHECK(w == 5, "static wrote %d times in five minutes, want 5", w);
+    w = steady_writes(0, -1);
+    CHECK(w == 5, "off wrote %d times in five minutes, want 5", w);
+    /* A resume at 90 s adds a write, and the refresh counts on from it. */
+    w = steady_writes(green, 90000);
+    CHECK(w == 6, "static with a resume wrote %d times, want 6", w);
 }
 
 static void test_mode(void) {
@@ -167,6 +198,7 @@ int main(void) {
     test_unknown_and_flash();
     test_brightness();
     test_write_decision();
+    test_static_and_off();
     test_mode();
 
     char path[sizeof(g_dir) + 16];
