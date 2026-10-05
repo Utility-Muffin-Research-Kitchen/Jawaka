@@ -123,12 +123,36 @@ static bool jw__language_is_japanese(const char *lang) {
     return lang && strncmp(lang, "ja", 2) == 0 && (lang[2] == '\0' || lang[2] == '_');
 }
 
+/* Fredoka has no Vietnamese letters: ă, đ, ơ, ư and most of the stacked-accent
+   forms are missing, so Vietnamese in it would drop letters mid-word. Every
+   other themed family covers the whole translation. Unlike CJK this swaps only
+   the one family, for the default, and the saved choice is kept for when the
+   language changes back. */
+static bool jw__language_is_vietnamese(const char *lang) {
+    return lang && strncmp(lang, "vi", 2) == 0 && (lang[2] == '\0' || lang[2] == '_');
+}
+
+bool jw_appearance_font_covers_language(int index, const char *lang) {
+    if (index < 0 || index >= JW_APPEARANCE_FONT_FAMILY_COUNT)
+        return true;
+    return !(jw__language_is_vietnamese(lang) &&
+             strcmp(kJawakaFontFamilyLabels[index], "Fredoka") == 0);
+}
+
+int jw_appearance_font_index_for_language(int index, const char *lang) {
+    if (index < 0 || index >= JW_APPEARANCE_FONT_FAMILY_COUNT)
+        index = JW_APPEARANCE_FONT_FAMILY_DEFAULT;
+    return jw_appearance_font_covers_language(index, lang)
+               ? index
+               : JW_APPEARANCE_FONT_FAMILY_DEFAULT;
+}
+
 const char *jw_appearance_font_path_for_language(int index, const char *lang) {
     if (jw__language_is_japanese(lang))
         return JW_APPEARANCE_JA_FONT_PATH;
     if (jw_i18n_language_is_cjk(lang))
         return JW_APPEARANCE_CJK_FONT_PATH;
-    return jw_appearance_font_path_for_index(index);
+    return jw_appearance_font_path_for_index(jw_appearance_font_index_for_language(index, lang));
 }
 
 /* The UI face alone is not enough for Japanese: Catastrophe moves every CJK

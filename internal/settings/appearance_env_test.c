@@ -119,6 +119,26 @@ int main(void) {
                JW_APPEARANCE_JA_FONT_PATH) == 0)
         return fail("a code merely starting with ja chose the Japanese face");
 
+    /* Fredoka has no Vietnamese letters, so Vietnamese draws in the default
+       family instead. Every other family, and Fredoka in other languages,
+       is left alone. */
+    int fredoka = -1;
+    for (int i = 0; i < JW_APPEARANCE_FONT_FAMILY_COUNT; i++)
+        if (strcmp(kJawakaFontFamilyLabels[i], "Fredoka") == 0) fredoka = i;
+    if (fredoka < 0)
+        return fail("Fredoka is not in the font list");
+    if (strcmp(jw_appearance_font_path_for_language(fredoka, "vi_VN"),
+               jw_appearance_font_path_for_index(JW_APPEARANCE_FONT_FAMILY_DEFAULT)) != 0)
+        return fail("vi_VN kept Fredoka, which cannot draw Vietnamese");
+    if (strcmp(jw_appearance_font_path_for_language(fredoka, "en"),
+               jw_appearance_font_path_for_index(fredoka)) != 0)
+        return fail("Fredoka was replaced in English");
+    for (int i = 0; i < JW_APPEARANCE_FONT_FAMILY_COUNT; i++)
+        if (i != fredoka && jw_appearance_font_index_for_language(i, "vi_VN") != i)
+            return fail("vi_VN replaced a family that covers Vietnamese");
+    if (!jw_appearance_font_covers_language(fredoka, "vix"))
+        return fail("a code merely starting with vi lost Fredoka");
+
     /* Missing settings: jw_appearance_resolve() must fully populate the env,
        defaulting the language to "en", and export must publish that. */
     unsetenv("UMRK_LANGUAGE");
