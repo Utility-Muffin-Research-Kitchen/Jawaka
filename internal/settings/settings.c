@@ -2671,9 +2671,13 @@ static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w,
     /* The themed families have no CJK glyphs, so a CJK language pins the face.
        Showing that in the row beats an option that looks available and is not. */
     bool font_locked = jw_i18n_language_is_cjk(jw_i18n_language());
+    /* A family that cannot draw the language (Fredoka in Vietnamese) is
+       replaced on screen, so the row names the face actually in use. */
+    int font_shown = jw_appearance_font_index_for_language(ui->font_family_index,
+                                                           jw_i18n_language());
     jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_FONT, "Font",
                         font_locked ? jw_appearance_cjk_font_label(jw_i18n_language())
-                                    : kJawakaFontFamilyLabels[ui->font_family_index],
+                                    : kJawakaFontFamilyLabels[font_shown],
                         !font_locked);
     jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_FONT_SIZE,
                         "Font Size", kFontSizeLabels[ui->font_size_index], true);
@@ -5386,6 +5390,7 @@ static const char *jw__language_label(const char *code) {
     if (strcmp(code, "zh_CN") == 0) return "中文";
     if (strcmp(code, "fr_FR") == 0) return "Français";
     if (strcmp(code, "es_MX") == 0) return "Español (México)";
+    if (strcmp(code, "vi_VN") == 0) return "Tiếng Việt";
     if (strcmp(code, "zh_TW") == 0) return "繁體中文";
     /* Region-qualified like the others (ja_JP.po), so the Language row names
        it; a bare "ja" is kept for any table dropped on the card that way. */
@@ -7311,8 +7316,14 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                         }
                         break;
                     }
-                    int next = (ui->font_family_index + dir + JW_APPEARANCE_FONT_FAMILY_COUNT) %
+                    /* Step from the face on screen, past any family that cannot
+                       draw the current language. */
+                    const char *lang = jw_i18n_language();
+                    int next = jw_appearance_font_index_for_language(ui->font_family_index, lang);
+                    do {
+                        next = (next + dir + JW_APPEARANCE_FONT_FAMILY_COUNT) %
                                JW_APPEARANCE_FONT_FAMILY_COUNT;
+                    } while (!jw_appearance_font_covers_language(next, lang));
                     const char *path = jw_appearance_font_path_for_index(next);
                     if (cat_reload_fonts(path) == CAT_OK) {
                         ui->font_family_index = next;
