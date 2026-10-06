@@ -139,6 +139,31 @@ int main(void) {
     if (!jw_appearance_font_covers_language(fredoka, "vix"))
         return fail("a code merely starting with vi lost Fredoka");
 
+    /* Space Grotesk, Lexend, Baloo 2 and Fredoka have no Cyrillic, so Russian
+       draws each of them in the default family. The rest are left alone, and
+       English keeps every family. */
+    static const char *const no_cyrillic[] = { "Space Grotesk", "Lexend", "Baloo 2", "Fredoka" };
+    int replaced = 0;
+    for (int i = 0; i < JW_APPEARANCE_FONT_FAMILY_COUNT; i++) {
+        int gap = 0;
+        for (size_t j = 0; j < sizeof(no_cyrillic) / sizeof(no_cyrillic[0]); j++)
+            if (strcmp(kJawakaFontFamilyLabels[i], no_cyrillic[j]) == 0) gap = 1;
+        replaced += gap;
+        int want = gap ? JW_APPEARANCE_FONT_FAMILY_DEFAULT : i;
+        if (jw_appearance_font_index_for_language(i, "ru_RU") != want)
+            return fail(gap ? "ru_RU kept a family with no Cyrillic"
+                            : "ru_RU replaced a family that covers Cyrillic");
+        if (jw_appearance_font_index_for_language(i, "en") != i)
+            return fail("a family was replaced in English");
+    }
+    if (replaced != (int)(sizeof(no_cyrillic) / sizeof(no_cyrillic[0])))
+        return fail("a family with no Cyrillic is not in the font list");
+    if (!jw_appearance_font_covers_language(JW_APPEARANCE_FONT_FAMILY_DEFAULT, "ru_RU") ||
+        !jw_appearance_font_covers_language(JW_APPEARANCE_FONT_FAMILY_DEFAULT, "vi_VN"))
+        return fail("the default family cannot draw a language it stands in for");
+    if (!jw_appearance_font_covers_language(0, "rus"))
+        return fail("a code merely starting with ru lost a family");
+
     /* Missing settings: jw_appearance_resolve() must fully populate the env,
        defaulting the language to "en", and export must publish that. */
     unsetenv("UMRK_LANGUAGE");
