@@ -43,8 +43,9 @@ const char *jw_appearance_font_path_for_index(int index);
 const char *jw_appearance_font_path_for_language(int index, const char *lang);
 
 /* False when the themed family at `index` lacks letters `lang` needs (Fredoka
-   has no Vietnamese). The _for_language path above already steps around it;
-   the font picker uses these to skip it and to name the face actually drawn. */
+   has no Vietnamese; four families have no Cyrillic). The _for_language path
+   above already steps around it; the font picker uses these to skip it and to
+   name the face actually drawn. */
 bool jw_appearance_font_covers_language(int index, const char *lang);
 int  jw_appearance_font_index_for_language(int index, const char *lang);
 
