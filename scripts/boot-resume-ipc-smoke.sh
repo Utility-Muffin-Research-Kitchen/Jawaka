@@ -31,6 +31,7 @@ FAKE_RA_PY="$ROOT_DIR/scripts/fake-retroarch.py"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jw-boot-resume.XXXXXX")"
 PRIMARY="$TMP_DIR/primary"
 STATE="$TMP_DIR/state"
+SHARED_CFG="$STATE/retroarch/retroarch.cfg"
 USERDATA="$PRIMARY/.userdata/mac"
 LOGS="$USERDATA/logs"
 PLATFORM_ROOT="$PRIMARY/.system/leaf/platforms/mac"
@@ -431,6 +432,51 @@ stop() { smoke_daemon_stop || fail "jawakad did not stop"; }
 
 RESUME_RA=(FAKE_RA_SYNC_SAVE_BYTES="$STATE_BYTES")
 
+# Leaf supplies cheevos_enable from its account, not the shared config.
+# RetroArch defaults Hardcore to On even when Achievements are Off.
+set_achievements() { # achievements(true|false) hardcore(true|false)
+    mkdir -p "$(dirname "$SHARED_CFG")"
+    printf 'cheevos_enable = "false"\ncheevos_hardcore_mode_enable = "%s"\n' "$2" >"$SHARED_CFG"
+    if [ "$1" = true ]; then
+        python3 - "$STATE/library.db" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.executemany("INSERT OR REPLACE INTO settings(key,value) VALUES (?,?)", [
+    ("retroachievements_user", "smoke-user"),
+    ("retroachievements_pass", "smoke-password"),
+    ("retroachievements_revision", "1"),
+])
+db.commit()
+PY
+    fi
+}
+
+# --- An inactive Hardcore preference must not veto a casual resume. -------
+for pair in 'false true' 'false false' 'true false'; do
+    read -r achievements hardcore <<<"$pair"
+    PREPARE_HOOK="set_achievements $achievements $hardcore" \
+        boot "resume-achievements-$achievements-hardcore-$hardcore" \
+        JAWAKA_TEST_BOOT_ID=boot-b "${RESUME_RA[@]}" FAKE_RA_LOAD_STATE=ok
+    wait_log 'boot resume: loaded request=' 100 || fail "inactive Hardcore blocked the resume"
+    grep -qxF "cheevos_hardcore_mode_enable = \"$hardcore\"" "$RUNTIME"/retroarch-current-*.cfg ||
+        fail "the launch changed the Hardcore preference"
+    if [ "$achievements" = true ]; then
+        grep -qxF 'cheevos_enable = "true"' "$RUNTIME"/retroarch-current-*.cfg ||
+            fail "the account did not enable Achievements"
+    else
+        grep -q '^cheevos_enable' "$RUNTIME"/retroarch-current-*.cfg &&
+            fail "the launch enabled Achievements without an account"
+    fi
+    [ "$(grep -c -x "LOAD_STATE_SYNC $REQUEST_ID 99" "$RA_COMMANDS")" -eq 1 ] ||
+        fail "the resume did not load exactly once"
+    expect_record_gone
+    expect_state_untouched
+    stop
+    grep -qxF "cheevos_hardcore_mode_enable = \"$hardcore\"" "$SHARED_CFG" ||
+        fail "the resume changed the durable Hardcore preference"
+done
+echo "row inactive-hardcore: casual sessions resume without changing the preference"
+
 # --- Same-boot record (daemon restart, direct jawakad): deleted, ignored. --
 boot same-boot JAWAKA_TEST_BOOT_ID=boot-a "${RESUME_RA[@]}" FAKE_RA_LOAD_STATE=ok
 wait_log 'boot resume: record discarded (same-boot)' 50 || fail "same-boot record not discarded"
@@ -585,6 +631,10 @@ check_load_failure() { # name load-mode want; NO_STATE_INFO=1: no GET_STATE_SAVE
 }
 check_load_failure load-error UNSERIALIZE 'LOAD_STATE_SYNC UNSERIALIZE'
 check_load_failure load-busy BUSY 'LOAD_STATE_SYNC BUSY'
+PREPARE_HOOK='set_achievements true true; cp "$SHARED_CFG" "$TMP_DIR/hardcore-before.cfg"' \
+    check_load_failure load-hardcore HARDCORE 'LOAD_STATE_SYNC HARDCORE'
+cmp -s "$SHARED_CFG" "$TMP_DIR/hardcore-before.cfg" ||
+    fail "an active Hardcore refusal changed the shared config"
 check_load_failure load-old-retroarch silent 'RetroArch cannot sync-load (probe=timeout)'
 grep -q -x "LOAD_STATE_SYNC $REQUEST_ID 99" "$RA_COMMANDS" &&
     fail "an older RetroArch was sent the load"
@@ -592,7 +642,7 @@ grep -q -x "LOAD_STATE_SYNC $REQUEST_ID 99" "$RA_COMMANDS" &&
 NO_STATE_INFO=1 check_load_failure load-oldest-retroarch silent \
     'RetroArch cannot sync-load (state info=timeout)'
 grep -q '^LOAD_STATE_SYNC' "$RA_COMMANDS" && fail "the oldest RetroArch was probed for the load"
-echo "row load-failure: error, busy and older RetroArch builds quit to the launcher"
+echo "row load-failure: error, busy, active Hardcore and older RetroArch builds quit to the launcher"
 
 # --- Saved through the proxy: the boot waits for it and resumes casual. ---
 health_up

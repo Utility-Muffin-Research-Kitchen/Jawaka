@@ -12561,11 +12561,6 @@ static bool jw__boot_resume_launch(jw_daemon_state *state,
             return false;
         }
     }
-    /* Hardcore refuses state loads; do not start a game only to quit it. */
-    if (jw_retroarch_shared_hardcore_enabled(state->sdcard_root)) {
-        snprintf(why, why_size, "Hardcore is on");
-        return false;
-    }
     /* The core this game launches with now, through the effective catalog,
        must be the one that saved: same id, state folder and provider. A
        changed selection cancels; nothing is substituted. (A requested core id
@@ -12750,6 +12745,9 @@ static void jw__tick_boot_resume(jw_daemon_state *state) {
             }
             return;
         }
+        /* Let RetroArch enforce active Hardcore here: the shared preference
+           can be On while Achievements are Off, and the launch can override
+           both. A HARDCORE reply takes the normal failed-resume path below. */
         if (jw_ra_load_state_sync(&ra, &br->load, br->request_id,
                                   JW_BOOT_RESUME_SLOT) != JW_RA_OK) {
             jw__boot_resume_fail(state, "could not send the load", true);
