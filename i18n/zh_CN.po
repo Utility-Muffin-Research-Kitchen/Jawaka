@@ -3593,62 +3593,48 @@ msgstr ""
 "上次检查耗时过长，已停止。请重启设备并重新\n"
 "检查此卡，检查通过后才能再次保存文件。"
 
-#, fuzzy
+# Power-off save and boot-resume translations reviewed by AlexL (2026-10-07).
 msgid "Save Before Power Off"
 msgstr "关机前存档"
 
-#, fuzzy
 msgid "Hold power to shut down, then release to save"
 msgstr "长按电源键关机，松开即可存档"
 
-#, fuzzy
 msgid "Power off will not save your game"
 msgstr "关机时不会保存游戏进度"
 
-#, fuzzy
 msgid "Preparing to save"
 msgstr "正在准备存档"
 
-#, fuzzy
 msgid "Release the power button"
 msgstr "请松开电源键"
 
-#, fuzzy
 msgid "Saving game"
 msgstr "正在保存游戏"
 
-#, fuzzy
 msgid "Game saved"
 msgstr "游戏已保存"
 
-#, fuzzy
 msgid "Game not saved"
 msgstr "游戏未保存"
 
-#, fuzzy
 msgid "Powering off"
 msgstr "正在关机"
 
-#, fuzzy
 msgid "Resume Game on Boot"
 msgstr "开机时继续游戏"
 
-#, fuzzy
 msgid "Continue your game when you turn on your console after saving with the power button. Hold B during startup to skip."
 msgstr "用电源键存档后，下次开机即可继续游戏。开机时按住 B 键可跳过。"
 
-#, fuzzy
 msgid "Turn on Save Before Power Off first"
 msgstr "请先开启“关机前存档”"
 
-#, fuzzy
 msgid "Your game will not resume at startup"
 msgstr "开机时不会继续游戏"
 
-#, fuzzy
 msgid "Couldn't resume your game. Open it to try loading your save."
 msgstr "无法继续游戏。请打开游戏并尝试读取存档。"
 
-#, fuzzy
 msgid "Resuming your game"
 msgstr "正在继续游戏"
