@@ -23,7 +23,7 @@ jobs:
           path: Catastrophe
       - name: Install native renderer dependencies
         run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libsqlite3-dev libcurl4-openssl-dev
-      - name: Database migration, visibility and relocation
-        run: make -C Jawaka schema-v6-test visibility-test relocation-test
+      - name: Content inspection, database migration, visibility and relocation
+        run: make -C Jawaka content-test schema-v6-test visibility-test relocation-test
       - name: Launcher, Hidden Games and empty in-game switcher
         run: make -C Jawaka visibility-ui-test settings-status-test game-switcher-test

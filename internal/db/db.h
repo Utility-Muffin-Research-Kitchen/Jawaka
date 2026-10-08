@@ -195,6 +195,30 @@ int  jw_db_count_hidden_games(const char *db_path, int *out_count);
 int  jw_db_list_hidden_games(const char *db_path, jw_game_entry *out,
                               int max_count, int *out_count);
 
+typedef struct {
+    jw_game_entry game;
+    char member[512];
+} jw_hidden_rom_entry;
+
+/* Disc keys use filesystem-normalized source/path spelling from content
+   inspection; member is empty except for an explicit archive selector.
+   No games row is required. An absent preference reads as visible, and writes
+   return the same statuses as game visibility. No path case folding is done. */
+int  jw_db_set_rom_hidden(const char *db_path, const char *source_id,
+                           const char *rom_relpath, const char *member, int hidden);
+int  jw_db_is_rom_hidden(const char *db_path, const char *source_id,
+                          const char *rom_relpath, const char *member, int *out_hidden);
+/* Every stored key, including archive members and unindexed or missing discs.
+   game.id is 0 without a matching row; game.name then falls back to the path. */
+int  jw_db_count_hidden_roms(const char *db_path, int *out_count);
+int  jw_db_list_hidden_roms(const char *db_path, jw_hidden_rom_entry *out,
+                             int max_count, int *out_count);
+/* Indexed playlist candidates across all sources, including hidden games.
+   The caller inspects members on demand to associate hidden discs with games. */
+int  jw_db_count_playlists(const char *db_path, int *out_count);
+int  jw_db_list_playlists(const char *db_path, jw_game_entry *out,
+                           int max_count, int *out_count);
+
 /* Favorites. kind is "game" or "app"; target_id is the games/apps id.
    set_favorite adds (on != 0) or removes (on == 0); it is idempotent.
    list_favorite_games returns favorited games in case-insensitive alphabetical

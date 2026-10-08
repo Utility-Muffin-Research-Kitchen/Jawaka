@@ -2762,7 +2762,8 @@ static int jw__visibility_error(sqlite3 *db) {
 
 static int jw__write_visibility(const char *db_path, const char *sql,
                                 int game_id, const char *source_id,
-                                const char *rom_relpath, int require_row) {
+                                const char *rom_relpath, const char *member,
+                                int require_row) {
     sqlite3 *db = NULL;
     sqlite3_stmt *stmt = NULL;
     int rc = -1;
@@ -2771,6 +2772,7 @@ static int jw__write_visibility(const char *db_path, const char *sql,
     if (source_id) {
         sqlite3_bind_text(stmt, 1, source_id, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 2, rom_relpath, -1, SQLITE_TRANSIENT);
+        if (member) sqlite3_bind_text(stmt, 3, member, -1, SQLITE_TRANSIENT);
     } else {
         sqlite3_bind_int(stmt, 1, game_id);
     }
@@ -2792,7 +2794,7 @@ int jw_db_set_game_hidden(const char *db_path, int game_id, int hidden) {
           "ON CONFLICT(source_id,rom_relpath,member) DO UPDATE SET member='';"
         : "DELETE FROM hidden_roms WHERE member='' AND (source_id,rom_relpath) "
           "IN (SELECT source_id,rom_relpath FROM games WHERE id=?);";
-    return jw__write_visibility(db_path, sql, game_id, NULL, NULL, hidden != 0);
+    return jw__write_visibility(db_path, sql, game_id, NULL, NULL, NULL, hidden != 0);
 }
 
 int jw_db_clear_hidden_game(const char *db_path, const char *source_id,
@@ -2801,7 +2803,51 @@ int jw_db_clear_hidden_game(const char *db_path, const char *source_id,
         !rom_relpath || !rom_relpath[0]) return -1;
     return jw__write_visibility(db_path,
         "DELETE FROM hidden_roms WHERE source_id=? AND rom_relpath=? AND member='';",
-        0, source_id, rom_relpath, 0);
+        0, source_id, rom_relpath, NULL, 0);
+}
+
+static int jw__valid_visibility_key(const char *source_id, const char *rom_relpath,
+                                     const char *member) {
+    return source_id && source_id[0] &&
+        strlen(source_id) < sizeof(((jw_game_entry *)0)->source_id) &&
+        rom_relpath && rom_relpath[0] &&
+        strlen(rom_relpath) < sizeof(((jw_game_entry *)0)->rom_relpath) &&
+        member && strlen(member) < sizeof(((jw_hidden_rom_entry *)0)->member);
+}
+
+int jw_db_set_rom_hidden(const char *db_path, const char *source_id,
+                          const char *rom_relpath, const char *member, int hidden) {
+    if (!db_path || !jw__valid_visibility_key(source_id, rom_relpath, member)) return -1;
+    const char *sql = hidden
+        ? "INSERT INTO hidden_roms(source_id,rom_relpath,member) VALUES(?,?,?) "
+          "ON CONFLICT(source_id,rom_relpath,member) DO NOTHING;"
+        : "DELETE FROM hidden_roms WHERE source_id=? AND rom_relpath=? AND member=?;";
+    return jw__write_visibility(db_path, sql, 0, source_id, rom_relpath, member, 0);
+}
+
+int jw_db_is_rom_hidden(const char *db_path, const char *source_id,
+                         const char *rom_relpath, const char *member, int *out_hidden) {
+    if (!db_path || !out_hidden ||
+        !jw__valid_visibility_key(source_id, rom_relpath, member)) return -1;
+    *out_hidden = 0;
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    int rc = -1;
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
+        sqlite3_prepare_v2(db, "SELECT EXISTS(SELECT 1 FROM hidden_roms "
+            "WHERE source_id=? AND rom_relpath=? AND member=?);",
+            -1, &stmt, NULL) != SQLITE_OK) goto done;
+    sqlite3_bind_text(stmt, 1, source_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, rom_relpath, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, member, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        *out_hidden = sqlite3_column_int(stmt, 0);
+        rc = 0;
+    }
+done:
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
 }
 
 int jw_db_is_game_hidden(const char *db_path, int game_id, int *out_hidden) {
@@ -2824,24 +2870,36 @@ done:
     return rc;
 }
 
-int jw_db_count_hidden_games(const char *db_path, int *out_count) {
+static int jw__count_visibility_rows(const char *db_path, const char *sql,
+                                      int *out_count) {
     if (!db_path || !out_count) return -1;
     *out_count = 0;
     sqlite3 *db = NULL;
     int rc = -1;
     if (jw_db_open(db_path, &db) == 0 && jw_db_apply_schema(db) == 0) {
-        rc = jw__query_int(db, "SELECT COUNT(*) FROM hidden_roms WHERE member='';",
-                          out_count);
+        rc = jw__query_int(db, sql, out_count);
     }
     jw_db_close(db);
     return rc;
 }
 
-int jw_db_list_hidden_games(const char *db_path, jw_game_entry *out,
-                             int max_count, int *out_count) {
-    if (!db_path || !out || max_count <= 0 || !out_count) return -1;
+int jw_db_count_hidden_games(const char *db_path, int *out_count) {
+    return jw__count_visibility_rows(db_path,
+        "SELECT COUNT(*) FROM hidden_roms WHERE member='';", out_count);
+}
+
+int jw_db_count_hidden_roms(const char *db_path, int *out_count) {
+    return jw__count_visibility_rows(db_path,
+        "SELECT COUNT(*) FROM hidden_roms;", out_count);
+}
+
+static int jw__list_hidden_roms(const char *db_path, jw_game_entry *games,
+                                jw_hidden_rom_entry *roms, int max_count,
+                                int *out_count) {
+    if (!db_path || (!games && !roms) || max_count <= 0 || !out_count) return -1;
     *out_count = 0;
-    memset(out, 0, sizeof(out[0]) * (size_t)max_count);
+    if (games) memset(games, 0, sizeof(games[0]) * (size_t)max_count);
+    if (roms) memset(roms, 0, sizeof(roms[0]) * (size_t)max_count);
     sqlite3 *db = NULL;
     sqlite3_stmt *stmt = NULL;
     int rc = -1;
@@ -2852,12 +2910,65 @@ int jw_db_list_hidden_games(const char *db_path, jw_game_entry *out,
         "COALESCE(g.image_root_kind,''),COALESCE(g.image_relpath,''),"
         "COALESCE(g.image_path,''),"
         "EXISTS(SELECT 1 FROM favorites f WHERE f.kind='game' AND f.target_id=g.id),"
-        "COALESCE(g.last_played,0),COALESCE(g.playtime_s,0) "
+        "COALESCE(g.last_played,0),COALESCE(g.playtime_s,0),h.member "
         "FROM hidden_roms h LEFT JOIN games g "
         "ON g.source_id=h.source_id AND g.rom_relpath=h.rom_relpath "
         "LEFT JOIN game_settings gs ON gs.game_id=g.id AND gs.key='display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id=g.id AND ig.key='imported_display_name' "
-        "WHERE h.member='' ORDER BY 3 COLLATE NOCASE,h.source_id,h.rom_relpath LIMIT ?;";
+        "WHERE (?1 OR h.member='') "
+        "ORDER BY 3 COLLATE NOCASE,h.source_id,h.rom_relpath,h.member LIMIT ?2;";
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
+        sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) goto done;
+    sqlite3_bind_int(stmt, 1, roms != NULL);
+    sqlite3_bind_int(stmt, 2, max_count);
+    int step_rc;
+    while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW && *out_count < max_count) {
+        int i = (*out_count)++;
+        jw__fill_game_entry(stmt, games ? &games[i] : &roms[i].game);
+        if (roms) jw__pakrat_copy_column(stmt, 12, roms[i].member, sizeof(roms[i].member));
+    }
+    rc = step_rc == SQLITE_DONE ? 0 : -1;
+done:
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_list_hidden_games(const char *db_path, jw_game_entry *out,
+                             int max_count, int *out_count) {
+    return jw__list_hidden_roms(db_path, out, NULL, max_count, out_count);
+}
+
+int jw_db_list_hidden_roms(const char *db_path, jw_hidden_rom_entry *out,
+                            int max_count, int *out_count) {
+    return jw__list_hidden_roms(db_path, NULL, out, max_count, out_count);
+}
+
+#define JW_PLAYLIST_GAME \
+    "(g.rom_relpath LIKE '%.m3u' OR g.rom_relpath LIKE '%.m3u8') "
+
+int jw_db_count_playlists(const char *db_path, int *out_count) {
+    return jw__count_visibility_rows(db_path,
+        "SELECT COUNT(*) FROM games g WHERE " JW_PLAYLIST_GAME ";", out_count);
+}
+
+int jw_db_list_playlists(const char *db_path, jw_game_entry *out,
+                          int max_count, int *out_count) {
+    if (!db_path || !out || max_count <= 0 || !out_count) return -1;
+    *out_count = 0;
+    memset(out, 0, sizeof(out[0]) * (size_t)max_count);
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    int rc = -1;
+    const char *sql =
+        "SELECT g.id,g.system,COALESCE(NULLIF(gs.value,''),NULLIF(ig.value,''),g.name),"
+        "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
+        "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''),"
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind='game' AND f.target_id=g.id),"
+        "COALESCE(g.last_played,0),g.playtime_s FROM games g "
+        "LEFT JOIN game_settings gs ON gs.game_id=g.id AND gs.key='display_name' "
+        "LEFT JOIN game_settings ig ON ig.game_id=g.id AND ig.key='imported_display_name' "
+        "WHERE " JW_PLAYLIST_GAME "ORDER BY 3 COLLATE NOCASE,g.source_id,g.rom_relpath LIMIT ?;";
     if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
         sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) goto done;
     sqlite3_bind_int(stmt, 1, max_count);

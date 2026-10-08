@@ -449,6 +449,10 @@ msgid "All Systems"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "All discs are hidden. Choose Show Hidden to restore them."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "All rights reserved, redistribution permitted"
 msgstr ""
 
@@ -872,8 +876,24 @@ msgstr ""
 msgid "Could not hide this game"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Could not load discs."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Could not read disc visibility. Reopen Manage Discs to try again."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Could not read storage sources."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Could not save"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Could not update disc visibility. Reopen Manage Discs to try again."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -889,7 +909,7 @@ msgid "Couldn't resume your game. Open it to try loading your save."
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "Couldn't unhide your game."
+msgid "Couldn't unhide your selection."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -962,6 +982,14 @@ msgstr ""
 
 #: internal/platform/input_shortcuts.c
 msgid "Disabled"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Disc unhidden"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Disc visibility saved. Library refresh failed."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1252,12 +1280,16 @@ msgstr ""
 msgid "Hiccup"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Hidden"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Hidden Games"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Hide Disc"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1542,6 +1574,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Main SD Card"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Manage Discs"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2517,6 +2553,10 @@ msgid "Sharp Shimmerless"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Show Hidden"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"
 msgstr ""
 
@@ -2578,6 +2618,10 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Solomon Islands"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Some disc names couldn't be loaded."
 msgstr ""
 
 #: internal/platform/platform_common.c
@@ -2940,6 +2984,10 @@ msgstr ""
 msgid "This is your current theme."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "This playlist has no discs."
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "This replaces the shader for every RetroArch game and can replace Fugazi. Continue?"
 msgstr ""
@@ -3168,6 +3216,10 @@ msgstr ""
 msgid "Visible"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Visible Only"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Volume"
 msgstr ""
@@ -3293,11 +3345,15 @@ msgid "Your library is read-only. You can't save changes. Open Settings > System
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "Your library is read-only. Your game is still hidden."
+msgid "Your library is read-only. Your selection is still hidden."
 msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Your other SD card is still read-only, so your library can't update yet."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Your playlist file is missing."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3348,7 +3404,7 @@ msgstr ""
 msgid "just now"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "launcher SD card"
 msgstr ""
 
@@ -3380,7 +3436,7 @@ msgstr ""
 msgid "refresh rate unavailable on this platform"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "second SD card"
 msgstr ""
 

@@ -279,6 +279,12 @@ typedef struct {
 } jw_scrape_download_row;
 
 typedef struct {
+    jw_hidden_rom_entry rom;
+    char parent_name[512];
+    char disc_label[256];
+} jw_settings_hidden_game;
+
+typedef struct {
     bool               open;
     jw_settings_screen screen;
     cat_list_state     home_list;
@@ -293,9 +299,10 @@ typedef struct {
     cat_list_state     accounts_list;
     cat_list_state     games_list;
     cat_list_state     hidden_games_list;
-    jw_game_entry     *hidden_games;
+    jw_settings_hidden_game *hidden_games;
     int                hidden_games_count;
     bool               hidden_games_loaded;
+    bool               hidden_games_names_incomplete;
     bool               visibility_changed; /* host refreshes browse caches, then clears */
     cat_list_state     scrape_edit_list;
     cat_list_state     scrape_queue_list;   /* cursor/scroll for the live queue page */

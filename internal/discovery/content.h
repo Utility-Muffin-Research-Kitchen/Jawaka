@@ -1,0 +1,51 @@
+#ifndef JW_DISCOVERY_CONTENT_H
+#define JW_DISCOVERY_CONTENT_H
+
+#include "internal/storage/sources.h"
+#include "internal/retroarch/catalog.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct {
+    char source_id[JW_STORAGE_SOURCE_ID_MAX];
+    char rom_relpath[512];
+    char path[JW_STORAGE_PATH_MAX];
+    uint64_t size;
+    bool missing;
+    /* Exact descriptor bytes, including labels, directives and line endings. */
+    char *descriptor;
+    size_t descriptor_size;
+} jw_content_file;
+
+typedef struct {
+    char source_id[JW_STORAGE_SOURCE_ID_MAX];
+    char rom_relpath[512];
+    char member[512];
+    char label[256];
+    size_t file_index;
+} jw_content_disc;
+
+typedef struct {
+    bool is_playlist;
+    jw_content_file *files;
+    size_t file_count;
+    jw_content_disc *discs;
+    size_t disc_count;
+    /* files[launch_file] is the selected launch file; files are deduplicated. */
+    size_t launch_file;
+} jw_content;
+
+/* A cheap extension check; inspection determines whether it contains discs. */
+bool jw_content_is_playlist_path(const char *path);
+/* Read-only inspection. Missing referenced files retain their normalized keys;
+   unreadable/malformed descriptors and unsafe paths fail with a concrete error.
+   The catalog system is needed for CMD file-argument recognition. */
+int jw_content_inspect(const jw_storage_source_list *sources,
+                       const char *source_id, const char *rom_relpath,
+                       const jw_ra_system *system, jw_content *out,
+                       char *error, size_t error_size);
+void jw_content_free(jw_content *content);
+
+#endif
