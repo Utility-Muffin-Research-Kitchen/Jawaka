@@ -6,9 +6,10 @@ it, including when every game is hidden. ROMs, favorites, history, overrides,
 saves and artwork remain in place.
 
 The library stores hidden identities in schema v7's `hidden_roms` table. An
-empty `member` identifies the physical launch path. Non-empty member keys are
-reserved for the separate disc-visibility change; game Hide/Unhide leaves them
-alone. Scans retain preferences even when a file disappears. Relocation moves
+empty `member` identifies a physical launch or disc path. An explicit M3U
+`archive.zip#member` selector uses a non-empty member key. Game Hide/Unhide
+leaves separate disc and member choices alone. Scans retain preferences even
+when a file disappears. Relocation moves
 the exact file's keys in its existing transaction. A missing library row still
 appears in Hidden Games by its stored path so you can clear its preference.
 
@@ -40,13 +41,42 @@ lists, cursors, counts and navigation breadcrumb without changing the daemon's
 library generation or requesting a scan. A read-only library returns the
 existing storage result and opens the SD card warning with its repair action.
 
+## Disc visibility
+
+Open **Options > Manage Discs** on an M3U playlist to hide individual discs.
+The list follows playlist order and uses playlist labels or filenames. A CUE
+and its tracks appear as one disc. **Show Hidden** reveals hidden discs with
+an **Unhide** action. The page stays available with one disc or every disc
+hidden. Your playlist stays playable, and in-game disc swapping keeps the
+original membership and order.
+
+**Hidden Games** also lists hidden discs under their parent game's name,
+including hidden parents. It shows the source card and keeps missing or
+unassociated paths available to unhide. Shared references to the same exact
+source/path/member share visibility; copies on other paths or cards do not.
+A separately indexed disc row uses the same physical key, so hiding it also
+removes that row from ordinary browsing.
+
+`internal/discovery/content.c` inspects content on demand. It reads M3U, CUE,
+GDI, TOC and quoted CMD references without executing commands. It retains raw
+descriptor bytes, labels and directives, including `#SAVEDISK`, and resolves
+references using actual filesystem lookup rules. Existing paths use their
+on-disk spelling; missing referenced files keep their normalized identity.
+Archive selectors stay separate from host filename case. Unreadable or
+malformed descriptors, unsafe paths and bounded inspection limits report an
+error. No descriptor, ROM or scanner grouping is changed.
+
 ## Checks
 
+- `make content-test` covers descriptors, filesystem case behavior, path
+  aliases, selectors, missing references and unsafe or malformed input. Run
+  it on both case-sensitive and case-insensitive storage.
 - `make schema-v6-test visibility-test relocation-test` covers migration,
   visibility queries, metadata retention, rescans and relocation.
 - `make visibility-ui-test settings-status-test game-switcher-test` exercises
   the real launcher/settings/menu handlers with disposable databases and SDL's
-  dummy renderer, including an empty library and independent B Resume.
+  dummy renderer, including empty lists, disc restoration, parent/disc
+  independence, unchanged playlist bytes and independent B Resume.
 
-Disc management and permanent deletion are separate changes in the workspace
+Permanent deletion remains a separate change in the workspace
 plan at `umrk-workspace/plans/Jawaka/rom-visibility-and-deletion.md`.

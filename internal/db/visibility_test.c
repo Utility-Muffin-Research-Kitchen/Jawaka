@@ -29,6 +29,108 @@ static void expect_hidden(const char *path, int id, int expected) {
     assert(hidden == expected);
 }
 
+static void expect_rom_hidden(const char *path, const char *source,
+                                const char *rom, const char *member, int expected) {
+    int hidden = -1;
+    assert(jw_db_is_rom_hidden(path, source, rom, member, &hidden) == 0);
+    assert(hidden == expected);
+}
+
+static void test_disc_visibility(sqlite3 *db, const char *path, const char *readonly) {
+    exec_ok(db,
+        "INSERT INTO games(id,system,name,source_id,rom_relpath,rom_path) VALUES"
+        "(20,'PS','Parent','primary','PS/Parent.M3U','Roms/PS/Parent.M3U'),"
+        "(21,'PS','Standalone disc','primary','PS/sub/Disc.cue','Roms/PS/sub/Disc.cue'),"
+        "(22,'PS','Archive','primary','PS/Archive.zip','Roms/PS/Archive.zip'),"
+        "(23,'PS','Other card','secondary_sd','PS/Parent.m3u8','/card/Roms/PS/Parent.m3u8');");
+    assert(jw_db_set_game_setting(path, 20, "display_name", "A parent title") == 0);
+    assert(jw_db_set_game_setting(path, 23, "imported_display_name", "Z other card") == 0);
+    int before = 0, count = 0;
+    assert(jw_db_count_hidden_roms(path, &before) == 0);
+    expect_rom_hidden(path, "primary", "PS/sub/Disc.cue", "", 0);
+    assert(jw_db_set_rom_hidden(path, "primary", "PS/sub/Disc.cue", "", 1) == 0);
+    assert(jw_db_set_rom_hidden(path, "primary", "PS/sub/Disc.cue", "", 1) == 0);
+    expect_hidden(path, 21, 1); /* Existing standalone disc row uses the same key. */
+    expect_rom_hidden(path, "secondary_sd", "PS/sub/Disc.cue", "", 0);
+    expect_rom_hidden(path, "primary", "PS/sub/disc.cue", "", 0);
+    expect_rom_hidden(path, "primary", "PS/sub/Disc.cue", "member", 0);
+    expect_hidden(path, 20, 0);
+    assert(jw_db_set_game_hidden(path, 20, 1) == 0);
+    assert(jw_db_set_game_hidden(path, 20, 0) == 0);
+    expect_hidden(path, 21, 1); /* Parent choices never clear a disc preference. */
+
+    /* Two logical discs in one archive do not hide each other or the archive. */
+    assert(jw_db_set_rom_hidden(path, "primary", "PS/Archive.zip", "Disc 1.cue", 1) == 0);
+    expect_rom_hidden(path, "primary", "PS/Archive.zip", "Disc 1.cue", 1);
+    expect_rom_hidden(path, "primary", "PS/Archive.zip", "disc 1.cue", 0);
+    expect_rom_hidden(path, "primary", "PS/Archive.zip", "Disc 2.cue", 0);
+    expect_hidden(path, 22, 0);
+    assert(jw_db_set_game_hidden(path, 22, 1) == 0);
+    assert(jw_db_set_game_hidden(path, 22, 0) == 0);
+    expect_rom_hidden(path, "primary", "PS/Archive.zip", "Disc 1.cue", 1);
+    jw_game_entry games[16];
+    assert(jw_db_list_games_for_system(path, "PS", games, 16, &count) == 0 && count == 3);
+    for (int i = 0; i < count; ++i) assert(games[i].id != 21);
+
+    /* Unindexed and missing discs remain clearable without artificial games. */
+    assert(jw_db_set_rom_hidden(path, "primary", "PS/missing.cue", "", 1) == 0);
+    assert(jw_db_count_hidden_roms(path, &count) == 0 && count == before + 3);
+    assert(scalar(db, "SELECT COUNT(*) FROM games WHERE rom_relpath='PS/missing.cue'") == 0);
+    jw_hidden_rom_entry entries[16];
+    assert(jw_db_list_hidden_roms(path, entries, 16, &count) == 0 && count == before + 3);
+    int found_member = 0, found_missing = 0, found_disc = 0;
+    for (int i = 0; i < count; ++i) {
+        jw_hidden_rom_entry *entry = &entries[i];
+        if (strcmp(entry->game.rom_relpath, "PS/Archive.zip") == 0) {
+            assert(entry->game.id == 22 && strcmp(entry->member, "Disc 1.cue") == 0);
+            found_member++;
+        } else if (strcmp(entry->game.rom_relpath, "PS/missing.cue") == 0) {
+            assert(entry->game.id == 0 && !entry->member[0]);
+            assert(strcmp(entry->game.name, "PS/missing.cue") == 0);
+            assert(strcmp(entry->game.source_id, "primary") == 0);
+            found_missing++;
+        } else if (strcmp(entry->game.rom_relpath, "PS/sub/Disc.cue") == 0) {
+            assert(entry->game.id == 21 && !entry->member[0]);
+            found_disc++;
+        }
+    }
+    assert(found_member == 1 && found_missing == 1 && found_disc == 1);
+    assert(jw_db_list_hidden_roms(path, entries, 1, &count) == 0 && count == 1);
+    assert(jw_db_set_rom_hidden(path, "primary", "PS/missing.cue", "", 0) == 0);
+    assert(jw_db_set_rom_hidden(path, "primary", "PS/missing.cue", "", 0) == 0);
+    expect_rom_hidden(path, "primary", "PS/missing.cue", "", 0);
+
+    assert(jw_db_set_rom_hidden(readonly, "primary", "PS/new.cue", "", 1) == JW_DB_RC_READONLY);
+    assert(jw_db_set_rom_hidden(readonly, "primary", "PS/sub/Disc.cue", "", 0) == JW_DB_RC_READONLY);
+    assert(jw_db_set_rom_hidden(readonly, "primary", "PS/Archive.zip", "Disc 1.cue", 0) == JW_DB_RC_READONLY);
+    expect_rom_hidden(readonly, "primary", "PS/Archive.zip", "Disc 1.cue", 1);
+    expect_hidden(path, 21, 1);
+
+    /* Settings finds hidden parent playlists and playlists on another source. */
+    assert(jw_db_set_game_hidden(path, 20, 1) == 0);
+    assert(jw_db_count_playlists(path, &count) == 0 && count == 2);
+    assert(jw_db_list_playlists(path, games, 16, &count) == 0 && count == 2);
+    assert(games[0].id == 20 && strcmp(games[0].name, "A parent title") == 0);
+    assert(strcmp(games[0].rom_relpath, "PS/Parent.M3U") == 0);
+    assert(games[1].id == 23 && strcmp(games[1].source_id, "secondary_sd") == 0);
+    assert(strcmp(games[1].name, "Z other card") == 0);
+    assert(jw_db_list_playlists(readonly, games, 1, &count) == 0 && count == 1);
+    assert(jw_db_scan_begin(db) == 0);
+    assert(jw_db_insert_game_stable(db, "PS", "Disc rescanned", "primary",
+        "PS/sub/Disc.cue", "Roms/PS/sub/Disc.cue", NULL, NULL, NULL) == 0);
+    assert(jw_db_scan_prune(db) == 0);
+    expect_hidden(path, 21, 1);
+    expect_rom_hidden(path, "primary", "PS/Archive.zip", "Disc 1.cue", 1);
+
+    char too_long[513];
+    memset(too_long, 'x', sizeof(too_long) - 1);
+    too_long[sizeof(too_long) - 1] = '\0';
+    assert(jw_db_set_rom_hidden(path, "primary", "PS/Disc.cue", NULL, 1) == -1);
+    assert(jw_db_set_rom_hidden(path, "primary", too_long, "", 1) == -1);
+    assert(jw_db_set_rom_hidden(path, "primary", "PS/Disc.cue", too_long, 1) == -1);
+    assert(jw_db_set_rom_hidden(path, too_long, "PS/Disc.cue", "", 1) == -1);
+}
+
 int main(void) {
     /* URI read-only mode exercises a real SQLite readonly connection even
        when a test runner can bypass filesystem permission bits. */
@@ -164,6 +266,7 @@ int main(void) {
     expect_hidden(path, game.id, 0);
     assert(scalar(db, "SELECT COUNT(*) FROM hidden_roms WHERE member='member'") == 1);
 
+    test_disc_visibility(db, path, readonly);
     jw_db_close(db);
     unlink(path);
     puts("visibility tests passed");

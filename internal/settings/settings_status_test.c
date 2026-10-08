@@ -590,9 +590,9 @@ static int check_layout_viewport(void) {
     if (!hidden.hidden_games) return fail("hidden game render allocation failed");
     cat_list_state_init(&hidden.hidden_games_list, 7);
     for (int i = 0; i < hidden.hidden_games_count; ++i) {
-        snprintf(hidden.hidden_games[i].source_id, sizeof(hidden.hidden_games[i].source_id),
+        snprintf(hidden.hidden_games[i].rom.game.source_id, sizeof(hidden.hidden_games[i].rom.game.source_id),
                  "%s", "secondary_sd");
-        snprintf(hidden.hidden_games[i].rom_relpath, sizeof(hidden.hidden_games[i].rom_relpath),
+        snprintf(hidden.hidden_games[i].rom.game.rom_relpath, sizeof(hidden.hidden_games[i].rom.game.rom_relpath),
                  "SFC/Hidden game %03d.sfc", i);
     }
     for (int bump = 2; bump <= 5; bump += 3) {
@@ -783,7 +783,7 @@ static int check_hidden_games(void) {
     char status[128] = "";
     jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
     if (ui.screen != JW_SETTINGS_HIDDEN_GAMES || !ui.hidden_games_loaded ||
-        ui.hidden_games_count != 81 || ui.hidden_games[0].id <= 0)
+        ui.hidden_games_count != 81 || ui.hidden_games[0].rom.game.id <= 0)
         return fail("Hidden Games did not open with every hidden preference");
     /* Before renderer init, the unavailable-daemon dialog returns immediately.
        URI mode uses SQLite's real read-only result without chmod assumptions. */
@@ -797,7 +797,7 @@ static int check_hidden_games(void) {
     int count = 0;
     if (!ui.visibility_changed || ui.hidden_games_count != 80 ||
         jw_db_count_hidden_games(path, &count) || count != 80 ||
-        strcmp(ui.hidden_games[0].source_id, "primary") || ui.hidden_games[0].id != 0)
+        strcmp(ui.hidden_games[0].rom.game.source_id, "primary") || ui.hidden_games[0].rom.game.id != 0)
         return fail("Unhide removed the wrong source or kept the selected row");
 
     ui.visibility_changed = false;
@@ -835,6 +835,172 @@ static int check_hidden_games(void) {
     return 0;
 }
 
+static int hidden_row(const jw_settings_ui *ui, const char *source,
+                      const char *path, const char *member) {
+    for (int i = 0; i < ui->hidden_games_count; ++i) {
+        const jw_hidden_rom_entry *row = &ui->hidden_games[i].rom;
+        if (!strcmp(row->game.source_id, source) && !strcmp(row->game.rom_relpath, path) &&
+            !strcmp(row->member, member)) return i;
+    }
+    return -1;
+}
+
+static int check_hidden_discs(void) {
+    char root[] = "/tmp/settings-hidden-discs.XXXXXX";
+    if (!mkdtemp(root)) return fail("could not create hidden-disc fixtures");
+    const char *dirs[] = { "first", "first/Roms", "first/Roms/PS",
+                          "second", "second/Roms", "second/Roms/PS" };
+    char path[512], primary[512], secondary[512], roots[1024], roms[1040], db_path[512];
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); ++i) {
+        snprintf(path, sizeof(path), "%s/%s", root, dirs[i]);
+        if (mkdir(path, 0755)) return fail("could not create hidden-disc folders");
+    }
+    struct { const char *path, *text; } files[] = {
+        { "first/Roms/PS/Adventure.m3u", "disc.chd|Opening\r\narchive.zip#First|Bonus\r\n"
+          "archive.zip#Second|Bonus\r\nmissing.chd\r\n#SAVEDISK:Save Disk\r\n" },
+        { "first/Roms/PS/disc.chd", "synthetic disc" },
+        { "first/Roms/PS/archive.zip", "synthetic archive" },
+        { "second/Roms/PS/Adventure.m3u", "disc.chd|Other card\n" },
+        { "second/Roms/PS/disc.chd", "other synthetic disc" },
+    };
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i) {
+        snprintf(path, sizeof(path), "%s/%s", root, files[i].path);
+        FILE *fp = fopen(path, "wb");
+        if (!fp) return fail("could not write hidden-disc fixture");
+        if (fputs(files[i].text, fp) < 0 || fclose(fp))
+            return fail("could not finish hidden-disc fixture");
+    }
+    snprintf(primary, sizeof(primary), "%s/first", root);
+    snprintf(secondary, sizeof(secondary), "%s/second", root);
+    snprintf(roots, sizeof(roots), "%s:%s", primary, secondary);
+    snprintf(roms, sizeof(roms), "%s/Roms:%s/Roms", primary, secondary);
+    setenv("SDCARD_PATH", primary, 1);
+    setenv("SDCARD_PATHS", roots, 1);
+    setenv("ROMS_PATHS", roms, 1);
+    snprintf(db_path, sizeof(db_path), "%s/library.db", root);
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) || jw_db_apply_schema(db) || jw_db_scan_begin(db))
+        return fail("could not initialize hidden-disc library");
+    const char *sources[] = { "primary", "secondary_sd" };
+    for (int i = 0; i < 2; ++i) {
+        snprintf(path, sizeof(path), "%s/%s", root, files[i ? 3 : 0].path);
+        if (jw_db_insert_game_stable(db, "PS", "Adventure", sources[i],
+                "PS/Adventure.m3u", path, NULL, NULL, NULL))
+            return fail("could not index parent playlist");
+    }
+    snprintf(path, sizeof(path), "%s/%s", root, files[1].path);
+    if (jw_db_insert_game_stable(db, "PS", "Standalone disc title", "primary",
+            "PS/disc.chd", path, NULL, NULL, NULL))
+        return fail("could not index standalone disc");
+    struct { const char *source, *path, *member; } keys[] = {
+        { "primary", "PS/Adventure.m3u", "" },
+        { "primary", "PS/disc.chd", "" },
+        { "secondary_sd", "PS/disc.chd", "" },
+        { "primary", "PS/archive.zip", "First" },
+        { "primary", "PS/archive.zip", "Second" },
+        { "primary", "PS/missing.chd", "" },
+        { "primary", "PS/orphan.zip", "Gone" },
+        { "primary", "PS/orphan.zip", "Keep" },
+    };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i)
+        if (jw_db_set_rom_hidden(db_path, keys[i].source, keys[i].path, keys[i].member, 1))
+            return fail("could not hide a disc fixture");
+
+    jw_settings_ui ui = {0};
+    ui.open = true;
+    ui.screen = JW_SETTINGS_GAMES;
+    ui.games_list.cursor = JW_GAMES_HIDDEN_GAMES;
+    snprintf(ui.db_path, sizeof(ui.db_path), "%s", db_path);
+    char status[128] = "";
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (!ui.hidden_games_loaded || ui.hidden_games_count != 8 || ui.hidden_games_names_incomplete)
+        return fail("hidden discs did not load with their parent names");
+    for (int i = 1; i <= 5; ++i) {
+        int row = hidden_row(&ui, keys[i].source, keys[i].path, keys[i].member);
+        if (row < 0 || strcmp(ui.hidden_games[row].parent_name, "Adventure"))
+            return fail("a hidden parent or unindexed disc lost its association");
+    }
+    int row = hidden_row(&ui, "primary", "PS/disc.chd", "");
+    if (strcmp(ui.hidden_games[row].disc_label, "Opening"))
+        return fail("hidden disc did not use its playlist label");
+    row = hidden_row(&ui, "secondary_sd", "PS/disc.chd", "");
+    if (strcmp(ui.hidden_games[row].disc_label, "Other card"))
+        return fail("hidden disc association crossed source cards");
+    row = hidden_row(&ui, "primary", "PS/missing.chd", "");
+    if (!strstr(ui.hidden_games[row].disc_label, "missing"))
+        return fail("missing disc did not retain its filename label");
+
+    ui.hidden_games_list.cursor = hidden_row(&ui, "primary", "PS/archive.zip", "First");
+    snprintf(ui.db_path, sizeof(ui.db_path), "file:%s?mode=ro", db_path);
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (ui.visibility_changed || ui.hidden_games_count != 8 || !strstr(status, "read-only"))
+        return fail("read-only disc Unhide changed a preference");
+    snprintf(ui.db_path, sizeof(ui.db_path), "%s", db_path);
+    ui.hidden_games_list.cursor = hidden_row(&ui, "primary", "PS/archive.zip", "First");
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    int hidden = 0;
+    if (!ui.visibility_changed || ui.hidden_games_count != 7 || strcmp(status, "Disc unhidden") ||
+        jw_db_is_rom_hidden(db_path, "primary", "PS/archive.zip", "First", &hidden) || hidden ||
+        jw_db_is_rom_hidden(db_path, "primary", "PS/archive.zip", "Second", &hidden) || !hidden ||
+        jw_db_is_rom_hidden(db_path, "primary", "PS/Adventure.m3u", "", &hidden) || !hidden)
+        return fail("Unhide changed another archive selector or its parent visibility");
+    ui.hidden_games_list.cursor = hidden_row(&ui, "primary", "PS/Adventure.m3u", "");
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (ui.hidden_games_count != 6 ||
+        jw_db_is_rom_hidden(db_path, "primary", "PS/disc.chd", "", &hidden) || !hidden)
+        return fail("unhiding a parent cleared its disc preference");
+    ui.hidden_games_list.cursor = hidden_row(&ui, "primary", "PS/orphan.zip", "Gone");
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (ui.hidden_games_count != 5 ||
+        jw_db_is_rom_hidden(db_path, "primary", "PS/orphan.zip", "Gone", &hidden) || hidden ||
+        jw_db_is_rom_hidden(db_path, "primary", "PS/orphan.zip", "Keep", &hidden) || !hidden)
+        return fail("orphan archive member preference was not independently clearable");
+    ui.hidden_games_list.cursor = hidden_row(&ui, "primary", "PS/disc.chd", "");
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (ui.hidden_games_count != 4 ||
+        jw_db_is_rom_hidden(db_path, "secondary_sd", "PS/disc.chd", "", &hidden) || !hidden)
+        return fail("Unhide removed the same-named disc on another source");
+
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i) {
+        snprintf(path, sizeof(path), "%s/%s", root, files[i].path);
+        FILE *fp = fopen(path, "rb");
+        char bytes[256] = "";
+        if (!fp) return fail("disc visibility removed a content file");
+        size_t size = fread(bytes, 1, sizeof(bytes), fp);
+        fclose(fp);
+        if (size != strlen(files[i].text) || memcmp(bytes, files[i].text, size))
+            return fail("disc visibility edited a content file");
+    }
+    snprintf(path, sizeof(path), "%s/%s", root, files[0].path);
+    if (unlink(path)) return fail("could not remove fixture playlist");
+    jw_settings_ui_handle_button(&ui, CAT_BTN_B, status, sizeof(status), NULL);
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    row = hidden_row(&ui, "primary", "PS/archive.zip", "Second");
+    if (!ui.hidden_games_loaded || !ui.hidden_games_names_incomplete || row < 0 ||
+        ui.hidden_games[row].parent_name[0])
+        return fail("unavailable parent hid a preference or looked like an empty playlist");
+    ui.hidden_games_list.cursor = row;
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (jw_db_is_rom_hidden(db_path, "primary", "PS/archive.zip", "Second", &hidden) || hidden)
+        return fail("unavailable parent prevented clearing its disc preference");
+    jw_settings_ui_close(&ui);
+    jw_db_close(db);
+    unlink(db_path);
+    for (size_t i = 1; i < sizeof(files) / sizeof(files[0]); ++i) {
+        snprintf(path, sizeof(path), "%s/%s", root, files[i].path);
+        unlink(path);
+    }
+    for (int i = (int)(sizeof(dirs) / sizeof(dirs[0])) - 1; i >= 0; --i) {
+        snprintf(path, sizeof(path), "%s/%s", root, dirs[i]);
+        rmdir(path);
+    }
+    rmdir(root);
+    unsetenv("SDCARD_PATH");
+    unsetenv("SDCARD_PATHS");
+    unsetenv("ROMS_PATHS");
+    return 0;
+}
+
 int main(void) {
     if (sqlite3_config(SQLITE_CONFIG_URI, 1) != SQLITE_OK)
         return fail("could not enable the read-only database fixture");
@@ -843,6 +1009,7 @@ int main(void) {
 
     if (check_back_targets()) return 1;
     if (check_hidden_games()) return 1;
+    if (check_hidden_discs()) return 1;
     if (check_language_order()) return 1;
     if (check_language_capacity()) return 1;
     if (check_force_off_hold()) return 1;

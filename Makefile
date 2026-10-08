@@ -421,6 +421,7 @@ INHIBIT_CTL_SRCS := \
 	third_party/cjson/cJSON.c
 
 UI_SRCS := \
+	internal/discovery/content.c \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
 	internal/ipc/ipc_client.c \
@@ -688,7 +689,13 @@ schema-v6-test: | $(BUILD)/bin
 		$(LDLIBS_COMMON)
 	$(BUILD)/bin/schema-v6-test
 
-.PHONY: visibility-test visibility-ui-test game-switcher-test
+.PHONY: visibility-test visibility-ui-test game-switcher-test content-test
+
+content-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/content-test \
+		internal/discovery/content_test.c internal/discovery/content.c
+	$(BUILD)/bin/content-test
+
 visibility-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/visibility-test \
 		internal/db/visibility_test.c internal/db/db.c internal/db/relocation.c \
