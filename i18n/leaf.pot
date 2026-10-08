@@ -316,6 +316,10 @@ msgstr ""
 msgid "A broader preset may apply after you reload the game."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "A disc descriptor is missing. Files it used that cannot be identified are kept."
+msgstr ""
+
 #: internal/retroarch/shader_strings.c
 msgid "A lighter handheld LCD grid with softer cell edges."
 msgstr ""
@@ -428,6 +432,10 @@ msgstr ""
 msgid "Advanced RetroArch menu"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Affected Files"
+msgstr ""
+
 #: internal/settings/timezones.c
 msgid "Afghanistan"
 msgstr ""
@@ -454,6 +462,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "All rights reserved, redistribution permitted"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Already missing"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -744,6 +756,10 @@ msgstr ""
 msgid "Cape Verde"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Card not inserted: %s. Playlists on that card were not checked."
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid "Card:"
 msgstr ""
@@ -766,6 +782,10 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Check SD card"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Checking files and shared references on your mounted cards..."
 msgstr ""
 
 #: internal/settings/timezones.c
@@ -952,6 +972,26 @@ msgstr ""
 msgid "Defaults"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Delete"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Delete Game"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleting your game. Keep your cards inserted."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deletion finished. Library refresh failed."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deletion is permanent. There is no Trash."
+msgstr ""
+
 #: internal/retroarch/shader_strings.c
 msgid "Designed for handheld content."
 msgstr ""
@@ -994,6 +1034,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Disconnected"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Discs: %zu. Files to remove: %zu. Estimated space freed: %s."
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1098,6 +1142,14 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Fernando de Noronha"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Files"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Files removed: %zu. Already absent: %zu."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1414,6 +1466,14 @@ msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "Keep mGBA BFI off: the no-shader core path already falls below full speed at 120Hz with BFI."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Keep: shared"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Keep: user data"
 msgstr ""
 
 #: internal/retroarch/shader_strings.c
@@ -2008,6 +2068,10 @@ msgstr ""
 msgid "Profile"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Progress stored inside a writable game image is erased with that image."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Queued"
 msgstr ""
@@ -2121,7 +2185,15 @@ msgid "Remove the saved preset at the selected scope and turn shaders off."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Removed"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Removing retained Pak Rat data"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reopen Delete Game for a fresh preview before trying again."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2544,6 +2616,10 @@ msgstr ""
 msgid "Shader scope"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Shared files kept: %zu. They may appear as games after your library is scanned again."
+msgstr ""
+
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Pixels"
 msgstr ""
@@ -2624,6 +2700,10 @@ msgstr ""
 msgid "Some disc names couldn't be loaded."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Some files may have been removed before the connection was lost. Check your library before trying again."
+msgstr ""
+
 #: internal/platform/platform_common.c
 msgid "Speaker"
 msgstr ""
@@ -2696,6 +2776,10 @@ msgstr ""
 msgid "Storage free"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Storage: %s"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Strength"
 msgstr ""
@@ -2714,6 +2798,10 @@ msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "Subtle Scanlines"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Summary"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -3354,6 +3442,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your playlist file is missing."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Your save files, states and artwork are kept."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

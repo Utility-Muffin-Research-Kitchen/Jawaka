@@ -11,11 +11,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define JW_CONTENT_MAX_FILES 4096
+#define JW_CONTENT_MAX_FILES 16384
 #define JW_CONTENT_MAX_DISCS 1024
-#define JW_CONTENT_MAX_BYTES (4 * 1024 * 1024)
+#define JW_CONTENT_MAX_BYTES (16 * 1024 * 1024)
 #define JW_CONTENT_MAX_DEPTH 32
-#define JW_CONTENT_MAX_DIRS 256
+#define JW_CONTENT_MAX_DIRS 2048
 #define JW_CONTENT_MAX_NAMES 65536
 
 typedef struct {
@@ -27,6 +27,7 @@ typedef struct {
 typedef struct {
     const jw_storage_source_list *sources;
     const jw_ra_system *system;
+    const jw_ra_system *cmd_system;
     jw_content *out;
     char *error;
     size_t error_size;
@@ -35,6 +36,11 @@ typedef struct {
     size_t name_count;
     size_t bytes_read;
     unsigned char state[JW_CONTENT_MAX_FILES];
+    size_t parents[JW_CONTENT_MAX_DEPTH + 1];
+    bool collect_discs;
+    bool allow_unavailable_references;
+    bool (*cancelled)(void *);
+    void *context;
     char roots[JW_STORAGE_MAX_SOURCES][JW_STORAGE_PATH_MAX];
     struct stat root_stats[JW_STORAGE_MAX_SOURCES];
 } jw_content_reader;
@@ -81,6 +87,10 @@ static int jw__descriptor_kind(const char *path) {
     if (!strcasecmp(ext, "toc")) return 4;
     if (!strcasecmp(ext, "cmd")) return 5;
     return 0;
+}
+
+bool jw_content_is_descriptor_path(const char *path) {
+    return path && jw__descriptor_kind(path) != 0;
 }
 
 static int jw__directory(jw_content_reader *r, const char *path, jw_content_dir **out) {
@@ -221,6 +231,23 @@ static int jw__resolve(jw_content_reader *r, const char *parent, const char *ref
             return jw__fail(r, "Windows drive paths cannot be resolved here: %.160s", ref);
         if (jw__join(r, candidate, sizeof(candidate), parent, ref) < 0) return -1;
     }
+    if (r->allow_unavailable_references && ref[0] == '/') {
+        bool mounted = false;
+        for (int i = 0; i < r->sources->count; i++)
+            if (r->sources->sources[i].available && jw__inside(candidate, r->roots[i])) mounted = true;
+        if (!mounted) for (int i = 0; i < r->sources->count; i++) {
+            const jw_storage_source *source = &r->sources->sources[i];
+            if (source->available || !jw__inside(candidate, source->roms_path)) continue;
+            const char *relative = candidate + strlen(source->roms_path) + 1;
+            if (strstr(relative, "../") || !strcmp(relative, "..") || strstr(relative, "/.."))
+                return jw__fail(r, "Cannot resolve traversal on an unmounted card: %.160s", reference);
+            if (jw__copy(r, file->path, sizeof(file->path), candidate) < 0 ||
+                jw__copy(r, file->source_id, sizeof(file->source_id), source->id) < 0 ||
+                jw__copy(r, file->rom_relpath, sizeof(file->rom_relpath), relative) < 0) return -1;
+            file->missing = true;
+            return 0;
+        }
+    }
     if (jw__normalize(r, candidate, file->path, sizeof(file->path), 0) < 0) return -1;
     int source_index = -1;
     for (int i = 0; i < r->sources->count; i++) {
@@ -348,7 +375,7 @@ static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, u
         }
         size_t index;
         if (jw__visit(r, parent, s, depth + 1, &index) < 0) return -1;
-        if (!depth && jw__add_disc(r, index, member ? member : "", label ? jw__trim(label) : next_label) < 0)
+        if (!depth && r->collect_discs && jw__add_disc(r, index, member ? member : "", label ? jw__trim(label) : next_label) < 0)
             return -1;
         next_label[0] = '\0';
     }
@@ -415,14 +442,15 @@ static int jw__parse_tracks(jw_content_reader *r, char *data, const char *parent
 }
 
 static int jw__parse_cmd(jw_content_reader *r, char *data, const char *parent, unsigned depth) {
-    if (!r->system) return jw__fail(r, "CMD inspection needs the system's file formats");
+    const jw_ra_system *system = r->cmd_system ? r->cmd_system : r->system;
+    if (!system) return jw__fail(r, "CMD inspection needs the system's file formats");
     const char *cursor = data;
     char token[JW_STORAGE_PATH_MAX];
     if (jw__token(r, &cursor, token, sizeof(token)) != 1 || !token[0])
         return jw__fail(r, "CMD has no executable name");
     int got;
     while ((got = jw__token(r, &cursor, token, sizeof(token))) > 0) {
-        if (!token[0] || token[0] == '-' || !jw__cmd_file(r->system, token)) continue;
+        if (!token[0] || token[0] == '-' || !jw__cmd_file(system, token)) continue;
         size_t index;
         if (jw__visit(r, parent, token, depth + 1, &index) < 0) return -1;
     }
@@ -431,6 +459,7 @@ static int jw__parse_cmd(jw_content_reader *r, char *data, const char *parent, u
 
 static int jw__visit(jw_content_reader *r, const char *parent, const char *reference,
                      unsigned depth, size_t *out_index) {
+    if (r->cancelled && r->cancelled(r->context)) return jw__fail(r, "Content inspection cancelled");
     if (depth > JW_CONTENT_MAX_DEPTH) return jw__fail(r, "Content descriptors are nested too deeply");
     jw_content_file file = {0};
     if (jw__resolve(r, parent, reference, &file) < 0) return -1;
@@ -438,6 +467,13 @@ static int jw__visit(jw_content_reader *r, const char *parent, const char *refer
         if (!strcmp(r->out->files[i].path, file.path)) {
             if (r->state[i] == 1) return jw__fail(r, "Content descriptors contain a cycle: %.160s", file.rom_relpath);
             *out_index = i;
+            if (depth) {
+                jw_content_reference *refs = realloc(r->out->references,
+                    (r->out->reference_count + 1) * sizeof(*refs));
+                if (!refs) return jw__fail(r, "Out of memory inspecting references");
+                r->out->references = refs;
+                refs[r->out->reference_count++] = (jw_content_reference){r->parents[depth - 1], i};
+            }
             return 0;
         }
     }
@@ -449,9 +485,17 @@ static int jw__visit(jw_content_reader *r, const char *parent, const char *refer
     files[index] = file;
     r->state[index] = 1;
     *out_index = index;
+    r->parents[depth] = index;
+    if (depth) {
+        jw_content_reference *refs = realloc(r->out->references,
+            (r->out->reference_count + 1) * sizeof(*refs));
+        if (!refs) return jw__fail(r, "Out of memory inspecting references");
+        r->out->references = refs;
+        refs[r->out->reference_count++] = (jw_content_reference){r->parents[depth - 1], index};
+    }
     int kind = jw__descriptor_kind(file.path);
     if (!file.missing && kind) {
-        if (file.size > JW_CONTENT_MAX_BYTES - r->bytes_read)
+        if (file.size > 4 * 1024 * 1024 || file.size > JW_CONTENT_MAX_BYTES - r->bytes_read)
             return jw__fail(r, "Content descriptors exceed the inspection size limit");
         FILE *fp = fopen(file.path, "rb");
         if (!fp) return jw__fail(r, "Cannot read descriptor %.160s: %s", file.path, strerror(errno));
@@ -490,27 +534,29 @@ void jw_content_free(jw_content *content) {
     for (size_t i = 0; i < content->file_count; i++) free(content->files[i].descriptor);
     free(content->files);
     free(content->discs);
+    free(content->references);
     memset(content, 0, sizeof(*content));
 }
 
-int jw_content_inspect(const jw_storage_source_list *sources,
-                       const char *source_id, const char *rom_relpath,
-                       const jw_ra_system *system, jw_content *out,
-                       char *error, size_t error_size) {
+int jw_content_inspect_many(const jw_storage_source_list *sources,
+                            jw_content_root *roots, size_t root_count,
+                            bool allow_unavailable_references,
+                            bool (*cancelled)(void *), void *context,
+                            jw_content *out, char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
     if (!out) return -1;
     memset(out, 0, sizeof(*out));
-    jw_content_reader reader = {.sources = sources, .system = system, .out = out,
-                                .error = error, .error_size = error_size};
+    jw_content_reader reader = {.sources = sources, .out = out,
+                                .error = error, .error_size = error_size,
+                                .cancelled = cancelled, .context = context,
+                                .allow_unavailable_references = allow_unavailable_references};
     if (!sources || sources->count < 1 || sources->count > JW_STORAGE_MAX_SOURCES ||
-        !source_id || !rom_relpath || !*rom_relpath || rom_relpath[0] == '/' || rom_relpath[0] == '\\')
+        !roots || !root_count)
         return jw__fail(&reader, "Invalid content identity");
     reader.dirs = calloc(JW_CONTENT_MAX_DIRS, sizeof(*reader.dirs));
     if (!reader.dirs) return jw__fail(&reader, "Out of memory inspecting content");
-    int selected = -1;
     int result = -1;
     for (int i = 0; i < sources->count; i++) {
-        if (!strcmp(sources->sources[i].id, source_id)) selected = i;
         if (!sources->sources[i].available) continue;
         if (jw__normalize(&reader, sources->sources[i].roms_path, reader.roots[i],
                           sizeof(reader.roots[i]), 0) < 0) goto done;
@@ -519,16 +565,34 @@ int jw_content_inspect(const jw_storage_source_list *sources,
             goto done;
         }
     }
-    if (selected < 0 || !sources->sources[selected].available) {
-        jw__fail(&reader, "ROM source is not mounted: %s", source_id);
-        goto done;
+    for (size_t j = 0; j < root_count; j++) {
+        if (roots[j].system && roots[j].system->id && !strcmp(roots[j].system->id, "PC98"))
+            reader.cmd_system = roots[j].system;
     }
-    out->is_playlist = jw_content_is_playlist_path(rom_relpath);
-    if (jw__visit(&reader, reader.roots[selected], rom_relpath, 0, &out->launch_file) < 0) goto done;
-    if (strcmp(out->files[out->launch_file].source_id, source_id)) {
-        jw__fail(&reader, "Launch file escapes the selected ROM source");
-        goto done;
+    for (size_t j = 0; j < root_count; j++) {
+        jw_content_root *root = &roots[j];
+        if (!root->source_id || !root->rom_relpath || !*root->rom_relpath ||
+            root->rom_relpath[0] == '/' || root->rom_relpath[0] == '\\') {
+            jw__fail(&reader, "Invalid content identity");
+            goto done;
+        }
+        int selected = -1;
+        for (int i = 0; i < sources->count; i++)
+            if (!strcmp(sources->sources[i].id, root->source_id)) selected = i;
+        if (selected < 0 || !sources->sources[selected].available) {
+            jw__fail(&reader, "ROM source is not mounted: %s", root->source_id);
+            goto done;
+        }
+        reader.system = root->system;
+        reader.collect_discs = j == 0;
+        if (jw__visit(&reader, reader.roots[selected], root->rom_relpath, 0, &root->file_index) < 0) goto done;
+        if (strcmp(out->files[root->file_index].source_id, root->source_id)) {
+            jw__fail(&reader, "Launch file escapes the selected ROM source");
+            goto done;
+        }
     }
+    out->is_playlist = jw_content_is_playlist_path(roots[0].rom_relpath);
+    out->launch_file = roots[0].file_index;
     result = 0;
 done:
     for (size_t i = 0; i < reader.dir_count; i++) {
@@ -538,4 +602,12 @@ done:
     free(reader.dirs);
     if (result < 0) jw_content_free(out);
     return result;
+}
+
+int jw_content_inspect(const jw_storage_source_list *sources,
+                       const char *source_id, const char *rom_relpath,
+                       const jw_ra_system *system, jw_content *out,
+                       char *error, size_t error_size) {
+    jw_content_root root = {.source_id = source_id, .rom_relpath = rom_relpath, .system = system};
+    return jw_content_inspect_many(sources, &root, 1, false, NULL, NULL, out, error, error_size);
 }

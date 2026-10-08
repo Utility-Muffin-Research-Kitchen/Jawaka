@@ -42,6 +42,7 @@
 #include "internal/retroarch/legacy_migration.h"
 #include "internal/retroarch/states.h"
 #include "internal/scrape/scrape_worker.h"
+#include "internal/discovery/delete_job.h"
 #include "internal/scrape/ss_client.h"
 #include "internal/services/log_redact.h"
 #include "internal/services/launch.h"
@@ -344,6 +345,10 @@ typedef struct {
     sqlite3 *db;
     jw_ipc_server *server;
     jw_daemon_ipc_connection ipc_connections[JW_DAEMON_IPC_CONNECTION_MAX];
+    jw_delete_job *delete_job;
+    int delete_connection;
+    char delete_source[32];
+    bool delete_pending_scan;
     jw_platform_context platform;
     jw_input_proxy input_proxy;
     jw_input_menu_config session_menu_config;
@@ -3334,7 +3339,8 @@ static int jw__reply_scrape_queue(jw_ipc_client *client, cJSON *request) {
 
 static int jw__handle_scrape_start(jw_daemon_state *state,
                                    jw_ipc_client *client, cJSON *request) {
-    (void)state;
+    if (jw_delete_job_busy(state->delete_job))
+        return jw__reply_error(client, "ROM deletion is preparing or committing");
     cJSON *scope = cJSON_GetObjectItemCaseSensitive(request, "scope");
     cJSON *system = cJSON_GetObjectItemCaseSensitive(request, "system");
     cJSON *rom_path = cJSON_GetObjectItemCaseSensitive(request, "rom_path");
@@ -4680,6 +4686,13 @@ static int jw__start_scan_job_with_titles(jw_daemon_state *state,
     if (!state || !state->scan_job.initialized) {
         return -1;
     }
+    if (jw_delete_job_busy(state->delete_job)) {
+        state->delete_pending_scan = true;
+        pthread_mutex_lock(&state->scan_job.mu);
+        int rc = jw__scan_title_list_merge(&state->scan_job.pending_titles, titles);
+        pthread_mutex_unlock(&state->scan_job.mu);
+        return rc == 0 ? 1 : -1;
+    }
     /* Discovery writes the library DB. On a read-only card it would only
        produce write failures; defer until storage health sees it writable. */
     if (state->db_path && !jw_storage_path_writable(state->db_path, NULL, 0)) {
@@ -4928,6 +4941,8 @@ static int jw__reply_storage_status(jw_daemon_state *state, jw_ipc_client *clien
 
 static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *client,
                                      cJSON *root) {
+    if (jw_delete_job_busy(state->delete_job))
+        return jw__reply_error(client, "Wait for ROM deletion before unmounting storage");
     cJSON *source_json = cJSON_GetObjectItemCaseSensitive(root, "source");
     cJSON *action_json = cJSON_GetObjectItemCaseSensitive(root, "action");
     const char *source = cJSON_IsString(source_json) && source_json->valuestring
@@ -7219,6 +7234,10 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
         if (out_error) *out_error = "missing launch payload";
         return -1;
     }
+    if (jw_delete_job_busy(state->delete_job)) {
+        if (out_error) *out_error = "ROM deletion is preparing or committing";
+        return -1;
+    }
 
     jw_game_entry reserved_game;
     if (jw__lookup_launch_game(state, rom_path, &reserved_game) == 0 &&
@@ -7746,6 +7765,10 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
 
 static int jw__request_launch_app(jw_daemon_state *state, const char *pak_dir,
                                   const char **out_error) {
+    if (jw_delete_job_busy(state->delete_job)) {
+        if (out_error) *out_error = "ROM deletion in progress";
+        return -1;
+    }
     if (state->services &&
         jw_svc_supervisor_package_active(state->services)) {
         if (out_error) *out_error = "package operation in progress";
@@ -9858,6 +9881,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
     if (!state || !state->pending_app) {
         return -1;
     }
+    if (jw_delete_job_busy(state->delete_job)) return -1;
 
     const char *error_message = NULL;
     char pak_abs[PATH_MAX];
@@ -13818,6 +13842,8 @@ static int jw__storage_run_repair_tool(char *const argv[], char *out, size_t out
 
 static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_client *client,
                                              cJSON *root) {
+    if (jw_delete_job_busy(state->delete_job))
+        return jw__reply_error(client, "Wait for ROM deletion before repairing storage");
     cJSON *source_json = cJSON_GetObjectItemCaseSensitive(root, "source");
     cJSON *mode_json = cJSON_GetObjectItemCaseSensitive(root, "mode");
     cJSON *battery_json = cJSON_GetObjectItemCaseSensitive(root, "allow_battery");
@@ -14277,7 +14303,9 @@ static int jw__relocation_snapshots_match(jw_daemon_state *state,
 }
 
 static int jw__handle_relocation(jw_daemon_state *state, jw_ipc_client *client,
-                                 cJSON *request, const char *type) {
+                                  cJSON *request, const char *type) {
+    if (jw_delete_job_busy(state->delete_job))
+        return jw__reply_relocation_error(client, JW_RELOCATION_BUSY, "ROM deletion is preparing or committing");
     if (strcmp(type, "library-relocate-prepare") == 0)
         return jw__handle_relocation_prepare(state, client, request);
     cJSON *operation = cJSON_GetObjectItemCaseSensitive(request, "operation_id");
@@ -15534,6 +15562,10 @@ static void jw__ipc_connection_drop(jw_daemon_state *state, int index,
                     connection->service_id,
                     reason && reason[0] ? reason : "connection-closed");
     }
+    if (state->delete_job && state->delete_connection == index) {
+        jw_delete_job_cancel(state->delete_job);
+        state->delete_connection = -1;
+    }
     jw_ipc_stream_destroy(connection->stream);
     memset(connection, 0, sizeof(*connection));
 }
@@ -15556,6 +15588,110 @@ static bool jw__ipc_connection_queue_json(jw_daemon_state *state, int index,
         jw__ipc_connection_drop(state, index, "outbound-queue-overflow");
     }
     return ok;
+}
+
+static void jw__tick_delete(jw_daemon_state *state) {
+    if (jw_delete_job_changed(state->delete_job)) jw__bump_library_generation(state);
+    if (jw_delete_job_busy(state->delete_job)) return;
+    if (state->delete_job && state->delete_connection < 0) {
+        jw_delete_job_destroy(state->delete_job);
+        state->delete_job = NULL;
+    }
+    if (state->delete_pending_scan) {
+        state->delete_pending_scan = false;
+        jw_scan_title_list titles = {0};
+        pthread_mutex_lock(&state->scan_job.mu);
+        jw__scan_title_list_move(&titles, &state->scan_job.pending_titles);
+        pthread_mutex_unlock(&state->scan_job.mu);
+        (void)jw__start_scan_job_with_titles(state, "after ROM deletion", &titles);
+        jw__scan_title_list_free(&titles);
+    }
+}
+
+static const char *jw__delete_gate(jw_daemon_state *state, const char *source,
+                                  char readonly_source[32]) {
+    jw__storage_health_refresh(state);
+    const char *cards[] = {JW_PLATFORM_STORAGE_LAUNCHER_ID,
+        !strcmp(source, "primary") ? JW_PLATFORM_STORAGE_LAUNCHER_ID : source};
+    for (size_t i = 0; i < 2; ++i) {
+        const jw_storage_health_slot *slot = jw__storage_slot(state, cards[i]);
+        if (slot && slot->health.access == JW_STORAGE_ACCESS_READ_ONLY) {
+            snprintf(readonly_source, 32, "%s", cards[i]);
+            return "Your ROM card or library card is read-only.";
+        }
+        if (slot && slot->health.repair != JW_STORAGE_REPAIR_NONE)
+            return "An SD card check is pending. Finish it before deleting ROMs.";
+    }
+    if (jw__relocation_scan_active(state)) return "Your library is scanning. Request a preview when it finishes.";
+    if (state->active_game.active || state->pending_launch || state->pending_app ||
+        state->game_coordination_pending || state->game_coordination_ready || state->game_launch_blocked ||
+        (state->child_pid > 0 && state->child_kind != JW_CHILD_LAUNCHER && state->child_kind != JW_CHILD_MENU))
+        return "Return to the launcher before deleting ROMs.";
+    return NULL;
+}
+
+static void jw__delete_queue(jw_daemon_state *state, int index, cJSON *reply) {
+    char *json = reply ? cJSON_PrintUnformatted(reply) : NULL;
+    cJSON_Delete(reply);
+    bool ok = json && state->ipc_connections[index].stream &&
+        jw_ipc_stream_queue(state->ipc_connections[index].stream, json, strlen(json)) == 0;
+    cJSON_free(json);
+    if (!ok) jw__ipc_connection_drop(state, index, "deletion-response-failed");
+}
+
+static void jw__delete_error(jw_daemon_state *state, int index, const char *message,
+                             const char *readonly_source) {
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "rom-delete-status");
+    cJSON_AddNumberToObject(reply, "phase", JW_IPC_DELETE_ERROR);
+    cJSON_AddStringToObject(reply, "error", message);
+    cJSON_AddStringToObject(reply, "readonly_source", readonly_source ? readonly_source : "");
+    jw__delete_queue(state, index, reply);
+}
+
+static bool jw__delete_frame(jw_daemon_state *state, int index, const char *body, size_t len) {
+    cJSON *request = cJSON_ParseWithLength(body, len);
+    cJSON *type = cJSON_GetObjectItemCaseSensitive(request, "type");
+    if (!cJSON_IsString(type) || strncmp(type->valuestring, "rom-delete-", 11)) {
+        cJSON_Delete(request); return false;
+    }
+    jw__tick_delete(state);
+    const char *error = NULL;
+    char readonly_source[32] = "";
+    if (state->ipc_connections[index].subscribed) error = "Use a separate connection for ROM deletion.";
+    else if (!strcmp(type->valuestring, "rom-delete-preview")) {
+        cJSON *source = cJSON_GetObjectItemCaseSensitive(request, "source_id");
+        cJSON *path = cJSON_GetObjectItemCaseSensitive(request, "rom_relpath");
+        if (!cJSON_IsString(source) || !source->valuestring[0] || strlen(source->valuestring) >= 32 ||
+            !cJSON_IsString(path) || !jw_storage_relative_path_valid(path->valuestring) ||
+            strlen(path->valuestring) >= 512) error = "Invalid game identity.";
+        else if (state->delete_job) error = "Close the current deletion preview before starting another.";
+        else if (!(error = jw__delete_gate(state, source->valuestring, readonly_source))) {
+            state->delete_job = jw_delete_job_start(state->db_path, state->sdcard_root,
+                                                    source->valuestring, path->valuestring);
+            if (!state->delete_job) error = "Could not start your deletion preview.";
+            else {
+                state->delete_connection = index;
+                snprintf(state->delete_source, sizeof(state->delete_source), "%s", source->valuestring);
+            }
+        }
+    } else if (!state->delete_job || state->delete_connection != index) {
+        error = "This connection has no deletion preview. Request a fresh preview.";
+    } else if (!strcmp(type->valuestring, "rom-delete-cancel")) {
+        jw_delete_job_cancel(state->delete_job);
+    } else if (!strcmp(type->valuestring, "rom-delete-commit")) {
+        cJSON *token = cJSON_GetObjectItemCaseSensitive(request, "token");
+        if (jw_delete_job_busy(state->delete_job)) error = "This deletion request is already running.";
+        else if ((error = jw__delete_gate(state, state->delete_source, readonly_source))) {
+            jw_delete_job_reject(state->delete_job, error, readonly_source);
+            error = NULL;
+        } else if (!cJSON_IsString(token) || jw_delete_job_commit(state->delete_job, token->valuestring) != 0)
+            error = "This deletion preview is no longer valid. Request a fresh preview.";
+    } else if (strcmp(type->valuestring, "rom-delete-status")) error = "Unknown ROM deletion request.";
+    if (error) jw__delete_error(state, index, error, readonly_source);
+    else jw__delete_queue(state, index, jw_delete_job_status(state->delete_job));
+    cJSON_Delete(request);
+    return true;
 }
 
 static void jw__connection_exchange_clear(jw_daemon_ipc_connection *connection) {
@@ -15868,6 +16004,7 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
     if (!state || !state->pending_launch) {
         return -1;
     }
+    if (jw_delete_job_busy(state->delete_job)) return -1;
     if (state->active_game.active) {
         jw_log_warn("life1: refusing new game while launch state is %s",
                     state->active_game.uncertain ? "uncertain" : "active");
@@ -16578,6 +16715,11 @@ static void jw__ipc_handle_life1(jw_daemon_state *state, int index,
 
 static void jw__ipc_handle_frame(jw_daemon_state *state, int index,
                                  const char *body, size_t len) {
+    if (jw__delete_frame(state, index, body, len)) return;
+    if (state->delete_job && state->delete_connection == index) {
+        jw__ipc_connection_drop(state, index, "unexpected-deletion-message");
+        return;
+    }
     jw_daemon_ipc_connection *connection = &state->ipc_connections[index];
     jw_life1_request request;
     char error[32] = {0};
@@ -17403,6 +17545,8 @@ static void jw__cleanup(jw_daemon_state *state) {
     if (!state) {
         return;
     }
+    jw_delete_job_destroy(state->delete_job);
+    state->delete_job = NULL;
 
     jw__terminate_menu_child(state, true);
 
@@ -18162,6 +18306,7 @@ int main(int argc, char *argv[]) {
             (void)jw__signal_tracked_game_group(&state, SIGKILL);
         }
         jw__tick_scan_job(&state);
+        jw__tick_delete(&state);
         jw__tick_startup_maintenance(&state);
 
         /* SVC-1 service supervision: poll child exit, run the stop sequence,
@@ -18174,6 +18319,10 @@ int main(int argc, char *argv[]) {
         /* Save before power-button shutdown: hold teardown back while the
            release wait or the save runs. Top-of-loop input, child reaping, and
            service supervision above keep running. */
+        if (state.shutdown_requested && jw_delete_job_committing(state.delete_job)) {
+            jw__usleep(10000);
+            continue;
+        }
         if (state.shutdown_requested && jw__tick_power_hold_save(&state)) {
             jw__usleep(10000);
             continue;

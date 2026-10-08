@@ -199,6 +199,9 @@ CFLAGS_DAEMON += $(SCRAPE_CFLAGS)
 LDLIBS_DAEMON += $(CURL_LDFLAGS) -lpthread -lm
 
 DAEMON_SRCS := \
+	internal/discovery/content.c \
+	internal/discovery/delete.c \
+	internal/discovery/delete_job.c \
 	cmd/jawakad/main.c \
 	cmd/jawakad/osd_client.c \
 	$(CONTENT_MANIFEST_SRC) \
@@ -421,6 +424,8 @@ INHIBIT_CTL_SRCS := \
 	third_party/cjson/cJSON.c
 
 UI_SRCS := \
+	internal/discovery/delete.c \
+	internal/ipc/delete_client.c \
 	internal/discovery/content.c \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
@@ -690,6 +695,30 @@ schema-v6-test: | $(BUILD)/bin
 	$(BUILD)/bin/schema-v6-test
 
 .PHONY: visibility-test visibility-ui-test game-switcher-test content-test
+
+.PHONY: delete-test deletion-db-test delete-ui-test delete-client-test rom-delete-ipc-smoke
+
+delete-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -pthread -DJW_ENABLE_FAULT_INJECTION=1 -o $(BUILD)/bin/delete-test \
+		internal/discovery/delete_test.c internal/discovery/delete.c internal/discovery/content.c
+	$(BUILD)/bin/delete-test
+
+deletion-db-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/deletion-db-test \
+		internal/db/deletion_test.c internal/db/db.c internal/db/relocation.c \
+		internal/storage/sources.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/deletion-db-test
+
+delete-ui-test: | $(BUILD)/bin check-catastrophe check-sdl
+	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/delete-ui-test \
+		internal/launcher/delete_ui_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
+	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/delete-ui-test
+
+delete-client-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/delete-client-test \
+		internal/ipc/delete_client_test.c internal/ipc/delete_client.c \
+		internal/ipc/ipc.c internal/core/log.c third_party/cjson/cJSON.c
+	$(BUILD)/bin/delete-client-test
 
 content-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/content-test \
@@ -1455,6 +1484,12 @@ check-sdl:
 $(BUILD)/bin/jawakad: $(sort $(DAEMON_SRCS)) $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS_DAEMON) -o $@ $(sort $(DAEMON_SRCS)) $(LDLIBS_DAEMON)
+
+$(BUILD)/bin/jawakad-delete-test: $(sort $(DAEMON_SRCS)) $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
+	@$(CC) $(CFLAGS_DAEMON) -DJW_ENABLE_FAULT_INJECTION=1 -o $@ $(sort $(DAEMON_SRCS)) $(LDLIBS_DAEMON)
+
+rom-delete-ipc-smoke: $(BUILD)/bin/jawakad-delete-test
+	python3 scripts/rom-delete-ipc-smoke.py $(BUILD)/bin/jawakad-delete-test
 
 $(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c internal/launcher/system_activity.h internal/launcher/launch_notice.h $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) $(CATASTROPHE_WIDGETS_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-launcher/main.c $(sort $(UI_SRCS)) $(LDLIBS_UI)

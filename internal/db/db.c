@@ -1,6 +1,7 @@
 #include "internal/db/db.h"
 #include "internal/search/pinyin.h"
 #include "internal/db/relocation.h"
+#include "internal/focus/focus.h"
 #include "internal/storage/sources.h"
 
 #include <ctype.h>
@@ -26,6 +27,7 @@
     "PRIMARY KEY(source_id,rom_relpath,member));"
 
 static void jw__fill_game_entry(sqlite3_stmt *stmt, jw_game_entry *out);
+static int jw__write_error(sqlite3 *db);
 
 static const char *kSchemaSql =
     "PRAGMA foreign_keys = ON;\n"
@@ -1242,15 +1244,73 @@ int jw_db_dedup_system_aliases(sqlite3 *db, const char *system, const char *cano
     return jw__exec(db, transfer_sql);
 }
 
-int jw_db_scan_prune(sqlite3 *db) {
-    if (!db) {
+static int jw__cleanup_orphans(sqlite3 *db) {
+    if (jw__exec(db,
+        "DELETE FROM game_settings WHERE game_id NOT IN (SELECT id FROM games);"
+        "DELETE FROM favorites WHERE kind='game' AND target_id NOT IN (SELECT id FROM games);"
+        "DELETE FROM favorites WHERE kind='app' AND target_id NOT IN (SELECT id FROM apps);"
+        "DELETE FROM recents WHERE kind='game' AND target_id NOT IN (SELECT id FROM games);"
+        "DELETE FROM recents WHERE kind='app' AND target_id NOT IN (SELECT id FROM apps);") != 0)
         return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT value FROM settings WHERE key=?;",
+                          -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_text(stmt, 1, JW_FOCUS_KEY_IDS, -1, SQLITE_STATIC);
+    int step = sqlite3_step(stmt);
+    int ids[JW_FOCUS_MAX_GAMES], count = 0;
+    if (step == SQLITE_ROW)
+        jw_focus_ids_parse((const char *)sqlite3_column_text(stmt, 0), ids, &count);
+    sqlite3_finalize(stmt);
+    if (step != SQLITE_ROW && step != SQLITE_DONE) return -1;
+    if (count == 0) return 0;
+
+    if (sqlite3_prepare_v2(db, "SELECT 1 FROM games WHERE id=?;",
+                          -1, &stmt, NULL) != SQLITE_OK) return -1;
+    int kept = 0;
+    for (int i = 0; i < count; ++i) {
+        sqlite3_reset(stmt);
+        sqlite3_bind_int(stmt, 1, ids[i]);
+        step = sqlite3_step(stmt);
+        if (step == SQLITE_ROW) ids[kept++] = ids[i];
+        else if (step != SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            return -1;
+        }
     }
-    /* Remove games/apps whose path was not seen this scan (deleted from disk);
-       the FTS delete triggers keep the search index in sync. Then drop any
-       favorites/recents that pointed at a now-removed row so they can never
-       resolve to the wrong entry after an id is later reused. */
-    return jw__exec(db,
+    sqlite3_finalize(stmt);
+    if (kept == count) return 0;
+
+    char csv[64];
+    jw_focus_ids_to_csv(ids, kept, csv, sizeof(csv));
+    if (sqlite3_prepare_v2(db, "UPDATE settings SET value=? WHERE key=?;",
+                          -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_text(stmt, 1, csv, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, JW_FOCUS_KEY_IDS, -1, SQLITE_STATIC);
+    step = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return step == SQLITE_DONE ? 0 : -1;
+}
+
+/* A savepoint also keeps pruning atomic inside a caller's scan transaction. */
+static int jw__finish_rom_cleanup(sqlite3 *db, int rc) {
+    if (rc == 0 && jw__cleanup_orphans(db) != 0) rc = jw__write_error(db);
+    if (rc == 0) {
+        if (jw__exec(db, "RELEASE jawaka_rom_cleanup;") == 0) return 0;
+        rc = jw__write_error(db);
+    }
+    sqlite3_exec(db, "ROLLBACK TO jawaka_rom_cleanup; RELEASE jawaka_rom_cleanup;",
+                 NULL, NULL, NULL);
+    return rc;
+}
+
+int jw_db_scan_prune(sqlite3 *db) {
+    if (!db) return -1;
+    if (jw__exec(db, "SAVEPOINT jawaka_rom_cleanup;") != 0)
+        return jw__write_error(db);
+    /* FTS triggers remove search rows. Missing-source rows and all visibility
+       preferences remain available until the source returns or is forgotten. */
+    int rc = jw__exec(db,
         "DELETE FROM games "
         "WHERE source_id IN (SELECT source_id FROM _scanned_game_sources) "
         "AND NOT EXISTS ("
@@ -1265,12 +1325,46 @@ int jw_db_scan_prune(sqlite3 *db) {
         " WHERE seen.source_id=games.source_id "
         " AND seen.rom_relpath=games.rom_relpath);"
         "DELETE FROM apps WHERE EXISTS(SELECT 1 FROM _scan_apps_complete) "
-        "AND pak_dir NOT IN (SELECT pak_dir FROM _seen_apps);"
-        "DELETE FROM game_settings WHERE game_id NOT IN (SELECT id FROM games);"
-        "DELETE FROM favorites WHERE kind = 'game' AND target_id NOT IN (SELECT id FROM games);"
-        "DELETE FROM favorites WHERE kind = 'app'  AND target_id NOT IN (SELECT id FROM apps);"
-        "DELETE FROM recents   WHERE kind = 'game' AND target_id NOT IN (SELECT id FROM games);"
-        "DELETE FROM recents   WHERE kind = 'app'  AND target_id NOT IN (SELECT id FROM apps);");
+        "AND pak_dir NOT IN (SELECT pak_dir FROM _seen_apps);");
+    return jw__finish_rom_cleanup(db, rc == 0 ? 0 : jw__write_error(db));
+}
+
+int jw_db_reconcile_removed_roms(sqlite3 *db, const jw_db_rom_key *removed,
+                                  size_t count) {
+    if (!db || (!removed && count)) return -1;
+    for (size_t i = 0; i < count; ++i) {
+        if (!removed[i].source_id[0] ||
+            strnlen(removed[i].source_id, sizeof(removed[i].source_id)) == sizeof(removed[i].source_id) ||
+            strnlen(removed[i].rom_relpath, sizeof(removed[i].rom_relpath)) == sizeof(removed[i].rom_relpath) ||
+            !jw_storage_relative_path_valid(removed[i].rom_relpath)) return -1;
+    }
+    if (count == 0) return 0;
+    if (jw__exec(db, "SAVEPOINT jawaka_rom_cleanup;") != 0)
+        return jw__write_error(db);
+    sqlite3_stmt *games = NULL, *hidden = NULL;
+    int ok = 0;
+    if (sqlite3_prepare_v2(db,
+            "DELETE FROM games WHERE source_id=? AND rom_relpath=?;",
+            -1, &games, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db,
+            "DELETE FROM hidden_roms WHERE source_id=? AND rom_relpath=?;",
+            -1, &hidden, NULL) != SQLITE_OK) goto done;
+    for (size_t i = 0; i < count; ++i) {
+        sqlite3_reset(games);
+        sqlite3_reset(hidden);
+        sqlite3_bind_text(games, 1, removed[i].source_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(games, 2, removed[i].rom_relpath, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(hidden, 1, removed[i].source_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(hidden, 2, removed[i].rom_relpath, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(games) != SQLITE_DONE || sqlite3_step(hidden) != SQLITE_DONE)
+            goto done;
+    }
+    ok = 1;
+done:;
+    int rc = ok ? 0 : jw__write_error(db);
+    sqlite3_finalize(games);
+    sqlite3_finalize(hidden);
+    return jw__finish_rom_cleanup(db, rc);
 }
 
 static int jw__query_int(sqlite3 *db, const char *sql, int *out) {
@@ -2771,7 +2865,7 @@ static void jw__fill_game_entry(sqlite3_stmt *stmt, jw_game_entry *out) {
     }
 }
 
-static int jw__visibility_error(sqlite3 *db) {
+static int jw__write_error(sqlite3 *db) {
     int rc = sqlite3_extended_errcode(db) & 0xff;
     if (rc == SQLITE_READONLY) return JW_DB_RC_READONLY;
     if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) return JW_DB_RC_BUSY;
@@ -2799,7 +2893,7 @@ static int jw__write_visibility(const char *db_path, const char *sql,
         rc = require_row && sqlite3_changes(db) == 0 ? JW_DB_RC_NO_ROW : 0;
     }
 done:
-    if (rc == -1 && db) rc = jw__visibility_error(db);
+    if (rc == -1 && db) rc = jw__write_error(db);
     sqlite3_finalize(stmt);
     jw_db_close(db);
     return rc;
@@ -2997,6 +3091,53 @@ int jw_db_list_playlists(const char *db_path, jw_game_entry *out,
     }
     rc = step_rc == SQLITE_DONE ? 0 : -1;
 done:
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_list_indexed_games(const char *db_path, jw_game_entry **out,
+                                size_t *out_count) {
+    if (!out || !out_count) return -1;
+    *out = NULL;
+    *out_count = 0;
+    if (!db_path) return -1;
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    jw_game_entry *games = NULL;
+    size_t count = 0, capacity = 0;
+    int rc = -1;
+    const char *sql =
+        "SELECT g.id,g.system,COALESCE(NULLIF(gs.value,''),NULLIF(ig.value,''),g.name),"
+        "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
+        "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''),"
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind='game' AND f.target_id=g.id),"
+        "COALESCE(g.last_played,0),g.playtime_s FROM games g "
+        "LEFT JOIN game_settings gs ON gs.game_id=g.id AND gs.key='display_name' "
+        "LEFT JOIN game_settings ig ON ig.game_id=g.id AND ig.key='imported_display_name' "
+        "ORDER BY g.id;";
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
+        sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) goto done;
+    int step;
+    while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (count == capacity) {
+            size_t next_capacity = capacity ? capacity * 2 : 64;
+            if (next_capacity < capacity ||
+                next_capacity > (size_t)-1 / sizeof(*games)) goto done;
+            jw_game_entry *next = realloc(games, next_capacity * sizeof(*games));
+            if (!next) goto done;
+            games = next;
+            capacity = next_capacity;
+        }
+        jw__fill_game_entry(stmt, &games[count++]);
+    }
+    if (step != SQLITE_DONE) goto done;
+    *out = games;
+    *out_count = count;
+    games = NULL;
+    rc = 0;
+done:
+    free(games);
     sqlite3_finalize(stmt);
     jw_db_close(db);
     return rc;
