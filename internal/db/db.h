@@ -134,6 +134,17 @@ int  jw_db_scan_apps_complete(sqlite3 *db);
    so prune's cascade cleans favorites/recents that referenced a dropped copy. */
 int  jw_db_dedup_system_aliases(sqlite3 *db, const char *system, const char *canonical_rom_root);
 int  jw_db_scan_prune(sqlite3 *db);
+/* Exact physical identities confirmed removed (or already absent) by the daemon.
+   The caller omits retained shared files and a surviving parent descriptor.
+   This atomically drops matching games, all hidden member keys for these files,
+   and orphaned metadata/Focus IDs. No scan seen-set is involved. Supports an
+   existing transaction; returns JW_DB_RC_READONLY/BUSY/IOERR or -1 on failure. */
+typedef struct {
+    char source_id[32];
+    char rom_relpath[512];
+} jw_db_rom_key;
+int  jw_db_reconcile_removed_roms(sqlite3 *db, const jw_db_rom_key *removed,
+                                    size_t count);
 int  jw_db_insert_game(sqlite3 *db, const char *system, const char *name, const char *rom_path, const char *image_path);
 int  jw_db_insert_game_stable(sqlite3 *db, const char *system, const char *name,
                               const char *source_id, const char *rom_relpath,
@@ -218,6 +229,12 @@ int  jw_db_list_hidden_roms(const char *db_path, jw_hidden_rom_entry *out,
 int  jw_db_count_playlists(const char *db_path, int *out_count);
 int  jw_db_list_playlists(const char *db_path, jw_game_entry *out,
                            int max_count, int *out_count);
+
+/* Complete indexed identities, including hidden and unavailable sources.
+   Used by deletion previews for owner names and exact artwork paths.
+   Caller frees *out; failure leaves *out NULL and *out_count zero. */
+int  jw_db_list_indexed_games(const char *db_path, jw_game_entry **out,
+                                size_t *out_count);
 
 /* Favorites. kind is "game" or "app"; target_id is the games/apps id.
    set_favorite adds (on != 0) or removes (on == 0); it is idempotent.

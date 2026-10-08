@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* 5-Game Mode ("focus mode") — the persistent state + recovery plumbing shared
    by the daemon (boot check) and the launcher/settings UI (later phases).
@@ -72,10 +74,41 @@ const char    *jw_focus_style_name(jw_focus_style v);/* "theme"|"bw" */
 /* Parse a CSV of positive game ids into ids[JW_FOCUS_MAX_GAMES]. Dedupes, drops
    non-numeric / non-positive tokens, and caps at JW_FOCUS_MAX_GAMES (extra ids
    are ignored). *out_count receives the number kept (0 on empty/NULL). */
-void jw_focus_ids_parse(const char *csv, int ids[JW_FOCUS_MAX_GAMES],
-                        int *out_count);
+static inline void jw_focus_ids_parse(const char *csv, int ids[JW_FOCUS_MAX_GAMES],
+                        int *out_count) {
+    int count = 0;
+    for (int i = 0; i < JW_FOCUS_MAX_GAMES; i++) ids[i] = 0;
+
+    const char *p = (csv && csv[0]) ? csv : NULL;
+    while (p && *p && count < JW_FOCUS_MAX_GAMES) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+        char *end = NULL;
+        long v = strtol(p, &end, 10);
+        if (end == p) { p++; continue; }   /* not a number: skip a char */
+        p = end;
+        if (v <= 0) continue;              /* ids are positive games.id values */
+        bool dup = false;
+        for (int i = 0; i < count; i++)
+            if (ids[i] == (int)v) { dup = true; break; }
+        if (dup) continue;
+        ids[count++] = (int)v;
+    }
+    if (out_count) *out_count = count;
+}
+
 /* Serialize ids[0..count) as a CSV (e.g. "12,3,45"). Truncates safely. */
-void jw_focus_ids_to_csv(const int *ids, int count, char *out, size_t out_size);
+static inline void jw_focus_ids_to_csv(const int *ids, int count, char *out, size_t out_size) {
+    size_t len = 0;
+    if (out_size > 0) out[0] = '\0';
+    if (count > JW_FOCUS_MAX_GAMES) count = JW_FOCUS_MAX_GAMES;
+    for (int i = 0; i < count; i++) {
+        int n = snprintf(out + len, out_size - len, "%s%d",
+                         i > 0 ? "," : "", ids[i]);
+        if (n < 0 || (size_t)n >= out_size - len) break;
+        len += (size_t)n;
+    }
+}
 
 /* --- PIN --- */
 /* Hash a PIN into out_hex[65]. Salted, but a 4-digit PIN has only 10k values;

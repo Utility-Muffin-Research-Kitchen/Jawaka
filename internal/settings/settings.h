@@ -282,6 +282,7 @@ typedef struct {
     jw_hidden_rom_entry rom;
     char parent_name[512];
     char disc_label[256];
+    bool delete_eligible;
 } jw_settings_hidden_game;
 
 typedef struct {
@@ -304,6 +305,9 @@ typedef struct {
     bool               hidden_games_loaded;
     bool               hidden_games_names_incomplete;
     bool               visibility_changed; /* host refreshes browse caches, then clears */
+    bool               allow_delete_game; /* launcher hosts the shared Delete Game flow */
+    bool               delete_game_requested;
+    jw_game_entry      delete_game;
     cat_list_state     scrape_edit_list;
     cat_list_state     scrape_queue_list;   /* cursor/scroll for the live queue page */
     int                scrape_queue_filter; /* 0=ALL 1=BUSY 2=DONE 3=FAIL */
@@ -526,6 +530,8 @@ void jw_settings_ui_enter(jw_settings_ui *ui);
 void jw_settings_ui_open(jw_settings_ui *ui, jw_settings_screen screen);
 void jw_settings_ui_close(jw_settings_ui *ui);
 bool jw_settings_ui_is_open(const jw_settings_ui *ui);
+bool jw_settings_hidden_game_can_delete(const jw_settings_ui *ui);
+void jw_settings_hidden_games_refresh(jw_settings_ui *ui);
 /* Current sub-page, so the launcher can pick page-specific footer hints. */
 jw_settings_screen jw_settings_ui_screen(const jw_settings_ui *ui);
 bool jw_settings_show_hints(const jw_settings_ui *ui);

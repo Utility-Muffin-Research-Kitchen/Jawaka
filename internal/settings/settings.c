@@ -3,6 +3,7 @@
 
 #include "internal/db/db.h"
 #include "internal/discovery/content.h"
+#include "internal/discovery/delete.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/system_names.h"
 #include "internal/platform/device.h"
@@ -1545,6 +1546,7 @@ static void jw__clear_hidden_games(jw_settings_ui *ui) {
     ui->hidden_games_count = 0;
     ui->hidden_games_loaded = false;
     ui->hidden_games_names_incomplete = false;
+    ui->delete_game_requested = false;
 }
 
 static const char *jw__hidden_game_title(const jw_settings_hidden_game *row) {
@@ -1632,11 +1634,36 @@ static bool jw__load_hidden_games(jw_settings_ui *ui) {
         for (int i = 0; i < ui->hidden_games_count; ++i) ui->hidden_games[i].rom = roms[i];
         free(roms);
         jw__load_hidden_disc_names(ui);
+        char *root = jw_sdcard_root();
+        char catalog_error[256];
+        const jw_ra_catalog *catalog = root
+            ? jw_ra_catalog_get(root, catalog_error, sizeof(catalog_error)) : NULL;
+        for (int i = 0; i < ui->hidden_games_count; ++i) {
+            jw_settings_hidden_game *row = &ui->hidden_games[i];
+            const jw_ra_system *system = catalog
+                ? jw_ra_catalog_find_system(catalog, row->rom.game.system) : NULL;
+            row->delete_eligible = row->rom.game.id > 0 && !row->rom.member[0]
+                && jw_delete_supported(system);
+        }
+        free(root);
         qsort(ui->hidden_games, (size_t)ui->hidden_games_count,
               sizeof(*ui->hidden_games), jw__compare_hidden_games);
     }
     ui->hidden_games_loaded = true;
     return true;
+}
+
+bool jw_settings_hidden_game_can_delete(const jw_settings_ui *ui) {
+    return ui && ui->allow_delete_game && ui->hidden_games_list.cursor >= 0 &&
+        ui->hidden_games_list.cursor < ui->hidden_games_count &&
+        ui->hidden_games[ui->hidden_games_list.cursor].delete_eligible;
+}
+
+void jw_settings_hidden_games_refresh(jw_settings_ui *ui) {
+    if (!ui || ui->screen != JW_SETTINGS_HIDDEN_GAMES) return;
+    int cursor = ui->hidden_games_list.cursor;
+    (void)jw__load_hidden_games(ui);
+    cat_list_state_jump(&ui->hidden_games_list, cursor, ui->hidden_games_count);
 }
 
 void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
@@ -8477,6 +8504,12 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
 
     case JW_SETTINGS_HIDDEN_GAMES:
         switch (button) {
+            case CAT_BTN_X:
+                if (jw_settings_hidden_game_can_delete(ui)) {
+                    ui->delete_game = ui->hidden_games[ui->hidden_games_list.cursor].rom.game;
+                    ui->delete_game_requested = true;
+                }
+                break;
             case CAT_BTN_UP:
                 cat_list_state_move(&ui->hidden_games_list, -1, ui->hidden_games_count);
                 break;
