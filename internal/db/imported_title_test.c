@@ -22,7 +22,52 @@ static void expect_name(const char *db_path, const char *rom_path,
     }
 }
 
+/* A game with builds for two systems can send both ROMs in one group. When a
+   scanned name only repeats the title (ignoring case and surrounding space),
+   the suffix adds nothing, so the plain title is stored. Other matches in the
+   same group keep their suffix. */
+static void check_redundant_suffix(void) {
+    char db_path[] = "/tmp/jawaka-imported-title-suffix.XXXXXX";
+    int fd = mkstemp(db_path);
+    if (fd < 0) fail("mkstemp failed");
+    close(fd);
+    unlink(db_path);
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
+        jw_db_scan_begin(db) != 0 ||
+        jw_db_insert_game(db, "GB", "Glory Hunters", "Roms/GB/Glory Hunters.gb", NULL) != 0 ||
+        jw_db_insert_game(db, "GBA", "glory hunters ", "Roms/GBA/glory hunters .gba", NULL) != 0 ||
+        jw_db_insert_game(db, "PS", "Saga", "Roms/PS/Saga.cue", NULL) != 0 ||
+        jw_db_insert_game(db, "PS", "Saga (Disc 2)", "Roms/PS/Saga (Disc 2).cue", NULL) != 0) {
+        fail("could not prepare suffix fixture database");
+    }
+
+    const char *glory_paths[] = {"Roms/GB/Glory Hunters.gb", "Roms/GBA/glory hunters .gba"};
+    const char *saga_paths[] = {"Roms/PS/Saga.cue", "Roms/PS/Saga (Disc 2).cue"};
+    jw_db_imported_title_group groups[] = {
+        {.provider = "org.umrk.itchio", .title = "Glory Hunters",
+         .rom_paths = glory_paths, .rom_path_count = 2},
+        {.provider = "org.umrk.itchio", .title = "Saga",
+         .rom_paths = saga_paths, .rom_path_count = 2},
+    };
+    jw_db_imported_title_result result;
+    if (jw_db_apply_imported_title_groups(db, groups, 2, &result) != 0 ||
+        result.matched != 4 || result.applied != 4 || result.unmatched != 0) {
+        fail("unexpected suffix fixture result");
+    }
+    jw_db_close(db);
+
+    expect_name(db_path, "Roms/GB/Glory Hunters.gb", "Glory Hunters");
+    expect_name(db_path, "Roms/GBA/glory hunters .gba", "Glory Hunters");
+    expect_name(db_path, "Roms/PS/Saga.cue", "Saga");
+    expect_name(db_path, "Roms/PS/Saga (Disc 2).cue", "Saga — Saga (Disc 2)");
+    unlink(db_path);
+}
+
 int main(void) {
+    check_redundant_suffix();
+
     char db_path[] = "/tmp/jawaka-imported-title.XXXXXX";
     int fd = mkstemp(db_path);
     if (fd < 0) fail("mkstemp failed");

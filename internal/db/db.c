@@ -878,6 +878,23 @@ typedef struct {
     char *scanned_name;
 } jw__imported_title_match;
 
+/* True when a scanned name only repeats the imported title, ignoring
+   surrounding whitespace and ASCII case. Such a suffix adds nothing. */
+static bool jw__imported_title_repeats(const char *title, const char *scanned) {
+    while (isspace((unsigned char)*title)) title++;
+    while (isspace((unsigned char)*scanned)) scanned++;
+    size_t title_len = strlen(title);
+    size_t scanned_len = strlen(scanned);
+    while (title_len > 0 && isspace((unsigned char)title[title_len - 1])) title_len--;
+    while (scanned_len > 0 && isspace((unsigned char)scanned[scanned_len - 1])) scanned_len--;
+    if (title_len != scanned_len) return false;
+    for (size_t i = 0; i < title_len; i++) {
+        if (tolower((unsigned char)title[i]) != tolower((unsigned char)scanned[i]))
+            return false;
+    }
+    return true;
+}
+
 static int jw__upsert_game_setting(sqlite3_stmt *stmt, int game_id,
                                    const char *key, const char *value) {
     sqlite3_reset(stmt);
@@ -967,7 +984,9 @@ int jw_db_apply_imported_title_groups(sqlite3 *db,
         for (int m = 0; m < match_count; m++) {
             const char *imported = group->title;
             char *composed = NULL;
-            if (match_count > 1) {
+            if (match_count > 1 &&
+                !jw__imported_title_repeats(group->title,
+                                            matches[m].scanned_name)) {
                 size_t needed = strlen(group->title) + strlen(matches[m].scanned_name) + 6u;
                 composed = malloc(needed);
                 if (!composed) {
