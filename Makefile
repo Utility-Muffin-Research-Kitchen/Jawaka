@@ -715,7 +715,7 @@ delete-ui-test: | $(BUILD)/bin check-catastrophe check-sdl
 	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/delete-ui-test
 
 delete-client-test: | $(BUILD)/bin
-	$(CC) $(CFLAGS_DAEMON) -o $(BUILD)/bin/delete-client-test \
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/delete-client-test \
 		internal/ipc/delete_client_test.c internal/ipc/delete_client.c \
 		internal/ipc/ipc.c internal/core/log.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/delete-client-test
