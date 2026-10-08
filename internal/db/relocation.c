@@ -329,6 +329,7 @@ static int rel__move(sqlite3 *db, const char *operation_id, int forward,
     if (rel__exec(db, "BEGIN IMMEDIATE;") != 0) return JW_RELOCATION_ERROR;
     sqlite3_stmt *select = NULL;
     sqlite3_stmt *update = NULL;
+    sqlite3_stmt *visibility = NULL;
     int rc = JW_RELOCATION_ERROR;
     const char *select_sql =
         "SELECT game_id,old_source_id,old_rom_relpath,old_image_root_kind,"
@@ -340,8 +341,12 @@ static int rel__move(sqlite3 *db, const char *operation_id, int forward,
         "UPDATE games SET source_id=?,rom_relpath=?,image_root_kind=NULLIF(?,''),"
         "image_relpath=NULLIF(?,''),rom_path=?,image_path=NULLIF(?,'') "
         "WHERE id=? AND source_id=? AND rom_relpath=?;";
+    const char *visibility_sql =
+        "UPDATE OR REPLACE hidden_roms SET source_id=?,rom_relpath=? "
+        "WHERE source_id=? AND rom_relpath=?;";
     if (sqlite3_prepare_v2(db, select_sql, -1, &select, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db, update_sql, -1, &update, NULL) != SQLITE_OK) goto done;
+        sqlite3_prepare_v2(db, update_sql, -1, &update, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db, visibility_sql, -1, &visibility, NULL) != SQLITE_OK) goto done;
     sqlite3_bind_text(select, 1, operation_id, -1, SQLITE_TRANSIENT);
     while (sqlite3_step(select) == SQLITE_ROW) {
         int base = forward ? 7 : 1;
@@ -360,6 +365,12 @@ static int rel__move(sqlite3 *db, const char *operation_id, int forward,
             rel__error(error, error_size, "reserved game row changed");
             goto done;
         }
+        sqlite3_reset(visibility);
+        sqlite3_bind_text(visibility, 1, rel__text(select, base), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(visibility, 2, rel__text(select, base + 1), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(visibility, 3, rel__text(select, expected_base), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(visibility, 4, rel__text(select, expected_base + 1), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(visibility) != SQLITE_DONE) goto done;
     }
     int generation = 0;
     if (rel__generation(db, &generation) != 0 ||
@@ -377,10 +388,12 @@ static int rel__move(sqlite3 *db, const char *operation_id, int forward,
     if (rel__exec(db, "COMMIT;") != 0) goto done;
     sqlite3_finalize(select);
     sqlite3_finalize(update);
+    sqlite3_finalize(visibility);
     return jw_db_relocation_status(db, operation_id, out);
 done:
     if (select) sqlite3_finalize(select);
     if (update) sqlite3_finalize(update);
+    if (visibility) sqlite3_finalize(visibility);
     rel__exec(db, "ROLLBACK;");
     return rc;
 }

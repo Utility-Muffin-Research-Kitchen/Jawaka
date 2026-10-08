@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JAWAKA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-UMRK_ROOT="$(cd "$JAWAKA_DIR/.." && pwd)"
+UMRK_ROOT="${WORKSPACE_ROOT:-$(cd "$JAWAKA_DIR/.." && pwd)}"
 BUILD_DIR="${BUILD:-build/phase3-fixture}"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jawaka-phase3-scan.XXXXXX")"
 if [[ "${KEEP_TEMP:-0}" != "1" ]]; then

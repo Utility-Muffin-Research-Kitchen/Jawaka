@@ -30,6 +30,10 @@ const char *jw_storage_ui_card_state(const jw_ipc_storage_status_info *card);
 bool jw_storage_ui_show_warning(const char *socket_path,
                                 const jw_ipc_storage_status_info *card);
 
+/* Re-show the library card's warning after a failed DB write, even when the
+   startup warning was acknowledged. Returns true when restarting for repair. */
+bool jw_storage_ui_show_library_read_only(const char *socket_path);
+
 /* Confirmation, then the request. mode is "repair" or "check". Returns true
    when the device is restarting. */
 bool jw_storage_ui_request_repair(const char *socket_path,

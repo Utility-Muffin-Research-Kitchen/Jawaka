@@ -54,8 +54,10 @@ int  jw_game_switcher_load(jw_game_switcher *sw, const char *db_path);
 /* Inject the currently running game (in-game overlay only) and start the
    carousel on it. If a recents entry already matches (same system + ROM file)
    that entry becomes the current one; otherwise a synthetic entry is inserted
-   at the front. The current entry carries id < 0 so Y removal is refused. */
-void jw_game_switcher_set_current(jw_game_switcher *sw, const char *system,
+   at the front. Only known visible library games are injected; the caller's
+   independent Resume action stays available. Synthetic entries carry id < 0. */
+void jw_game_switcher_set_current(jw_game_switcher *sw, const char *db_path,
+                                  const char *system,
                                   const char *rom_path, const char *name,
                                   const char *image_path);
 

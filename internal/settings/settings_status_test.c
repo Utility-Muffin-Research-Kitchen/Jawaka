@@ -581,6 +581,41 @@ static int check_layout_viewport(void) {
             return 1;
         }
     }
+    jw_settings_ui hidden = {0};
+    hidden.open = true;
+    hidden.screen = JW_SETTINGS_HIDDEN_GAMES;
+    hidden.hidden_games_loaded = true;
+    hidden.hidden_games_count = 80;
+    hidden.hidden_games = calloc(80, sizeof(*hidden.hidden_games));
+    if (!hidden.hidden_games) return fail("hidden game render allocation failed");
+    cat_list_state_init(&hidden.hidden_games_list, 7);
+    for (int i = 0; i < hidden.hidden_games_count; ++i) {
+        snprintf(hidden.hidden_games[i].source_id, sizeof(hidden.hidden_games[i].source_id),
+                 "%s", "secondary_sd");
+        snprintf(hidden.hidden_games[i].rom_relpath, sizeof(hidden.hidden_games[i].rom_relpath),
+                 "SFC/Hidden game %03d.sfc", i);
+    }
+    for (int bump = 2; bump <= 5; bump += 3) {
+        if (cat_set_font_bump(bump) != CAT_OK) return fail("font bump failed");
+        cat_list_state_jump(&hidden.hidden_games_list, 79, 80);
+        SDL_SetRenderDrawColor(renderer, 13, 29, 47, 255);
+        SDL_RenderClear(renderer);
+        jw_settings_ui_render(&hidden, 12, 60, 936, 450);
+        if (hidden.hidden_games_list.cursor != 79 ||
+            79 < hidden.hidden_games_list.scroll_offset ||
+            79 >= hidden.hidden_games_list.scroll_offset + hidden.hidden_games_list.visible_rows)
+            return fail("last hidden game was not visible");
+        if (SDL_RenderIsClipEnabled(renderer)) return fail("hidden games leaked its clip");
+        if (SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, pixels,
+                                 960 * sizeof(*pixels)) != 0)
+            return fail("could not inspect hidden games");
+        for (int y = 0; y < 720; ++y)
+            for (int x = 0; x < 960; ++x)
+                if ((x < 12 || x >= 948 || y < 60 || y >= 510) &&
+                    pixels[y * 960 + x] != 0xff0d1d2f)
+                    return fail("hidden games drew outside its viewport");
+    }
+    jw_settings_ui_close(&hidden);
     free(pixels);
     cat_quit();
     return 0;
@@ -690,6 +725,7 @@ static int check_back_targets(void) {
         { JW_SETTINGS_BLUETOOTH,           JW_SETTINGS_HOME        },
         { JW_SETTINGS_GAMES,               JW_SETTINGS_HOME        },
         { JW_SETTINGS_ACCOUNTS,            JW_SETTINGS_GAMES       },
+        { JW_SETTINGS_HIDDEN_GAMES,        JW_SETTINGS_GAMES       },
         { JW_SETTINGS_SCRAPE_PRIORITY,     JW_SETTINGS_GAMES       },
         { JW_SETTINGS_SCRAPE_QUEUE,        JW_SETTINGS_GAMES       },
         { JW_SETTINGS_SCRAPE_DOWNLOAD,     JW_SETTINGS_GAMES       },
@@ -717,11 +753,96 @@ static int check_back_targets(void) {
     return 0;
 }
 
+static int check_hidden_games(void) {
+    char path[] = "/tmp/settings-status-hidden.XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) return fail("could not create hidden-games db");
+    close(fd);
+    sqlite3 *db = NULL;
+    if (jw_db_open(path, &db) || jw_db_apply_schema(db) || jw_db_scan_begin(db))
+        return fail("could not initialize hidden-games db");
+    if (jw_db_insert_game_stable(db, "SFC", "A hidden game", "secondary_sd",
+            "SFC/Game000.sfc", "/test/secondary/Roms/SFC/Game000.sfc", NULL, NULL, NULL))
+        return fail("could not add a hidden game");
+    for (int i = 0; i < 80; ++i) {
+        char sql[160];
+        snprintf(sql, sizeof(sql), "INSERT INTO hidden_roms(source_id,rom_relpath) "
+                 "VALUES('primary','SFC/Game%03d.sfc');", i);
+        if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK)
+            return fail("could not add orphan hidden preferences");
+    }
+    if (sqlite3_exec(db, "INSERT INTO hidden_roms(source_id,rom_relpath) "
+            "VALUES('secondary_sd','SFC/Game000.sfc');", NULL, NULL, NULL) != SQLITE_OK)
+        return fail("could not hide the secondary game");
+
+    jw_settings_ui ui = {0};
+    ui.open = true;
+    ui.screen = JW_SETTINGS_GAMES;
+    ui.games_list.cursor = JW_GAMES_HIDDEN_GAMES;
+    snprintf(ui.db_path, sizeof(ui.db_path), "%s", path);
+    char status[128] = "";
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (ui.screen != JW_SETTINGS_HIDDEN_GAMES || !ui.hidden_games_loaded ||
+        ui.hidden_games_count != 81 || ui.hidden_games[0].id <= 0)
+        return fail("Hidden Games did not open with every hidden preference");
+    /* Before renderer init, the unavailable-daemon dialog returns immediately.
+       URI mode uses SQLite's real read-only result without chmod assumptions. */
+    snprintf(ui.db_path, sizeof(ui.db_path), "file:%s?mode=ro", path);
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (ui.visibility_changed || ui.hidden_games_count != 81 ||
+        !strstr(status, "read-only") || !strstr(status, "still hidden"))
+        return fail("read-only Unhide changed visibility or missed the card warning");
+    snprintf(ui.db_path, sizeof(ui.db_path), "%s", path);
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    int count = 0;
+    if (!ui.visibility_changed || ui.hidden_games_count != 80 ||
+        jw_db_count_hidden_games(path, &count) || count != 80 ||
+        strcmp(ui.hidden_games[0].source_id, "primary") || ui.hidden_games[0].id != 0)
+        return fail("Unhide removed the wrong source or kept the selected row");
+
+    ui.visibility_changed = false;
+    jw_settings_ui_handle_button(&ui, CAT_BTN_UP, status, sizeof(status), NULL);
+    if (ui.hidden_games_list.cursor != 79)
+        return fail("the final hidden preference was unreachable");
+    if (sqlite3_exec(db, "CREATE TRIGGER reject_unhide BEFORE DELETE ON hidden_roms "
+            "BEGIN SELECT RAISE(ABORT,'test write failure'); END;", NULL, NULL, NULL) != SQLITE_OK)
+        return fail("could not inject unhide failure");
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (ui.visibility_changed || ui.hidden_games_count != 80 || !status[0])
+        return fail("failed Unhide changed visibility or lost its error");
+    if (sqlite3_exec(db, "DROP TRIGGER reject_unhide;", NULL, NULL, NULL) != SQLITE_OK)
+        return fail("could not clear unhide failure");
+    for (int i = 80; i > 0; --i) {
+        jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+        if (ui.hidden_games_count != i - 1 ||
+            (i > 1 && ui.hidden_games_list.cursor >= i - 1))
+            return fail("Unhide lost a row or left the cursor out of bounds");
+    }
+    ui.visibility_changed = false;
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (ui.visibility_changed || jw_db_count_hidden_games(path, &count) || count)
+        return fail("empty Hidden Games retained preferences or handled A");
+    jw_settings_ui_handle_button(&ui, CAT_BTN_B, status, sizeof(status), NULL);
+    if (ui.screen != JW_SETTINGS_GAMES || ui.hidden_games || status[0] ||
+        ui.games_list.cursor != JW_GAMES_HIDDEN_GAMES)
+        return fail("Hidden Games did not return to its Games row cleanly");
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (!ui.hidden_games_loaded || ui.hidden_games_count)
+        return fail("empty Hidden Games did not reopen");
+    jw_settings_ui_close(&ui);
+    jw_db_close(db);
+    unlink(path);
+    return 0;
+}
+
 int main(void) {
+    if (sqlite3_config(SQLITE_CONFIG_URI, 1) != SQLITE_OK)
+        return fail("could not enable the read-only database fixture");
     jw_settings_ui ui = {0};
     char status[64] = "Saved scrape order";
 
     if (check_back_targets()) return 1;
+    if (check_hidden_games()) return 1;
     if (check_language_order()) return 1;
     if (check_language_capacity()) return 1;
     if (check_force_off_hold()) return 1;

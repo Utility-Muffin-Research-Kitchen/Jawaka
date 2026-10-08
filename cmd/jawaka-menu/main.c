@@ -2744,12 +2744,15 @@ static void jw__render_ingame_switcher(const jw_ingame_state *state,
                             content.w - margin * 2, content.h);
 
     if (state->show_hints) {
-        cat_footer_item footer[] = {
-            { CAT_BTN_Y, "Remove", false, JW_HINT("Y") },
-            { CAT_BTN_B, "Resume", true,  JW_HINT("B") },
-            { CAT_BTN_A, "Switch", true,  JW_HINT("A") },
-        };
-        jw__menu_footer(footer, 3);
+        cat_footer_item footer[3];
+        int count = 0;
+        bool has_selection = jw_game_switcher_selected(switcher) != NULL;
+        if (has_selection && !jw_game_switcher_selected_is_current(switcher))
+            footer[count++] = (cat_footer_item){ CAT_BTN_Y, "Remove", false, JW_HINT("Y") };
+        footer[count++] = (cat_footer_item){ CAT_BTN_B, "Resume", true, JW_HINT("B") };
+        if (has_selection)
+            footer[count++] = (cat_footer_item){ CAT_BTN_A, "Switch", true, JW_HINT("A") };
+        jw__menu_footer(footer, count);
     }
     cat_present();
 }
@@ -2864,9 +2867,10 @@ static void jw__ingame_show_switcher(const char *socket_path, const char *db_pat
 
     jw_game_switcher switcher;
     jw_game_switcher_reset(&switcher, true, sd_root ? sd_root : "", states);
+    /* The resident menu reloads here on every reveal, including visibility. */
     jw_game_switcher_load(&switcher, db_path);
     if (state->session.active && state->session.rom_path[0]) {
-        jw_game_switcher_set_current(&switcher, state->session.system,
+        jw_game_switcher_set_current(&switcher, db_path, state->session.system,
                                      state->session.rom_path,
                                      state->game_title, NULL);
     }

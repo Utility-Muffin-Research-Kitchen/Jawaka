@@ -13,7 +13,17 @@
 #include <stddef.h>
 #include <unistd.h>
 
-#define JW_DB_SCHEMA_VERSION 6
+#define JW_DB_SCHEMA_VERSION 7
+
+#define JW_VISIBLE_GAME(table) \
+    "NOT EXISTS (SELECT 1 FROM hidden_roms h WHERE h.source_id=" table ".source_id " \
+    "AND h.rom_relpath=" table ".rom_relpath AND h.member='') "
+
+#define JW_HIDDEN_SCHEMA_SQL \
+    "CREATE TABLE IF NOT EXISTS hidden_roms (" \
+    "source_id TEXT NOT NULL,rom_relpath TEXT NOT NULL," \
+    "member TEXT NOT NULL DEFAULT ''," \
+    "PRIMARY KEY(source_id,rom_relpath,member));"
 
 static void jw__fill_game_entry(sqlite3_stmt *stmt, jw_game_entry *out);
 
@@ -140,8 +150,7 @@ static const char *kSchemaSql =
     ");\n"
     "\n"
     "CREATE INDEX IF NOT EXISTS pakrat_installs_install_path_idx\n"
-    "    ON pakrat_installs(install_path);\n"
-    "PRAGMA user_version = 6;\n";
+    "    ON pakrat_installs(install_path);\n";
 
 static const char *kRelocationSchemaSql =
     "PRAGMA foreign_keys = ON;\n"
@@ -695,18 +704,27 @@ int jw_db_apply_schema(sqlite3 *db) {
         return -1;
     }
     if (version == JW_DB_SCHEMA_VERSION) {
-        /* Schema-v6 receives additive protocol tables without changing the
+        /* Current schemas receive additive protocol tables without changing the
            stable games schema or forcing a migration/backup cycle. */
         return jw__ensure_apps_min_leaf_version(db) == 0 &&
                        jw__ensure_pakrat_commit_token(db) == 0
                    ? jw__exec(db, kRelocationSchemaSql)
                    : -1;
     }
-    if (version > 0 && jw__migrate_to_v6(db) != 0) {
+    if (version > 0 && version < 6 && jw__migrate_to_v6(db) != 0) {
         return -1;
+    }
+    if (version == 6) {
+        if (jw__exec(db, "BEGIN IMMEDIATE;") != 0) return -1;
+        if (jw__exec(db, JW_HIDDEN_SCHEMA_SQL "PRAGMA user_version=7;COMMIT;") != 0) {
+            sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+            return -1;
+        }
+        return jw_db_apply_schema(db);
     }
     if (version > 0) {
         return jw__exec(db, kSchemaSql) == 0 &&
+                       jw__exec(db, JW_HIDDEN_SCHEMA_SQL "PRAGMA user_version=7;") == 0 &&
                        jw__ensure_apps_min_leaf_version(db) == 0 &&
                        jw__ensure_pakrat_commit_token(db) == 0
                    ? jw__exec(db, kRelocationSchemaSql)
@@ -716,6 +734,7 @@ int jw_db_apply_schema(sqlite3 *db) {
         return -1;
     }
     return jw__exec(db, kSchemaSql) == 0 &&
+                   jw__exec(db, JW_HIDDEN_SCHEMA_SQL "PRAGMA user_version=7;") == 0 &&
                    jw__ensure_apps_min_leaf_version(db) == 0 &&
                    jw__ensure_pakrat_commit_token(db) == 0
                ? jw__exec(db, kRelocationSchemaSql)
@@ -1319,7 +1338,7 @@ int jw_db_read_stats(const char *db_path, jw_library_stats *out) {
             "  ON manual.game_id = g.id AND manual.key = 'display_name' "
             "LEFT JOIN game_settings imported "
             "  ON imported.game_id = g.id AND imported.key = 'imported_display_name' "
-            "WHERE g.playtime_s > 0 "
+            "WHERE g.playtime_s > 0 AND " JW_VISIBLE_GAME("g")
             "ORDER BY g.playtime_s DESC, "
             "         COALESCE(NULLIF(manual.value, ''), NULLIF(imported.value, ''), g.name) "
             "LIMIT ?;",
@@ -1377,7 +1396,8 @@ int jw_db_list_systems(const char *db_path, jw_system_entry *out, int max_count,
     }
 
     static const char *sql =
-        "SELECT system, COUNT(*) FROM games GROUP BY system ORDER BY system LIMIT ?;";
+        "SELECT system, COUNT(*) FROM games WHERE " JW_VISIBLE_GAME("games")
+        "GROUP BY system ORDER BY system LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -1415,12 +1435,15 @@ int jw_db_read_summary(const char *db_path, jw_library_summary *out) {
     }
 
     int rc = 0;
-    rc |= jw__query_int(db, "SELECT COUNT(*) FROM games;", &out->game_count);
+    rc |= jw__query_int(db, "SELECT COUNT(*) FROM games WHERE "
+                       JW_VISIBLE_GAME("games") ";", &out->game_count);
     rc |= jw__query_int(db, "SELECT COUNT(*) FROM apps;", &out->app_count);
-    rc |= jw__query_int(db, "SELECT COUNT(DISTINCT system) FROM games;", &out->system_count);
+    rc |= jw__query_int(db, "SELECT COUNT(DISTINCT system) FROM games WHERE "
+                       JW_VISIBLE_GAME("games") ";", &out->system_count);
     rc |= jw__query_string(db,
         "SELECT group_concat(system, ', ') FROM ("
-        "SELECT DISTINCT system FROM games ORDER BY system LIMIT 4"
+        "SELECT DISTINCT system FROM games WHERE " JW_VISIBLE_GAME("games")
+        "ORDER BY system LIMIT 4"
         ");",
         out->systems_summary, sizeof(out->systems_summary));
     rc |= jw__query_string(db,
@@ -1431,7 +1454,7 @@ int jw_db_read_summary(const char *db_path, jw_library_summary *out) {
         "  ON manual.game_id = g.id AND manual.key = 'display_name' "
         "LEFT JOIN game_settings imported "
         "  ON imported.game_id = g.id AND imported.key = 'imported_display_name' "
-        "ORDER BY name LIMIT 4"
+        "WHERE " JW_VISIBLE_GAME("g") "ORDER BY name LIMIT 4"
         ");",
         out->sample_summary, sizeof(out->sample_summary));
 
@@ -2514,7 +2537,8 @@ int jw_db_count_games_for_system(const char *db_path, const char *system, int *o
         return -1;
     }
 
-    static const char *sql = "SELECT COUNT(*) FROM games WHERE system = ?;";
+    static const char *sql = "SELECT COUNT(*) FROM games WHERE system = ? AND "
+        JW_VISIBLE_GAME("games") ";";
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
         jw_db_close(db);
@@ -2558,7 +2582,8 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
         "FROM games g "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
-        "WHERE g.system = ? ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) LIMIT ?;";
+        "WHERE g.system = ? AND " JW_VISIBLE_GAME("g")
+        "ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -2725,6 +2750,126 @@ static void jw__fill_game_entry(sqlite3_stmt *stmt, jw_game_entry *out) {
         out->last_played = sqlite3_column_int64(stmt, 10);
         out->playtime_s  = sqlite3_column_int(stmt, 11);
     }
+}
+
+static int jw__visibility_error(sqlite3 *db) {
+    int rc = sqlite3_extended_errcode(db) & 0xff;
+    if (rc == SQLITE_READONLY) return JW_DB_RC_READONLY;
+    if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) return JW_DB_RC_BUSY;
+    if (rc == SQLITE_IOERR) return JW_DB_RC_IOERR;
+    return -1;
+}
+
+static int jw__write_visibility(const char *db_path, const char *sql,
+                                int game_id, const char *source_id,
+                                const char *rom_relpath, int require_row) {
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    int rc = -1;
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
+        sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) goto done;
+    if (source_id) {
+        sqlite3_bind_text(stmt, 1, source_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, rom_relpath, -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_int(stmt, 1, game_id);
+    }
+    if (sqlite3_step(stmt) == SQLITE_DONE) {
+        rc = require_row && sqlite3_changes(db) == 0 ? JW_DB_RC_NO_ROW : 0;
+    }
+done:
+    if (rc == -1 && db) rc = jw__visibility_error(db);
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_set_game_hidden(const char *db_path, int game_id, int hidden) {
+    if (!db_path || game_id <= 0) return -1;
+    const char *sql = hidden
+        ? "INSERT INTO hidden_roms(source_id,rom_relpath,member) "
+          "SELECT source_id,rom_relpath,'' FROM games WHERE id=? "
+          "ON CONFLICT(source_id,rom_relpath,member) DO UPDATE SET member='';"
+        : "DELETE FROM hidden_roms WHERE member='' AND (source_id,rom_relpath) "
+          "IN (SELECT source_id,rom_relpath FROM games WHERE id=?);";
+    return jw__write_visibility(db_path, sql, game_id, NULL, NULL, hidden != 0);
+}
+
+int jw_db_clear_hidden_game(const char *db_path, const char *source_id,
+                             const char *rom_relpath) {
+    if (!db_path || !source_id || !source_id[0] ||
+        !rom_relpath || !rom_relpath[0]) return -1;
+    return jw__write_visibility(db_path,
+        "DELETE FROM hidden_roms WHERE source_id=? AND rom_relpath=? AND member='';",
+        0, source_id, rom_relpath, 0);
+}
+
+int jw_db_is_game_hidden(const char *db_path, int game_id, int *out_hidden) {
+    if (!db_path || game_id <= 0 || !out_hidden) return -1;
+    *out_hidden = 0;
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    int rc = -1;
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
+        sqlite3_prepare_v2(db, "SELECT NOT " JW_VISIBLE_GAME("g")
+            "FROM games g WHERE id=?;", -1, &stmt, NULL) != SQLITE_OK) goto done;
+    sqlite3_bind_int(stmt, 1, game_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        *out_hidden = sqlite3_column_int(stmt, 0);
+        rc = 0;
+    }
+done:
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_count_hidden_games(const char *db_path, int *out_count) {
+    if (!db_path || !out_count) return -1;
+    *out_count = 0;
+    sqlite3 *db = NULL;
+    int rc = -1;
+    if (jw_db_open(db_path, &db) == 0 && jw_db_apply_schema(db) == 0) {
+        rc = jw__query_int(db, "SELECT COUNT(*) FROM hidden_roms WHERE member='';",
+                          out_count);
+    }
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_list_hidden_games(const char *db_path, jw_game_entry *out,
+                             int max_count, int *out_count) {
+    if (!db_path || !out || max_count <= 0 || !out_count) return -1;
+    *out_count = 0;
+    memset(out, 0, sizeof(out[0]) * (size_t)max_count);
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    int rc = -1;
+    const char *sql =
+        "SELECT COALESCE(g.id,0),COALESCE(g.system,''),"
+        "COALESCE(NULLIF(gs.value,''),NULLIF(ig.value,''),g.name,h.rom_relpath),"
+        "h.source_id,h.rom_relpath,COALESCE(g.rom_path,''),"
+        "COALESCE(g.image_root_kind,''),COALESCE(g.image_relpath,''),"
+        "COALESCE(g.image_path,''),"
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind='game' AND f.target_id=g.id),"
+        "COALESCE(g.last_played,0),COALESCE(g.playtime_s,0) "
+        "FROM hidden_roms h LEFT JOIN games g "
+        "ON g.source_id=h.source_id AND g.rom_relpath=h.rom_relpath "
+        "LEFT JOIN game_settings gs ON gs.game_id=g.id AND gs.key='display_name' "
+        "LEFT JOIN game_settings ig ON ig.game_id=g.id AND ig.key='imported_display_name' "
+        "WHERE h.member='' ORDER BY 3 COLLATE NOCASE,h.source_id,h.rom_relpath LIMIT ?;";
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
+        sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) goto done;
+    sqlite3_bind_int(stmt, 1, max_count);
+    int step_rc;
+    while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW && *out_count < max_count) {
+        jw__fill_game_entry(stmt, &out[(*out_count)++]);
+    }
+    rc = step_rc == SQLITE_DONE ? 0 : -1;
+done:
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
 }
 
 /* where_sql binds `rom_path` (or `game_id`) as ?1 and, when given, `text2` as ?2. */
@@ -3004,6 +3149,7 @@ int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
         "FROM games g JOIN favorites f ON f.kind = 'game' AND f.target_id = g.id "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
+        "WHERE " JW_VISIBLE_GAME("g")
         "ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) COLLATE NOCASE ASC, "
         "         f.added_at DESC LIMIT ?;";
 
@@ -3117,6 +3263,7 @@ int jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
         "FROM games g JOIN recents r ON r.kind = 'game' AND r.target_id = g.id "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
+        "WHERE " JW_VISIBLE_GAME("g")
         "ORDER BY r.last_opened DESC LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
@@ -3304,7 +3451,7 @@ int jw_db_search_library(const char *db_path, const char *query,
         "    FROM games_fts JOIN games ON games_fts.rowid = games.id"
         "    LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name'"
         "    LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name'"
-        "   WHERE games_fts MATCH ?"
+        "   WHERE games_fts MATCH ? AND " JW_VISIBLE_GAME("games")
         "  UNION ALL"
         "  SELECT 0 AS kind,games.id AS id,COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name) AS name, games.system AS system,"
         "         games.source_id,games.rom_relpath,COALESCE(games.image_root_kind,''),"
@@ -3315,6 +3462,7 @@ int jw_db_search_library(const char *db_path, const char *query,
         "    LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name'"
         "    LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name'"
         "   WHERE lower(COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name)) LIKE ?"
+        "     AND " JW_VISIBLE_GAME("games")
         "     AND games.id NOT IN (SELECT rowid FROM games_fts WHERE games_fts MATCH ?)"
         "  UNION ALL"
         "  SELECT 1 AS kind,apps.id AS id,apps.name AS name,'' AS system,"
@@ -3384,6 +3532,7 @@ int jw_db_search_library(const char *db_path, const char *query,
             "FROM games "
             "LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name' "
             "LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name' "
+            "WHERE " JW_VISIBLE_GAME("games")
             "ORDER BY effective_name COLLATE BINARY ASC, games.id ASC;";
         sqlite3_stmt *fallback = NULL;
         if (sqlite3_prepare_v2(db, fallback_sql, -1, &fallback, NULL) != SQLITE_OK) {

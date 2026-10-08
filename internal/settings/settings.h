@@ -3,6 +3,7 @@
 
 #include "catastrophe.h"
 #include "catastrophe_widgets.h"
+#include "internal/db/db.h"
 #include "internal/i18n/i18n.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/platform/bluetooth.h"
@@ -60,6 +61,7 @@ typedef enum {
     JW_SETTINGS_LIGHTING,
     JW_SETTINGS_ACCOUNTS,
     JW_SETTINGS_GAMES,
+    JW_SETTINGS_HIDDEN_GAMES,
     JW_SETTINGS_SCRAPE_PRIORITY,   /* artwork or region editor, see scrape_edit_is_region */
     JW_SETTINGS_SCRAPE_QUEUE,      /* live scrape-job queue (native page, not the modal) */
     JW_SETTINGS_SCRAPE_QUEUE_DETAIL, /* one job's result (native page, was cat_detail_screen) */
@@ -189,7 +191,8 @@ typedef enum {
 #define JW_GAMES_BOOT_RESUME     6
 #define JW_GAMES_RESET_RETROARCH 7   /* was General > Reset RetroArch Config */
 #define JW_GAMES_ACCOUNTS        8   /* -> Accounts, was a top-level category */
-#define JW_GAMES_ROW_COUNT       9
+#define JW_GAMES_HIDDEN_GAMES    9
+#define JW_GAMES_ROW_COUNT      10
 /* Capacity for the priority editors (catalogs are 10 entries each today). */
 #define JW_SCRAPE_PRIO_SLOTS  16
 
@@ -289,6 +292,11 @@ typedef struct {
     cat_list_state     lighting_list;
     cat_list_state     accounts_list;
     cat_list_state     games_list;
+    cat_list_state     hidden_games_list;
+    jw_game_entry     *hidden_games;
+    int                hidden_games_count;
+    bool               hidden_games_loaded;
+    bool               visibility_changed; /* host refreshes browse caches, then clears */
     cat_list_state     scrape_edit_list;
     cat_list_state     scrape_queue_list;   /* cursor/scroll for the live queue page */
     int                scrape_queue_filter; /* 0=ALL 1=BUSY 2=DONE 3=FAIL */
