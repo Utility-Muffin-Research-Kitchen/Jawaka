@@ -6,7 +6,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct jw_ipc_delete_session { jw_ipc_client *client; bool failed; };
+struct jw_ipc_delete_session {
+    jw_ipc_client *client;
+    bool failed, disc_request, scope_ready, playlist_edit, final_disc;
+    size_t remaining_discs;
+    char disc_name[256];
+};
+
+static void jw__restore_scope(const jw_ipc_delete_session *session,
+                               jw_ipc_delete_status *status) {
+    if (!session || !session->scope_ready) return;
+    status->playlist_edit = session->playlist_edit;
+    status->final_disc = session->final_disc;
+    status->remaining_discs = session->remaining_discs;
+    snprintf(status->disc_name, sizeof(status->disc_name), "%s", session->disc_name);
+}
 
 void jw_ipc_delete_status_free(jw_ipc_delete_status *status) {
     if (!status) return;
@@ -66,7 +80,7 @@ static int jw__exchange(jw_ipc_delete_session *session, cJSON *request,
     status->phase = (jw_ipc_delete_phase)phase->valueint;
 #define READ_STRING(field) if (!jw__string(reply, #field, status->field, sizeof(status->field))) goto done
     READ_STRING(token); READ_STRING(name); READ_STRING(source_id); READ_STRING(error);
-    READ_STRING(readonly_source); READ_STRING(missing_sources);
+    READ_STRING(readonly_source); READ_STRING(missing_sources); READ_STRING(disc_name);
 #undef READ_STRING
     bool full = status->phase == JW_IPC_DELETE_READY || status->phase == JW_IPC_DELETE_DONE;
     if ((full && (!status->name[0] || !status->source_id[0])) ||
@@ -81,6 +95,28 @@ static int jw__exchange(jw_ipc_delete_session *session, cJSON *request,
     READ_COUNT(disc_count); READ_COUNT(file_count); READ_COUNT(keep_count);
     READ_COUNT(shared_count); READ_COUNT(removed_count); READ_COUNT(absent_count);
 #undef READ_COUNT
+    bool scope_required = full && session->disc_request;
+    if (!jw__boolean(reply, "playlist_edit", scope_required, &status->playlist_edit) ||
+        !jw__boolean(reply, "final_disc", scope_required, &status->final_disc) ||
+        !jw__boolean(reply, "playlist_replaced", scope_required, &status->playlist_replaced) ||
+        !jw__number(reply, "remaining_discs", SIZE_MAX, scope_required, &number)) goto done;
+    status->remaining_discs = (size_t)number;
+    bool have_scope = status->playlist_edit || status->final_disc;
+    if (!session->disc_request && (status->playlist_edit || status->final_disc ||
+        status->playlist_replaced || status->remaining_discs || status->disc_name[0])) goto done;
+    if (!have_scope && (status->playlist_replaced || status->remaining_discs)) goto done;
+    if (scope_required || (session->disc_request && have_scope)) {
+        if (status->playlist_edit == status->final_disc || !status->disc_name[0] ||
+            (status->playlist_edit && !status->remaining_discs) ||
+            (status->final_disc && status->remaining_discs) ||
+            (status->playlist_replaced && !status->playlist_edit) ||
+            (status->phase == JW_IPC_DELETE_READY && status->playlist_replaced) ||
+            (status->phase == JW_IPC_DELETE_DONE && status->playlist_edit && !status->playlist_replaced)) goto done;
+        if (session->scope_ready && (session->playlist_edit != status->playlist_edit ||
+            session->final_disc != status->final_disc ||
+            session->remaining_discs != status->remaining_discs ||
+            strcmp(session->disc_name, status->disc_name))) goto done;
+    }
     if (!jw__number(reply, "bytes", UINT64_MAX, full, &status->bytes) ||
         !jw__boolean(reply, "missing_descriptors", full, &status->missing_descriptors) ||
         !jw__boolean(reply, "writable_progress", full, &status->writable_progress)) goto done;
@@ -126,6 +162,13 @@ static int jw__exchange(jw_ipc_delete_session *session, cJSON *request,
         if (status->phase == JW_IPC_DELETE_READY &&
             (status->removed_count || status->absent_count || status->bytes != estimated_bytes)) goto done;
     }
+    if (status->phase == JW_IPC_DELETE_READY && session->disc_request) {
+        session->scope_ready = true;
+        session->playlist_edit = status->playlist_edit;
+        session->final_disc = status->final_disc;
+        session->remaining_discs = status->remaining_discs;
+        snprintf(session->disc_name, sizeof(session->disc_name), "%s", status->disc_name);
+    } else if (!have_scope) jw__restore_scope(session, status);
     rc = 0;
 done:
     free(raw);
@@ -136,6 +179,7 @@ done:
         if (session) session->failed = true;
         jw_ipc_delete_status_free(status);
         status->phase = JW_IPC_DELETE_ERROR;
+        jw__restore_scope(session, status);
         snprintf(status->error, sizeof(status->error), "%s",
                  "Connection lost. Check the library and request a fresh deletion preview.");
     }
@@ -148,14 +192,28 @@ static cJSON *jw__request(const char *type) {
     return request;
 }
 
-int jw_ipc_delete_begin(const char *socket_path, const char *source_id,
-                        const char *rom_relpath, jw_ipc_delete_session **out,
-                        jw_ipc_delete_status *status) {
+static int jw__begin(const char *socket_path, const char *source_id,
+                     const char *rom_relpath, bool disc_request,
+                     const char *disc_source_id, const char *disc_rom_relpath,
+                     const char *member, jw_ipc_delete_session **out,
+                     jw_ipc_delete_status *status) {
     *out = calloc(1, sizeof(**out));
+    if (*out) (*out)->disc_request = disc_request;
     cJSON *request = jw__request("rom-delete-preview");
     if (request) {
         cJSON_AddStringToObject(request, "source_id", source_id);
         cJSON_AddStringToObject(request, "rom_relpath", rom_relpath);
+    }
+    if (request && disc_request) {
+        cJSON *disc = cJSON_AddObjectToObject(request, "disc");
+        /* An incomplete disc request must never fall back to whole-game scope. */
+        if (!disc || !disc_source_id || !disc_rom_relpath || !member ||
+            !cJSON_AddStringToObject(disc, "source_id", disc_source_id) ||
+            !cJSON_AddStringToObject(disc, "rom_relpath", disc_rom_relpath) ||
+            !cJSON_AddStringToObject(disc, "member", member)) {
+            cJSON_Delete(request);
+            request = NULL;
+        }
     }
     if (!*out || jw_ipc_client_connect(socket_path, &(*out)->client) != 0) {
         if (*out) (*out)->failed = true;
@@ -163,6 +221,20 @@ int jw_ipc_delete_begin(const char *socket_path, const char *source_id,
         (*out)->failed = true;
     }
     return jw__exchange(*out, request, status);
+}
+
+int jw_ipc_delete_begin(const char *socket_path, const char *source_id,
+                        const char *rom_relpath, jw_ipc_delete_session **out,
+                        jw_ipc_delete_status *status) {
+    return jw__begin(socket_path, source_id, rom_relpath, false, NULL, NULL, NULL, out, status);
+}
+
+int jw_ipc_delete_disc_begin(const char *socket_path, const char *source_id,
+                             const char *rom_relpath, const char *disc_source_id,
+                             const char *disc_rom_relpath, const char *member,
+                             jw_ipc_delete_session **out, jw_ipc_delete_status *status) {
+    return jw__begin(socket_path, source_id, rom_relpath, true,
+                     disc_source_id, disc_rom_relpath, member, out, status);
 }
 
 int jw_ipc_delete_poll(jw_ipc_delete_session *session, jw_ipc_delete_status *status) {

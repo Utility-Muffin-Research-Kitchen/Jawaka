@@ -30,6 +30,8 @@ typedef struct {
     size_t *indices;
     size_t *order;
     size_t order_count;
+    char *replacement;
+    size_t replacement_size;
 } jw_delete_snapshot;
 
 typedef struct {
@@ -287,16 +289,59 @@ void jw_delete_plan_free(jw_delete_plan *plan) {
     jw_delete_snapshot *snapshot = plan->snapshot;
     if (snapshot) {
         jw_content_free(&snapshot->graph);
-        free(snapshot->stamps); free(snapshot->indices); free(snapshot->order); free(snapshot);
+        free(snapshot->stamps); free(snapshot->indices); free(snapshot->order); free(snapshot->replacement); free(snapshot);
     }
     free(plan->files);
     memset(plan, 0, sizeof(*plan));
 }
 
-int jw_delete_plan_build(const jw_storage_source_list *sources,
+static bool jw__same_disc(const jw_content_disc *a, const jw_content_disc *b) {
+    return !strcmp(a->source_id, b->source_id) && !strcmp(a->rom_relpath, b->rom_relpath) &&
+           !strcmp(a->member, b->member);
+}
+
+static int jw__replacement(jw_delete_snapshot *snapshot, const jw_content_disc *selected,
+                           char *error, size_t error_size) {
+    const jw_content *graph = &snapshot->graph;
+    const jw_content_file *root = &graph->files[graph->launch_file];
+    bool *omit = calloc(root->descriptor_size ? root->descriptor_size : 1, sizeof(*omit));
+    snapshot->replacement = malloc(root->descriptor_size + 1);
+    if (!omit || !snapshot->replacement) { free(omit); return jw__error(error, error_size, "Out of memory editing playlist"); }
+    size_t previous_end = 0;
+    for (size_t i = 0; i < graph->disc_count; i++) {
+        const jw_content_disc *disc = &graph->discs[i];
+        if (disc->line_start < previous_end || disc->line_end > root->descriptor_size || disc->line_end <= disc->line_start) {
+            free(omit); return jw__error(error, error_size, "The playlist line changed during inspection");
+        }
+        if (jw__same_disc(disc, selected)) {
+            memset(omit + disc->line_start, 1, (disc->line_end - disc->line_start) * sizeof(*omit));
+            /* EXTINF belongs to the next disc; retain unrelated comments and directives. */
+            for (size_t start = previous_end; start < disc->line_start;) {
+                size_t end = start;
+                while (end < disc->line_start && root->descriptor[end] != '\n') end++;
+                if (end < disc->line_start) end++;
+                size_t text = start;
+                if (!text && end >= 3 && !memcmp(root->descriptor, "\xef\xbb\xbf", 3)) text = 3;
+                size_t preserve_bom = text;
+                while (text < end && isspace((unsigned char)root->descriptor[text])) text++;
+                if (end - text >= 8 && !strncasecmp(root->descriptor + text, "#EXTINF:", 8))
+                    memset(omit + preserve_bom, 1, (end - preserve_bom) * sizeof(*omit));
+                start = end;
+            }
+        }
+        previous_end = disc->line_end;
+    }
+    for (size_t i = 0; i < root->descriptor_size; i++)
+        if (!omit[i]) snapshot->replacement[snapshot->replacement_size++] = root->descriptor[i];
+    snapshot->replacement[snapshot->replacement_size] = '\0';
+    free(omit);
+    return 0;
+}
+
+static int jw__plan_build(const jw_storage_source_list *sources,
                          const jw_ra_catalog *catalog,
                          const char *source_id, const char *rom_relpath,
-                         const char *system_id,
+                         const char *system_id, const jw_content_disc *disc,
                          const jw_delete_owner *owners, size_t owner_count,
                          const char *const *protected_paths, size_t protected_count,
                          jw_delete_cancelled cancelled, void *context,
@@ -363,7 +408,6 @@ int jw_delete_plan_build(const jw_storage_source_list *sources,
             if (!strcmp(sources->sources[source].id, graph->files[i].source_id)) available = sources->sources[source].available;
         if (available && jw__stamp(&graph->files[i], &snapshot->stamps[i], error, error_size)) goto done;
         if (!available) snapshot->stamps[i].missing = true;
-        if (selected[i]) out->file_count++;
     }
     /* Unindexed descriptors outside the selected graph are still independent owners. */
     for (size_t i = 1; i < builder.root_count; i++) {
@@ -406,6 +450,32 @@ int jw_delete_plan_build(const jw_storage_source_list *sources,
             }
         }
     }
+    if (disc) {
+        if (!graph->is_playlist || !launch->descriptor) {
+            jw__error(error, error_size, "Delete Disc needs an existing playlist"); goto done;
+        }
+        size_t matches = 0;
+        for (size_t i = 0; i < graph->disc_count; i++) {
+            if (jw__same_disc(&graph->discs[i], disc)) {
+                if (!matches) snprintf(out->disc_name, sizeof(out->disc_name), "%s", graph->discs[i].label);
+                matches++;
+            }
+        }
+        if (!matches) { jw__error(error, error_size, "The selected disc changed. Open a fresh preview."); goto done; }
+        out->remaining_discs = graph->disc_count - matches;
+        out->final_disc = out->remaining_discs == 0;
+        out->playlist_edit = !out->final_disc;
+        if (out->playlist_edit) {
+            memset(selected, 0, graph->file_count * sizeof(*selected));
+            for (size_t i = 0; i < graph->disc_count; i++) {
+                const jw_content_disc *entry = &graph->discs[i];
+                jw__mark(graph, entry->file_index, jw__same_disc(entry, disc) ? selected : shared);
+            }
+            selected[graph->launch_file] = true;
+            if (jw__replacement(snapshot, disc, error, error_size)) goto done;
+        }
+    }
+    for (size_t i = 0; i < graph->file_count; i++) if (selected[i]) out->file_count++;
     out->files = calloc(out->file_count, sizeof(*out->files));
     if (!out->files) { jw__error(error, error_size, "Out of memory preparing deletion"); goto done; }
     size_t count = 0;
@@ -427,6 +497,7 @@ int jw_delete_plan_build(const jw_storage_source_list *sources,
         bool pico_cart = !strcmp(system_id, "PICO8") && i == graph->launch_file;
         if (jw__protected(file, sources, protected_paths, protected_count, pico_cart)) target->keep = JW_DELETE_PRESERVED;
         if (i == graph->launch_file && target->keep) { jw__error(error, error_size, "The launch file is protected save, state or artwork data"); goto done; }
+        if (i == graph->launch_file && out->playlist_edit) target->keep = JW_DELETE_PRESERVED;
         if (!target->keep && jw__word("uae ccd mds conf bat exe sh dat", jw__extension(file->path))) {
             jw__error(error, error_size, "No dependency reader for %.160s", file->rom_relpath); goto done;
         }
@@ -436,7 +507,7 @@ int jw_delete_plan_build(const jw_storage_source_list *sources,
         if (target->missing) out->missing_count++;
     }
     jw__order(graph, graph->launch_file, visited, selected, snapshot->order, &snapshot->order_count);
-    out->disc_count = graph->disc_count;
+    out->disc_count = out->playlist_edit ? graph->disc_count - out->remaining_discs : graph->disc_count;
     out->writable_image = !strcmp(system_id, "PC98");
     result = 0;
 done:
@@ -444,6 +515,34 @@ done:
     free(builder.roots); free(selected); free(shared); free(visited);
     if (result) jw_delete_plan_free(out);
     return result;
+}
+
+int jw_delete_plan_build(const jw_storage_source_list *sources,
+                         const jw_ra_catalog *catalog,
+                         const char *source_id, const char *rom_relpath,
+                         const char *system_id,
+                         const jw_delete_owner *owners, size_t owner_count,
+                         const char *const *protected_paths, size_t protected_count,
+                         jw_delete_cancelled cancelled, void *context,
+                         jw_delete_plan *out, char *error, size_t error_size) {
+    return jw__plan_build(sources, catalog, source_id, rom_relpath, system_id, NULL,
+        owners, owner_count, protected_paths, protected_count, cancelled, context, out, error, error_size);
+}
+
+int jw_delete_disc_plan_build(const jw_storage_source_list *sources,
+                              const jw_ra_catalog *catalog,
+                              const char *source_id, const char *rom_relpath,
+                              const char *system_id, const jw_content_disc *disc,
+                              const jw_delete_owner *owners, size_t owner_count,
+                              const char *const *protected_paths, size_t protected_count,
+                              jw_delete_cancelled cancelled, void *context,
+                              jw_delete_plan *out, char *error, size_t error_size) {
+    if (!disc || !disc->source_id[0] || !disc->rom_relpath[0]) {
+        if (out) memset(out, 0, sizeof(*out));
+        return jw__error(error, error_size, "Invalid disc identity");
+    }
+    return jw__plan_build(sources, catalog, source_id, rom_relpath, system_id, disc,
+        owners, owner_count, protected_paths, protected_count, cancelled, context, out, error, error_size);
 }
 
 static bool jw__same_sources(const jw_storage_source_list *a, const struct stat *a_mounts,
@@ -480,10 +579,14 @@ bool jw_delete_plan_equal(const jw_delete_plan *a, const jw_delete_plan *b) {
     if (!a || !b || !a->snapshot || !b->snapshot || a->file_count != b->file_count ||
         a->disc_count != b->disc_count || a->launch_file != b->launch_file || a->bytes != b->bytes ||
         a->missing_descriptor != b->missing_descriptor || a->writable_image != b->writable_image ||
+        a->playlist_edit != b->playlist_edit || a->final_disc != b->final_disc ||
+        a->remaining_discs != b->remaining_discs || strcmp(a->disc_name, b->disc_name) ||
         strcmp(a->missing_sources, b->missing_sources)) return false;
     const jw_delete_snapshot *x = a->snapshot, *y = b->snapshot;
     if (!jw__same_sources(&x->sources, x->mounts, &y->sources, y->mounts) || x->graph.file_count != y->graph.file_count ||
-        x->graph.reference_count != y->graph.reference_count) return false;
+        x->graph.reference_count != y->graph.reference_count ||
+        x->replacement_size != y->replacement_size ||
+        (x->replacement_size && memcmp(x->replacement, y->replacement, x->replacement_size))) return false;
     for (size_t i = 0; i < a->file_count; i++) {
         const jw_delete_file *p = &a->files[i], *q = &b->files[i];
         if (strcmp(p->source_id, q->source_id) || strcmp(p->rom_relpath, q->rom_relpath) ||
@@ -507,16 +610,76 @@ void jw_delete_result_free(jw_delete_result *result) {
     memset(result, 0, sizeof(*result));
 }
 
-int jw_delete_execute(const jw_delete_plan *plan, jw_delete_guard guard, void *context,
-                      jw_delete_result *result, char *error, size_t error_size) {
-    if (error && error_size) *error = '\0';
-    if (!result) return -1;
-    memset(result, 0, sizeof(*result));
-    result->failed_index = (size_t)-1;
-    if (!plan || !plan->snapshot) return jw__error(error, error_size, "No reviewed deletion plan");
+/* Return an opened, pinned parent directory, -2 for an explicitly absent file,
+   or -1 on changed content. The caller owns a returned directory descriptor. */
+static int jw__checked_file(const jw_delete_plan *plan, size_t slot,
+                            jw_delete_guard guard, void *context,
+                            char *error, size_t error_size) {
     const jw_delete_snapshot *snapshot = plan->snapshot;
-    result->completed = calloc(plan->file_count, sizeof(*result->completed));
-    if (!result->completed) return jw__error(error, error_size, "Out of memory recording deletion");
+    size_t index = snapshot->indices[slot];
+    const jw_delete_file *file = &plan->files[slot];
+    if (guard && guard(context, file, error, error_size)) return -1;
+    if (!jw_delete_plan_sources_match(plan, &snapshot->sources))
+        return jw__error(error, error_size, "Mounted sources changed; open a fresh preview");
+    const jw_delete_stamp *stamp = &snapshot->stamps[index];
+    char resolved[JW_STORAGE_PATH_MAX];
+    struct stat st;
+    if (!realpath(stamp->parent, resolved)) {
+        if (file->missing && errno == ENOENT && lstat(file->path, &st) && errno == ENOENT) return -2;
+        return jw__error(error, error_size, "Content directory changed: %.160s", file->rom_relpath);
+    }
+    if (strcmp(resolved, stamp->parent)) return jw__error(error, error_size, "Content directory changed: %.160s", file->rom_relpath);
+    int directory = open(stamp->parent, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (directory < 0) return jw__error(error, error_size, "Cannot open content directory: %s", strerror(errno));
+    if (fstat(directory, &st) || st.st_dev != stamp->directory.st_dev || st.st_ino != stamp->directory.st_ino) {
+        close(directory); return jw__error(error, error_size, "Content directory changed: %.160s", file->rom_relpath);
+    }
+    const char *name = strrchr(file->path, '/') + 1;
+    int stat_result = fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW);
+    if (file->missing && stat_result && errno == ENOENT) { close(directory); return -2; }
+    if (stat_result || file->missing || !jw__same_stat(&stamp->file, &st)) {
+        close(directory); return jw__error(error, error_size, "Content changed; open a fresh preview: %.160s", file->rom_relpath);
+    }
+    const jw_content_file *original = &snapshot->graph.files[index];
+    if (original->descriptor) {
+        int fd = openat(directory, name, O_RDONLY | O_NOFOLLOW);
+        if (fd < 0) { close(directory); return jw__error(error, error_size, "Cannot read descriptor %.160s: %s", file->rom_relpath, strerror(errno)); }
+        size_t offset = 0;
+        char buffer[4096];
+        bool bad = false;
+        while (offset < original->descriptor_size) {
+            size_t want = original->descriptor_size - offset;
+            if (want > sizeof(buffer)) want = sizeof(buffer);
+            ssize_t got = read(fd, buffer, want);
+            if (got < 0 && errno == EINTR) continue;
+            if (got <= 0 || memcmp(buffer, original->descriptor + offset, (size_t)got)) { bad = true; break; }
+            offset += (size_t)got;
+        }
+        if (!bad && read(fd, buffer, 1) != 0) bad = true;
+        if (close(fd)) bad = true;
+        if (bad) { close(directory); return jw__error(error, error_size, "Descriptor changed; open a fresh preview: %.160s", file->rom_relpath); }
+    }
+    if (fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW) || !jw__same_stat(&stamp->file, &st)) {
+        close(directory); return jw__error(error, error_size, "Content changed; open a fresh preview: %.160s", file->rom_relpath);
+    }
+    return directory;
+}
+
+static int jw__sync_directory(int directory, const jw_delete_file *file,
+                              char *error, size_t error_size) {
+    int rc;
+#ifdef JW_ENABLE_FAULT_INJECTION
+    const char *failure = getenv("JAWAKA_TEST_DELETE_SYNC_FAIL");
+    if (failure && !strcmp(failure, file->rom_relpath)) { errno = EIO; rc = -1; }
+    else
+#endif
+        rc = fsync(directory);
+    return rc ? jw__error(error, error_size, "Could not sync changes to %.160s: %s", file->rom_relpath, strerror(errno)) : 0;
+}
+
+static int jw__remove_files(const jw_delete_plan *plan, jw_delete_guard guard, void *context,
+                            jw_delete_result *result, char *error, size_t error_size) {
+    const jw_delete_snapshot *snapshot = plan->snapshot;
     for (size_t ordinal = 0; ordinal < snapshot->order_count; ordinal++) {
         size_t index = snapshot->order[ordinal], slot = 0;
         while (slot < plan->file_count && snapshot->indices[slot] != index) slot++;
@@ -524,72 +687,110 @@ int jw_delete_execute(const jw_delete_plan *plan, jw_delete_guard guard, void *c
         const jw_delete_file *file = &plan->files[slot];
         if (file->keep) continue;
         result->failed_index = slot;
-        if (guard && guard(context, file, error, error_size)) return -1;
-        if (!jw_delete_plan_sources_match(plan, &snapshot->sources))
-            return jw__error(error, error_size, "Mounted sources changed; open a fresh preview");
-        const jw_delete_stamp *stamp = &snapshot->stamps[index];
-        char resolved[JW_STORAGE_PATH_MAX];
-        struct stat st;
-        if (!realpath(stamp->parent, resolved)) {
-            if (file->missing && errno == ENOENT && lstat(file->path, &st) && errno == ENOENT) {
-                result->completed[slot] = true; result->absent_count++; continue;
-            }
-            return jw__error(error, error_size, "Content directory changed: %.160s", file->rom_relpath);
-        }
-        if (strcmp(resolved, stamp->parent)) return jw__error(error, error_size, "Content directory changed: %.160s", file->rom_relpath);
-        int directory = open(stamp->parent, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-        if (directory < 0) return jw__error(error, error_size, "Cannot open content directory: %s", strerror(errno));
-        if (fstat(directory, &st) || st.st_dev != stamp->directory.st_dev || st.st_ino != stamp->directory.st_ino) {
-            close(directory); return jw__error(error, error_size, "Content directory changed: %.160s", file->rom_relpath);
-        }
+        int directory = jw__checked_file(plan, slot, guard, context, error, error_size);
+        if (directory == -2) { result->completed[slot] = true; result->absent_count++; continue; }
+        if (directory < 0) return -1;
         const char *name = strrchr(file->path, '/') + 1;
-        int stat_result = fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW);
-        if (file->missing && stat_result && errno == ENOENT) {
-            result->completed[slot] = true; result->absent_count++; close(directory); continue;
-        }
-        if (stat_result || file->missing || !jw__same_stat(&stamp->file, &st)) {
-            close(directory); return jw__error(error, error_size, "Content changed; open a fresh preview: %.160s", file->rom_relpath);
-        }
-        const jw_content_file *original = &snapshot->graph.files[index];
-        if (original->descriptor) {
-            int fd = openat(directory, name, O_RDONLY | O_NOFOLLOW);
-            if (fd < 0) { close(directory); return jw__error(error, error_size, "Cannot read descriptor %.160s: %s", file->rom_relpath, strerror(errno)); }
-            size_t offset = 0;
-            char buffer[4096];
-            bool bad = false;
-            while (offset < original->descriptor_size) {
-                size_t want = original->descriptor_size - offset;
-                if (want > sizeof(buffer)) want = sizeof(buffer);
-                ssize_t got = read(fd, buffer, want);
-                if (got <= 0 || memcmp(buffer, original->descriptor + offset, (size_t)got)) { bad = true; break; }
-                offset += (size_t)got;
-            }
-            if (!bad && read(fd, buffer, 1) != 0) bad = true;
-            if (close(fd)) bad = true;
-            if (bad) { close(directory); return jw__error(error, error_size, "Descriptor changed; open a fresh preview: %.160s", file->rom_relpath); }
-        }
-        if (fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW) || !jw__same_stat(&stamp->file, &st)) {
-            close(directory); return jw__error(error, error_size, "Content changed; open a fresh preview: %.160s", file->rom_relpath);
-        }
         if (unlinkat(directory, name, 0)) {
             int saved = errno; close(directory);
             return jw__error(error, error_size, "Could not remove %.160s: %s", file->rom_relpath, strerror(saved));
         }
         result->completed[slot] = true;
         result->removed_count++; result->bytes += file->size;
-        int sync_result;
+        int rc = jw__sync_directory(directory, file, error, error_size);
+        if (close(directory) && !rc) rc = jw__error(error, error_size, "Could not close removal directory: %s", strerror(errno));
+        if (rc) return -1;
+    }
+    return 0;
+}
+
+static int jw__prepare_replacement(const jw_delete_plan *plan, int directory,
+                                   char temporary[80], struct stat *stamp,
+                                   char *error, size_t error_size) {
+    const jw_delete_snapshot *snapshot = plan->snapshot;
+    const jw_delete_stamp *root = &snapshot->stamps[snapshot->graph.launch_file];
+    int fd = -1;
+    for (unsigned attempt = 0; attempt < 1000; attempt++) {
+        snprintf(temporary, 80, ".jawaka-delete-%ld-%u.tmp", (long)getpid(), attempt);
+        fd = openat(directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+        if (fd >= 0 || errno != EEXIST) break;
+    }
+    if (fd < 0) { temporary[0] = '\0'; return jw__error(error, error_size, "Could not prepare replacement playlist: %s", strerror(errno)); }
+    int failure = fstat(fd, stamp) ? errno : 0;
+    if (!failure && fchmod(fd, root->file.st_mode & 0777)) failure = errno;
+    size_t written = 0;
+    while (!failure && written < snapshot->replacement_size) {
+        ssize_t n = write(fd, snapshot->replacement + written, snapshot->replacement_size - written);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { failure = n < 0 ? errno : EIO; break; }
+        written += (size_t)n;
+    }
 #ifdef JW_ENABLE_FAULT_INJECTION
-        const char *sync_failure = getenv("JAWAKA_TEST_DELETE_SYNC_FAIL");
-        if (sync_failure && !strcmp(sync_failure, file->rom_relpath)) { errno = EIO; sync_result = -1; }
-        else
+    const char *marker = getenv("JAWAKA_TEST_DELETE_FAIL_TEMP_FILE");
+    if (!failure && marker && access(marker, F_OK) == 0) failure = EIO;
 #endif
-            sync_result = fsync(directory);
-        if (sync_result) {
-            int saved = errno; close(directory);
-            return jw__error(error, error_size, "Could not sync removal of %.160s: %s", file->rom_relpath, strerror(saved));
+    if (!failure && fsync(fd)) failure = errno;
+    if (!failure && fstat(fd, stamp)) failure = errno;
+    if (close(fd) && !failure) failure = errno;
+    return failure ? jw__error(error, error_size, "Could not write complete replacement playlist: %s", strerror(failure)) : 0;
+}
+
+int jw_delete_execute(const jw_delete_plan *plan, jw_delete_guard guard, void *context,
+                      jw_delete_result *result, char *error, size_t error_size) {
+    if (error && error_size) *error = '\0';
+    if (!result) return -1;
+    memset(result, 0, sizeof(*result));
+    result->failed_index = (size_t)-1;
+    if (!plan || !plan->snapshot) return jw__error(error, error_size, "No reviewed deletion plan");
+    result->completed = calloc(plan->file_count, sizeof(*result->completed));
+    if (!result->completed) return jw__error(error, error_size, "Out of memory recording deletion");
+    char temporary[80] = "";
+    struct stat prepared = {0};
+    int parent = -1, final_parent = -1, rc = -1;
+    if (plan->playlist_edit) {
+        result->failed_index = plan->launch_file;
+        parent = jw__checked_file(plan, plan->launch_file, guard, context, error, error_size);
+        if (parent < 0) goto done;
+        if (jw__prepare_replacement(plan, parent, temporary, &prepared, error, error_size)) goto done;
+    }
+    if (jw__remove_files(plan, guard, context, result, error, error_size)) goto done;
+    if (plan->playlist_edit) {
+        result->failed_index = plan->launch_file;
+        final_parent = jw__checked_file(plan, plan->launch_file, guard, context, error, error_size);
+        if (final_parent < 0) goto done;
+#ifdef JW_ENABLE_FAULT_INJECTION
+        const char *marker = getenv("JAWAKA_TEST_DELETE_FAIL_BEFORE_RENAME_FILE");
+        if (marker && access(marker, F_OK) == 0) {
+            jw__error(error, error_size, "Injected failure before playlist replacement"); goto done;
         }
-        if (close(directory)) return jw__error(error, error_size, "Could not close removal directory: %s", strerror(errno));
+#endif
+        struct stat st;
+        if (fstatat(parent, temporary, &st, AT_SYMLINK_NOFOLLOW) || !jw__same_stat(&prepared, &st)) {
+            jw__error(error, error_size, "Replacement playlist changed. Open a fresh preview."); goto done;
+        }
+        const jw_delete_file *root = &plan->files[plan->launch_file];
+        const char *name = strrchr(root->path, '/') + 1;
+        if (renameat(parent, temporary, final_parent, name)) {
+            jw__error(error, error_size, "Could not replace playlist: %s", strerror(errno)); goto done;
+        }
+        temporary[0] = '\0';
+        result->playlist_replaced = true;
+        if (jw__sync_directory(final_parent, root, error, error_size)) goto done;
     }
     result->failed_index = (size_t)-1;
-    return 0;
+    rc = 0;
+done:
+    if (temporary[0] && parent >= 0) {
+        struct stat current;
+        /* A client may replace our temporary file too; never unlink its replacement. */
+        if (!fstatat(parent, temporary, &current, AT_SYMLINK_NOFOLLOW) &&
+            current.st_dev == prepared.st_dev && current.st_ino == prepared.st_ino &&
+            unlinkat(parent, temporary, 0) && !rc)
+            rc = jw__error(error, error_size, "Could not remove temporary playlist: %s", strerror(errno));
+    }
+    if (final_parent >= 0 && close(final_parent) && !rc)
+        rc = jw__error(error, error_size, "Could not close playlist directory: %s", strerror(errno));
+    if (parent >= 0 && close(parent) && !rc)
+        rc = jw__error(error, error_size, "Could not close playlist directory: %s", strerror(errno));
+    return rc;
 }

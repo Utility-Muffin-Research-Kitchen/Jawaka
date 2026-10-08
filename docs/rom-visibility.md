@@ -73,7 +73,7 @@ grouping.
 and its exclusively owned ROM files. It stays last in the menu, after
 **Manage Discs** when available. **Hidden Games** offers the same action for
 eligible indexed game rows. Unassociated hidden paths and archive members
-remain available to unhide. **Delete Disc** is not part of this change.
+remain available to unhide.
 
 You see the game, source card, disc and file counts, expected freed space,
 shared files kept, and a reminder that deletion is permanent. **Files** opens
@@ -152,6 +152,41 @@ daemon publishes the library generation after reconciliation, including
 partial removal, and the launcher refreshes its browse and Hidden Games caches.
 Re-adding a deleted ROM doesn't recover that removed metadata.
 
+## Delete Disc
+
+In **Options > Manage Discs**, select a disc and choose **Delete Disc** for a
+supported system. **Show Hidden** lets you select hidden discs too. The preview
+names the disc and its game, shows the files affected and how many playlist
+entries will remain, and starts with **Cancel** selected.
+
+Confirming removes that disc's entries from this playlist and deletes only
+its exclusive files. Repeated entries for the same exact source/path/archive
+member are removed together. Files used by a remaining disc, a different
+archive member or another game are kept. An edit that keeps every payload can
+free zero bytes. A playlist used by another game cannot be edited; the error
+names that game, and Hide stays available.
+
+One remaining disc keeps the same playlist path and parent game metadata,
+including favorites, history, overrides and Focus selection. **Manage Discs**
+stays available. If no disc would remain, hidden discs included, you see a
+whole-game preview before anything changes. One **Delete Game** confirmation
+covers that displayed scope; an empty playlist is never written.
+
+The daemon prepares and syncs a complete replacement in a hidden temporary
+file beside the playlist before removing any payload. Retained entries keep
+their original bytes, including order, quoting, labels and line endings.
+Comments and directives such as `#SAVEDISK` remain intact. The selected
+entries and their associated `#EXTINF` labels are removed. After exclusive
+payloads and child descriptors are removed and synced, the daemon checks the
+parent again and atomically replaces it, then syncs its directory.
+
+The same source checks, one-use token, coordination and retry rules apply as
+for **Delete Game**. A failure before replacement keeps the original playlist,
+even if some exclusive files were already removed. A fresh preview can finish
+the operation. A failure after replacement reports that the playlist changed.
+Successful edits refresh the library even when no physical file was removed.
+Saves, states, artwork and shared-file visibility choices remain unchanged.
+
 ## Checks
 
 - `make content-test` covers descriptors, filesystem case behavior, path
@@ -165,17 +200,20 @@ Re-adding a deleted ROM doesn't recover that removed metadata.
   independence, unchanged playlist bytes and independent B Resume.
 - `make delete-test` covers eligibility, shared ownership across cards,
   missing-card warnings, protected data, changed previews, dependency ordering
-  and partial-failure retry with disposable content.
+  and partial-failure retry with disposable content. Disc cases cover exact
+  playlist rewriting, shared archive members, final-disc escalation, and
+  failures before replacement or during directory sync.
 - `make deletion-db-test focus-test` covers exact-file reconciliation and
   transactional metadata/Focus cleanup, including later scan pruning.
 - `make delete-ui-test delete-client-test` covers the real deletion screen,
   initial Cancel selection, inspectable files, Hidden Games, read-only warnings,
   retained IPC sessions, malformed previews and lost-response replay prevention.
+  Manage Discs checks include one remaining disc and the final-disc preview.
 - `make rom-delete-ipc-smoke` exercises the daemon with synthetic ROMs and its
   preview/commit protocol, storage changes, coordination and fault injection.
 - `WORKSPACE_ROOT=/path/to/UMRK make phase3-fixture-scan-smoke` checks that
   existing nested-folder grouping remains unchanged. Continue running
   `make storage-sources-test relocation-test` for source and reservation changes.
 
-The remaining per-disc deletion stage is tracked in
+Deferred format readers and system groups are tracked in
 `umrk-workspace/plans/Jawaka/rom-visibility-and-deletion.md`.

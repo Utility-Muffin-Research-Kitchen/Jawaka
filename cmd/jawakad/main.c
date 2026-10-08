@@ -15662,13 +15662,33 @@ static bool jw__delete_frame(jw_daemon_state *state, int index, const char *body
     else if (!strcmp(type->valuestring, "rom-delete-preview")) {
         cJSON *source = cJSON_GetObjectItemCaseSensitive(request, "source_id");
         cJSON *path = cJSON_GetObjectItemCaseSensitive(request, "rom_relpath");
+        cJSON *disc_json = cJSON_GetObjectItemCaseSensitive(request, "disc");
+        jw_content_disc disc = {0};
+        if (disc_json) {
+            cJSON *disc_source = cJSON_GetObjectItemCaseSensitive(disc_json, "source_id");
+            cJSON *disc_path = cJSON_GetObjectItemCaseSensitive(disc_json, "rom_relpath");
+            cJSON *member = cJSON_GetObjectItemCaseSensitive(disc_json, "member");
+            if (!cJSON_IsObject(disc_json) ||
+                !cJSON_IsString(disc_source) || !disc_source->valuestring[0] ||
+                strlen(disc_source->valuestring) >= sizeof(disc.source_id) ||
+                !cJSON_IsString(disc_path) || !jw_storage_relative_path_valid(disc_path->valuestring) ||
+                strlen(disc_path->valuestring) >= sizeof(disc.rom_relpath) ||
+                !cJSON_IsString(member) || strlen(member->valuestring) >= sizeof(disc.member)) {
+                error = "Invalid disc identity.";
+            } else {
+                snprintf(disc.source_id, sizeof(disc.source_id), "%s", disc_source->valuestring);
+                snprintf(disc.rom_relpath, sizeof(disc.rom_relpath), "%s", disc_path->valuestring);
+                snprintf(disc.member, sizeof(disc.member), "%s", member->valuestring);
+            }
+        }
         if (!cJSON_IsString(source) || !source->valuestring[0] || strlen(source->valuestring) >= 32 ||
             !cJSON_IsString(path) || !jw_storage_relative_path_valid(path->valuestring) ||
             strlen(path->valuestring) >= 512) error = "Invalid game identity.";
-        else if (state->delete_job) error = "Close the current deletion preview before starting another.";
-        else if (!(error = jw__delete_gate(state, source->valuestring, readonly_source))) {
+        else if (!error && state->delete_job) error = "Close the current deletion preview before starting another.";
+        else if (!error && !(error = jw__delete_gate(state, source->valuestring, readonly_source))) {
             state->delete_job = jw_delete_job_start(state->db_path, state->sdcard_root,
-                                                    source->valuestring, path->valuestring);
+                                                    source->valuestring, path->valuestring,
+                                                    disc_json ? &disc : NULL);
             if (!state->delete_job) error = "Could not start your deletion preview.";
             else {
                 state->delete_connection = index;

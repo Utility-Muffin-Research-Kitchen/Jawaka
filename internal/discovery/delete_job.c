@@ -17,6 +17,8 @@ struct jw_delete_job {
     pthread_t thread;
     bool started, cancelled, changed;
     bool attempted;
+    bool disc_requested;
+    jw_content_disc disc;
     jw_ipc_delete_phase phase;
     char db_path[JW_STORAGE_PATH_MAX], sdcard_root[JW_STORAGE_PATH_MAX];
     char source_id[32], rom_relpath[512], name[512], token[65];
@@ -117,12 +119,17 @@ static int jw__build(jw_delete_job *job, jw_delete_plan *plan) {
         if (!protected[protected_count++]) goto done;
     }
     snprintf(job->name, sizeof(job->name), "%s", selected.name);
-    rc = jw_delete_plan_build(sources, catalog, job->source_id, job->rom_relpath,
-        selected.system, owners, count, (const char *const *)protected, protected_count,
-        jw__cancelled, job, plan, job->error, sizeof(job->error));
+    if (job->disc_requested)
+        rc = jw_delete_disc_plan_build(sources, catalog, job->source_id, job->rom_relpath,
+            selected.system, &job->disc, owners, count, (const char *const *)protected, protected_count,
+            jw__cancelled, job, plan, job->error, sizeof(job->error));
+    else
+        rc = jw_delete_plan_build(sources, catalog, job->source_id, job->rom_relpath,
+            selected.system, owners, count, (const char *const *)protected, protected_count,
+            jw__cancelled, job, plan, job->error, sizeof(job->error));
     if (rc == 0) {
         for (size_t i = 0; i < plan->file_count; ++i) {
-            if (plan->files[i].keep == JW_DELETE_REMOVE &&
+            if ((plan->files[i].keep == JW_DELETE_REMOVE || (plan->playlist_edit && i == plan->launch_file)) &&
                 jw__writable(job, plan->files[i].path, plan->files[i].source_id) != 0) {
                 rc = -1; break;
             }
@@ -190,7 +197,8 @@ static int jw__cancel_scrapes(jw_delete_job *job) {
     for (size_t g = 0; g < count && rc == 0; ++g) {
         for (size_t f = 0; f < job->plan.file_count; ++f) {
             const jw_delete_file *file = &job->plan.files[f];
-            if (file->keep != JW_DELETE_REMOVE || strcmp(file->source_id, games[g].source_id) ||
+            if ((file->keep != JW_DELETE_REMOVE && !(job->plan.playlist_edit && f == job->plan.launch_file)) ||
+                strcmp(file->source_id, games[g].source_id) ||
                 strcmp(file->rom_relpath, games[g].rom_relpath)) continue;
             jw_scrape_cancel_game(games[g].system, games[g].rom_path);
             for (int attempt = 0; attempt < 200 && jw_scrape_is_pending_game(games[g].system, games[g].rom_path); ++attempt)
@@ -234,7 +242,7 @@ static void *jw__commit(void *context) {
         goto done;
     }
     for (size_t i = 0; i < fresh.file_count; ++i) {
-        if (fresh.files[i].keep != JW_DELETE_REMOVE) continue;
+        if (fresh.files[i].keep != JW_DELETE_REMOVE && !(fresh.playlist_edit && i == fresh.launch_file)) continue;
         if (jw_db_relocation_key_reserved(db, fresh.files[i].source_id, fresh.files[i].rom_relpath)) {
             snprintf(job->error, sizeof(job->error), "A file is being relocated. Request a fresh preview when it finishes.");
             goto done;
@@ -249,7 +257,7 @@ static void *jw__commit(void *context) {
         snprintf(removed[count].source_id, sizeof(removed[count].source_id), "%s", fresh.files[i].source_id);
         snprintf(removed[count++].rom_relpath, sizeof(removed[0].rom_relpath), "%s", fresh.files[i].rom_relpath);
     }
-    changed = count > 0;
+    changed = count > 0 || job->result.playlist_replaced;
     if (jw_db_reconcile_removed_roms(db, removed, count) != 0 ||
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
         size_t used = strlen(job->error);
@@ -281,7 +289,8 @@ static int jw__start_worker(jw_delete_job *job, void *(*worker)(void *)) {
 }
 
 jw_delete_job *jw_delete_job_start(const char *db_path, const char *sdcard_root,
-                                  const char *source_id, const char *rom_relpath) {
+                                  const char *source_id, const char *rom_relpath,
+                                  const jw_content_disc *disc) {
     jw_delete_job *job = calloc(1, sizeof(*job));
     if (!job) return NULL;
     pthread_mutex_init(&job->mutex, NULL);
@@ -290,6 +299,8 @@ jw_delete_job *jw_delete_job_start(const char *db_path, const char *sdcard_root,
     snprintf(job->sdcard_root, sizeof(job->sdcard_root), "%s", sdcard_root);
     snprintf(job->source_id, sizeof(job->source_id), "%s", source_id);
     snprintf(job->rom_relpath, sizeof(job->rom_relpath), "%s", rom_relpath);
+    job->disc_requested = disc != NULL;
+    if (disc) job->disc = *disc;
     unsigned char random[32];
     FILE *fp = fopen("/dev/urandom", "rb");
     bool random_ok = fp && fread(random, 1, sizeof(random), fp) == sizeof(random);
@@ -386,6 +397,11 @@ cJSON *jw_delete_job_status(jw_delete_job *job) {
         cJSON_AddStringToObject(reply, "missing_sources", job->plan.missing_sources);
         cJSON_AddBoolToObject(reply, "missing_descriptors", job->plan.missing_descriptor);
         cJSON_AddBoolToObject(reply, "writable_progress", job->plan.writable_image);
+        cJSON_AddBoolToObject(reply, "playlist_edit", job->plan.playlist_edit);
+        cJSON_AddBoolToObject(reply, "final_disc", job->plan.final_disc);
+        cJSON_AddStringToObject(reply, "disc_name", job->plan.disc_name);
+        cJSON_AddNumberToObject(reply, "remaining_discs", job->plan.remaining_discs);
+        cJSON_AddBoolToObject(reply, "playlist_replaced", job->result.playlist_replaced);
         cJSON_AddNumberToObject(reply, "disc_count", job->plan.disc_count);
         cJSON_AddNumberToObject(reply, "file_count", job->plan.remove_count);
         cJSON_AddNumberToObject(reply, "keep_count", job->plan.kept_count);

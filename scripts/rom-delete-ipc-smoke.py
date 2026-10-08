@@ -53,9 +53,11 @@ class Client:
             reply = self.request("rom-delete-status")
         return reply
 
-    def preview(self, path, source="primary"):
-        return self.settle(self.request("rom-delete-preview", source_id=source,
-                                        rom_relpath=path))
+    def preview(self, path, source="primary", disc=None):
+        fields = {"source_id": source, "rom_relpath": path}
+        if disc is not None:
+            fields["disc"] = disc
+        return self.settle(self.request("rom-delete-preview", **fields))
 
     def commit(self, token):
         return self.settle(self.request("rom-delete-commit", token=token))
@@ -84,6 +86,7 @@ class Fixture:
         self.log, self.proc, self.log_file = root / "daemon.log", None, None
         self.readonly_marker = root / "readonly-source"
         self.failure_marker = root / "fail-after"
+        self.rename_failure_marker = root / "fail-before-rename"
         for directory in (self.runtime, self.state, self.platform / "defaults",
                           self.primary / "Apps/shared", self.secondary / "Roms/GBA"):
             directory.mkdir(parents=True)
@@ -127,6 +130,7 @@ class Fixture:
                    JAWAKA_OSD="0", JAWAKA_SDCARD_ROOT=str(self.primary),
                    JAWAKA_TEST_DELETE_READONLY_FILE=str(self.readonly_marker),
                    JAWAKA_TEST_DELETE_FAIL_AFTER_FILE=str(self.failure_marker),
+                   JAWAKA_TEST_DELETE_FAIL_BEFORE_RENAME_FILE=str(self.rename_failure_marker),
                    JAWAKA_TEST_DELETE_PREPARE_DELAY_MS="500",
                    JAWAKA_TEST_DELETE_COMMIT_DELAY_MS="500")
         self.log_file = self.log.open("ab")
@@ -255,6 +259,211 @@ def test_partial_failure(fixture):
         assert not db.execute("SELECT id FROM games WHERE id=?", (parent,)).fetchone()
         assert not db.execute("SELECT 1 FROM hidden_roms WHERE rom_relpath LIKE 'PS/Partial%'").fetchone()
         assert db.execute("SELECT value FROM settings WHERE key='five_game_ids'").fetchone()[0] == str(keep)
+
+
+def disc_key(path, member="", source="primary"):
+    return {"source_id": source, "rom_relpath": path, "member": member}
+
+
+def add_playlist(fixture, filename, contents, payloads):
+    relative = f"PS/{filename}"
+    write(fixture.primary / "Roms" / relative, contents)
+    for name, data in payloads.items():
+        write(fixture.primary / "Roms/PS" / name, data)
+    # Add only the requested root, without a discovery pass inventing owners.
+    with sqlite3.connect(fixture.db_path) as db:
+        result = db.execute("INSERT INTO games(system,name,source_id,rom_relpath,rom_path,playtime_s) "
+                            "VALUES('PS',?,'primary',?,?,123)", (filename, relative, f"Roms/{relative}"))
+        game_id = result.lastrowid
+        db.execute("INSERT INTO favorites VALUES('game',?,17)", (game_id,))
+        db.execute("INSERT INTO recents VALUES('game',?,19,23)", (game_id,))
+        db.execute("INSERT INTO game_settings(game_id,key,value,updated_at) VALUES(?,'display_name',?,29)",
+                   (game_id, filename))
+    return relative, game_id
+
+
+def assert_parent_metadata(fixture, game_id):
+    with sqlite3.connect(fixture.db_path) as db:
+        assert db.execute("SELECT playtime_s FROM games WHERE id=?", (game_id,)).fetchone()[0] == 123
+        assert db.execute("SELECT added_at FROM favorites WHERE kind='game' AND target_id=?", (game_id,)).fetchone()[0] == 17
+        assert db.execute("SELECT duration_s FROM recents WHERE kind='game' AND target_id=?", (game_id,)).fetchone()[0] == 23
+        assert db.execute("SELECT updated_at FROM game_settings WHERE game_id=?", (game_id,)).fetchone()[0] == 29
+
+
+def library_generation(fixture):
+    with Client(fixture.socket) as client:
+        return client.request("library-status")["generation"]
+
+
+def test_disc_edits(fixture):
+    original = b'\xef\xbb\xbf#EXTM3U\r\n"Edit One.cue"|First label\r\n#SAVEDISK:Save Disk\r\nEditTwo.chd|Hidden second\r\n# trailing\r\n'
+    expected = b'\xef\xbb\xbf#EXTM3U\r\n#SAVEDISK:Save Disk\r\nEditTwo.chd|Hidden second\r\n# trailing\r\n'
+    relative, parent = add_playlist(fixture, "DiscEdit.m3u", original, {
+        "Edit One.cue": 'FILE "EditTrack.bin" BINARY\r\n', "EditTrack.bin": b"first payload", "EditTwo.chd": b"second payload",
+    })
+    playlist = fixture.primary / "Roms" / relative
+    with sqlite3.connect(fixture.db_path) as db:
+        keep = db.execute("SELECT id FROM games WHERE source_id='primary' AND rom_relpath='GBA/Keep.gba'").fetchone()[0]
+        db.execute("INSERT OR REPLACE INTO settings VALUES('five_game_ids',?)", (f"{parent},{keep}",))
+        for path in (relative, "PS/Edit One.cue", "PS/EditTrack.bin", "PS/EditTwo.chd"):
+            db.execute("INSERT INTO hidden_roms VALUES('primary',?,'')", (path,))
+    for malformed in (None, [], {"source_id": "primary", "rom_relpath": "PS/Edit One.cue"},
+                      {"source_id": "primary", "rom_relpath": "PS/Edit One.cue", "member": None}):
+        with Client(fixture.socket) as client:
+            rejected(client.settle(client.request("rom-delete-preview", source_id="primary",
+                                                 rom_relpath=relative, disc=malformed)))
+        assert playlist.read_bytes() == original
+    with Client(fixture.socket) as client:
+        rejected(client.preview(relative, disc=disc_key("PS/NotAMember.chd")))
+    with Client(fixture.socket) as client:
+        preview = client.preview(relative, disc=disc_key("PS/Edit One.cue"))
+        token = ready(preview)
+        assert preview.get("playlist_edit") and not preview.get("final_disc"), preview
+        assert preview.get("remaining_discs") == 1, preview  # Hidden second disc still counts.
+        assert preview.get("disc_name") == "First label", preview
+        assert playlist.read_bytes() == original
+        result = client.commit(token)
+        assert result.get("phase") == DONE and result.get("removed_count") == 2, result
+    assert playlist.read_bytes() == expected
+    assert not (fixture.primary / "Roms/PS/Edit One.cue").exists()
+    assert not (fixture.primary / "Roms/PS/EditTrack.bin").exists()
+    assert_parent_metadata(fixture, parent)
+    with sqlite3.connect(fixture.db_path) as db:
+        assert db.execute("SELECT value FROM settings WHERE key='five_game_ids'").fetchone()[0] == f"{parent},{keep}"
+        hidden = {row[0] for row in db.execute("SELECT rom_relpath FROM hidden_roms WHERE rom_relpath LIKE 'PS/Edit%' OR rom_relpath=?", (relative,))}
+        assert hidden == {relative, "PS/EditTwo.chd"}, hidden
+    with Client(fixture.socket) as client:
+        preview = client.preview(relative, disc=disc_key("PS/EditTwo.chd"))
+        ready(preview)
+        assert preview.get("final_disc") and not preview.get("playlist_edit"), preview
+        assert preview.get("remaining_discs") == 0 and preview.get("file_count") == 2, preview
+        assert playlist.read_bytes() == expected and (fixture.primary / "Roms/PS/EditTwo.chd").exists()
+        client.request("rom-delete-cancel")
+    assert playlist.exists()
+    with Client(fixture.socket) as client:
+        token = ready(client.preview(relative, disc=disc_key("PS/EditTwo.chd")))
+        result = client.commit(token)
+        assert result.get("phase") == DONE and result.get("removed_count") == 2, result
+    assert not playlist.exists()
+    with sqlite3.connect(fixture.db_path) as db:
+        assert not db.execute("SELECT 1 FROM games WHERE id=?", (parent,)).fetchone()
+        assert db.execute("SELECT value FROM settings WHERE key='five_game_ids'").fetchone()[0] == str(keep)
+
+    relative, parent = add_playlist(fixture, "DuplicateEdit.m3u", "DupFirst.chd|One\nDupFirst.chd|Again\nDupSecond.chd|Two\n", {
+        "DupFirst.chd": b"one", "DupSecond.chd": b"two",
+    })
+    with Client(fixture.socket) as client:
+        preview = client.preview(relative, disc=disc_key("PS/DupFirst.chd"))
+        token = ready(preview)
+        assert preview.get("remaining_discs") == 1, preview
+        result = client.commit(token)
+        assert result.get("phase") == DONE and result.get("removed_count") == 1, result
+    assert (fixture.primary / "Roms" / relative).read_text() == "DupSecond.chd|Two\n"
+    assert_parent_metadata(fixture, parent)
+
+    # Two selectors share one physical archive, so only the playlist changes.
+    relative, parent = add_playlist(fixture, "ArchiveEdit.m3u", "EditArchive.zip#Disc A.cue|Disc A\nEditArchive.zip#Disc B.cue|Disc B\n", {
+        "EditArchive.zip": b"shared archive payload",
+    })
+    with sqlite3.connect(fixture.db_path) as db:
+        for member in ("Disc A.cue", "Disc B.cue"):
+            db.execute("INSERT INTO hidden_roms VALUES('primary','PS/EditArchive.zip',?)", (member,))
+    before = library_generation(fixture)
+    with Client(fixture.socket) as client:
+        preview = client.preview(relative, disc=disc_key("PS/EditArchive.zip", "Disc A.cue"))
+        token = ready(preview)
+        assert preview.get("playlist_edit") and preview.get("bytes") == 0, preview
+        result = client.commit(token)
+        assert result.get("phase") == DONE and result.get("removed_count") == 0, result
+        assert result.get("playlist_replaced"), result
+    assert library_generation(fixture) > before, "playlist-only edit did not publish its generation"
+    assert (fixture.primary / "Roms" / relative).read_text() == "EditArchive.zip#Disc B.cue|Disc B\n"
+    assert (fixture.primary / "Roms/PS/EditArchive.zip").read_bytes() == b"shared archive payload"
+    assert_parent_metadata(fixture, parent)
+    with sqlite3.connect(fixture.db_path) as db:
+        assert db.execute("SELECT COUNT(*) FROM hidden_roms WHERE rom_relpath='PS/EditArchive.zip'").fetchone()[0] == 2
+
+    relative, _ = add_playlist(fixture, "OwnedEdit.m3u", "OwnedOne.chd\nOwnedTwo.chd\n", {
+        "OwnedOne.chd": b"one", "OwnedTwo.chd": b"two",
+    })
+    add_playlist(fixture, "Playlist owner.m3u", "OwnedEdit.m3u\n", {})
+    with Client(fixture.socket) as client:
+        result = client.preview(relative, disc=disc_key("PS/OwnedOne.chd"))
+        rejected(result)
+        assert "Playlist owner" in result.get("error", ""), result
+    assert (fixture.primary / "Roms/PS/OwnedOne.chd").exists()
+
+    relative, _ = add_playlist(fixture, "StaleEdit.m3u", "StaleOne.chd\nStaleTwo.chd\n", {
+        "StaleOne.chd": b"one", "StaleTwo.chd": b"two",
+    })
+    with Client(fixture.socket) as client:
+        token = ready(client.preview(relative, disc=disc_key("PS/StaleOne.chd")))
+        write(fixture.primary / "Roms" / relative, "# changed\nStaleOne.chd\nStaleTwo.chd\n")
+        rejected(client.commit(token))
+    assert (fixture.primary / "Roms/PS/StaleOne.chd").exists()
+
+
+def test_disc_parent_reservation(fixture):
+    contents = b"ReservedOne.chd\nReservedTwo.chd\n"
+    relative, _ = add_playlist(fixture, "ReservedEdit.m3u", contents, {
+        "ReservedOne.chd": b"one", "ReservedTwo.chd": b"two",
+    })
+    with Client(fixture.socket) as client:
+        reservation = client.request("library-relocate-prepare", operation_id="reserved-disc-parent",
+            expected_generation=library_generation(fixture), items=[{
+                "old": {"source_id": "primary", "rom_relpath": relative},
+                "new": {"source_id": "secondary_sd", "rom_relpath": relative},
+            }])
+    assert reservation.get("state") == "prepared", reservation
+    try:
+        with Client(fixture.socket) as client:
+            preview = client.preview(relative, disc=disc_key("PS/ReservedOne.chd"))
+            if preview.get("phase") == READY:
+                rejected(client.commit(ready(preview)))
+            else:
+                rejected(preview)
+        assert (fixture.primary / "Roms" / relative).read_bytes() == contents
+        assert (fixture.primary / "Roms/PS/ReservedOne.chd").exists()
+    finally:
+        with Client(fixture.socket) as client:
+            released = client.request("library-relocate-abort", operation_id="reserved-disc-parent")
+        assert released.get("state") == "aborted", released
+
+
+def test_disc_rename_failure(fixture):
+    original = b"RetryDisc.cue|First\r\nRetryKeep.chd|Second\r\n"
+    relative, parent = add_playlist(fixture, "RetryEdit.m3u", original, {
+        "RetryDisc.cue": 'FILE "RetryTrack.bin" BINARY\n', "RetryTrack.bin": b"remove me", "RetryKeep.chd": b"keep me",
+    })
+    playlist = fixture.primary / "Roms" / relative
+    with sqlite3.connect(fixture.db_path) as db:
+        db.execute("INSERT INTO hidden_roms VALUES('primary','PS/RetryDisc.cue','')")
+        db.execute("INSERT INTO hidden_roms VALUES('primary','PS/RetryTrack.bin','')")
+    write(fixture.rename_failure_marker, "1")
+    with Client(fixture.socket) as client:
+        token = ready(client.preview(relative, disc=disc_key("PS/RetryDisc.cue")))
+        result = client.commit(token)
+        rejected(result)
+        assert result.get("removed_count") == 2 and not result.get("playlist_replaced"), result
+    assert playlist.read_bytes() == original
+    assert not (fixture.primary / "Roms/PS/RetryDisc.cue").exists()
+    assert not (fixture.primary / "Roms/PS/RetryTrack.bin").exists()
+    assert_parent_metadata(fixture, parent)
+    with sqlite3.connect(fixture.db_path) as db:
+        assert not db.execute("SELECT 1 FROM hidden_roms WHERE rom_relpath IN ('PS/RetryDisc.cue','PS/RetryTrack.bin')").fetchone()
+    fixture.rename_failure_marker.unlink()
+    fixture.stop()
+    fixture.start()
+    with Client(fixture.socket) as client:
+        preview = client.preview(relative, disc=disc_key("PS/RetryDisc.cue"))
+        token = ready(preview)
+        assert preview.get("missing_descriptors"), preview
+        result = client.commit(token)
+        assert result.get("phase") == DONE and result.get("removed_count") == 0, result
+        assert result.get("absent_count") == 1, result  # Missing CUE cannot reveal its former track.
+    assert playlist.read_bytes() == b"RetryKeep.chd|Second\r\n"
+    assert (fixture.primary / "Roms/PS/RetryKeep.chd").read_bytes() == b"keep me"
+    assert_parent_metadata(fixture, parent)
 
 
 def run(fixture):
@@ -420,10 +629,14 @@ def run(fixture):
         rejected(client.commit(token))
     assert (primary / "Roms/GBA/Cancel.gba").exists()
 
+    test_disc_edits(fixture)
+    test_disc_parent_reservation(fixture)
+    test_disc_rename_failure(fixture)
+
 
 def main():
     repo = Path(__file__).resolve().parents[1]
-    daemon = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else repo / "build/bin/jawakad"
+    daemon = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else repo / "build/bin/jawakad-delete-test"
     assert daemon.is_file(), f"build the daemon first: {daemon}"
     # Keep AF_UNIX socket names within the host's small path limit.
     with tempfile.TemporaryDirectory(prefix="jw-del-ipc-", dir="/tmp") as directory:

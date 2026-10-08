@@ -25,6 +25,9 @@ typedef struct {
     char member[512];
     char label[256];
     size_t file_index;
+    /* Exact root-playlist line span, including its original line ending. */
+    size_t line_start;
+    size_t line_end;
 } jw_content_disc;
 
 typedef struct {

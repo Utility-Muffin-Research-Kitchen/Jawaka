@@ -349,10 +349,14 @@ static int jw__add_disc(jw_content_reader *r, size_t file_index,
     return 0;
 }
 
-static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, unsigned depth) {
+static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, unsigned depth, size_t offset) {
     char next_label[256] = "";
+    size_t descriptor_size = r->out->files[r->parents[depth]].descriptor_size;
     char *save = NULL;
     for (char *line = strtok_r(data, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        size_t line_start = offset + (size_t)(line - data);
+        size_t line_end = line_start + strlen(line);
+        if (line_end < descriptor_size) line_end++;
         char *s = jw__trim(line);
         if (!strncasecmp(s, "#EXTINF:", 8)) {
             char *comma = strchr(s, ',');
@@ -375,8 +379,12 @@ static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, u
         }
         size_t index;
         if (jw__visit(r, parent, s, depth + 1, &index) < 0) return -1;
-        if (!depth && r->collect_discs && jw__add_disc(r, index, member ? member : "", label ? jw__trim(label) : next_label) < 0)
-            return -1;
+        if (!depth && r->collect_discs) {
+            if (jw__add_disc(r, index, member ? member : "", label ? jw__trim(label) : next_label) < 0) return -1;
+            jw_content_disc *disc = &r->out->discs[r->out->disc_count - 1];
+            disc->line_start = line_start;
+            disc->line_end = line_end;
+        }
         next_label[0] = '\0';
     }
     return 0;
@@ -519,7 +527,7 @@ static int jw__visit(jw_content_reader *r, const char *parent, const char *refer
         memcpy(directory, file.path, strlen(file.path) + 1);
         char *slash = strrchr(directory, '/');
         if (slash == directory) slash[1] = '\0'; else *slash = '\0';
-        int result = kind == 1 ? jw__parse_m3u(r, body, directory, depth) :
+        int result = kind == 1 ? jw__parse_m3u(r, body, directory, depth, (size_t)(body - parsed)) :
                      kind == 5 ? jw__parse_cmd(r, body, directory, depth) :
                                  jw__parse_tracks(r, body, directory, kind, depth);
         free(parsed);
