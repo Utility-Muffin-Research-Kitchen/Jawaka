@@ -1,14 +1,16 @@
-# Russian -- contributed by Atanvaron (GitHub, Jawaka#212), 2026-10-05.
-# Their file as sent, except that this header replaces the one it kept
-# from leaf.pot, four typos and one garbled line are fixed, and the
-# on-battery repair warning now says the repair, not the device, will
-# not start.
+# Russian -- contributed by Atanvaron (GitHub, Jawaka#212), 2026-10-05,
+# updated 2026-10-07. Corrections by LVD14 (GitHub, Jawaka#216), 2026-10-08.
+# Atanvaron's update as sent, except that this header replaces the one it
+# kept from leaf.pot; eight strings that still used "ты" now use "вы", as
+# LVD14's file does; Show/Hide, Play, 12 Hour, 24 Hour, Adelaide and
+# "%d theme" take LVD14's wording; and Visible reads "Показано" to match
+# Hidden, as the update described.
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
 #: internal/settings/storage_ui.c
 msgid " Some damaged files were changed."
-msgstr ""
+msgstr " Некоторые повреждённые файлы были изменены."
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d %s games"
@@ -52,7 +54,7 @@ msgstr "%d из %d"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d theme"
-msgstr "Темы: %d"
+msgstr "Тема: %d"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d themes"
@@ -92,7 +94,7 @@ msgstr "%s нельзя установить, т.к. это не коррект�
 
 #: cmd/jawaka-launcher/main.c
 msgid "%s can't be installed because the download did not match the catalog.\n\nNothing was changed. Try again later."
-msgstr "%s нельзя установить, т.к. загруженный файл не совпал с каталогом.\n\nНичего не изменилось. Попробуй позже."
+msgstr "%s нельзя установить, т.к. загруженный файл не совпал с каталогом.\n\nНичего не изменилось. Попробуйте позже."
 
 #: cmd/jawaka-launcher/main.c
 msgid "%s can't be installed right now"
@@ -212,7 +214,7 @@ msgstr "Нужно 100/120 Гц"
 
 #: internal/settings/settings.c
 msgid "12 Hour"
-msgstr "12 часов"
+msgstr "12-часовой"
 
 #: internal/settings/settings.c
 msgid "12 sec"
@@ -244,7 +246,7 @@ msgstr "200 МГц"
 
 #: internal/settings/settings.c
 msgid "24 Hour"
-msgstr "24 часа"
+msgstr "24-часовой"
 
 #: internal/settings/settings.c
 msgid "30 sec"
@@ -388,7 +390,7 @@ msgstr "Активен: %s  Темп.: %d C"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Adding Splore favorites"
-msgstr "Добавление избранного Splore"
+msgstr "Добавление избранного в Splore"
 
 #: internal/retroarch/shader_strings.c
 msgid "Adds a Pocket-style backing texture and low-cost pixel grid tuned for Game Boy Color art."
@@ -400,7 +402,7 @@ msgstr "Добавляет серую фоновую текстуру, недо�
 
 #: internal/retroarch/shader_strings.c
 msgid "Adds a lightweight aperture mask and softened scanlines without curvature."
-msgstr "Добавляет облегченную маску диафрагмы и смягчённые сканлайны без кривизны."
+msgstr "Добавляет облегчённую маску диафрагмы и смягчённые сканлайны без кривизны."
 
 #: internal/retroarch/shader_strings.c
 msgid "Adds a subdued Pocket-style backing texture, pixel grid, and edge shadows for original Game Boy games."
@@ -416,7 +418,7 @@ msgstr "Добавляет мелкую RGB-пиксельную сетку LCD-
 
 #: internal/settings/timezones.c
 msgid "Adelaide"
-msgstr "Adelaide"
+msgstr "Аделаида"
 
 #: cmd/jawaka-menu/main.c
 msgid "Adjust"
@@ -600,7 +602,11 @@ msgstr "Бангладеш"
 
 #: internal/settings/settings.c
 msgid "Battery"
-msgstr "Батарея"
+msgstr "Аккумулятор"
+
+#: internal/settings/settings.c
+msgid "Battery Level"
+msgstr "Уровень заряда"
 
 #: internal/platform/platform_common.c
 msgid "Battery Saver"
@@ -620,7 +626,7 @@ msgstr "Чёрно-белая"
 
 #: internal/settings/settings.c
 msgid "Black Frame Insertion"
-msgstr "Вставка чёрной рамки"
+msgstr "Вставка чёрных кадров"
 
 #: internal/settings/settings.c
 msgid "Black Frame Insertion needs 100 or 120 Hz"
@@ -628,7 +634,7 @@ msgstr "Для вставки чёрных кадров нужны 100 или 12
 
 #: internal/settings/settings.c
 msgid "Black Frame Insertion off"
-msgstr "Вставка чёрной рамки отключена"
+msgstr "Вставка чёрных кадров отключена"
 
 #: internal/settings/settings.c
 msgid "Bluetooth"
@@ -784,7 +790,7 @@ msgstr "Часы"
 
 #: internal/settings/storage_ui.c
 msgid "Close the game or app first, then try again."
-msgstr "Сначала закрой игру или приложение, затем попробуй снова."
+msgstr "Сначала закройте игру или приложение, затем попробуйте снова."
 
 #: internal/launcher/system_names.c
 msgid "ColecoVision"
@@ -1059,6 +1065,10 @@ msgid "Filter"
 msgstr "Фильтр"
 
 #: internal/settings/settings.c
+msgid "Fixed"
+msgstr "Постоянный"
+
+#: internal/settings/settings.c
 msgid "Flat"
 msgstr "Плоские"
 
@@ -1092,7 +1102,7 @@ msgstr "Фонтан"
 
 #: internal/platform/platform_common.c
 msgid "Frontend"
-msgstr "Внешний интерфейс"
+msgstr "Графический"
 
 #: internal/retroarch/shader_strings.c
 msgid "GBA Color"
@@ -1216,7 +1226,7 @@ msgstr "Мигание"
 
 #: internal/settings/settings.c
 msgid "Hidden"
-msgstr "Скрыть"
+msgstr "Скрыто"
 
 #: internal/settings/settings.c
 msgid "Hold Menu, then press the button.   X: Disable"
@@ -1408,7 +1418,7 @@ msgstr "Leaf не смог подтвердить, что на SD-карту м�
 
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't identify this card safely. Check the card on a computer instead."
-msgstr "Leaf не смог безопасно опознать эту карту. Проверь её на компьютере."
+msgstr "Leaf не смог безопасно опознать эту карту. Проверьте её на компьютере."
 
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't identify this card."
@@ -1420,7 +1430,7 @@ msgstr "Leaf не смог восстановить эту карту памят
 
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't safely check this card, so nothing was changed. Check the card on a computer."
-msgstr "Leaf не смог безопасно проверить эту карту, поэтому ничего не изменено. Проверь её на компьютере."
+msgstr "Leaf не смог безопасно проверить эту карту, поэтому ничего не изменено. Проверьте её на компьютере."
 
 #: cmd/jawaka-menu/main.c
 msgid "Leaf's in-game picker supports GLSL presets (.glslp)."
@@ -1428,7 +1438,7 @@ msgstr "Выбор шейдеров в игре поддерживает пре�
 
 #: cmd/jawaka-menu/main.c
 msgid "Leaf's shader files are incomplete. Update or reinstall Leaf."
-msgstr "Файлы шейдеров Leaf неполны. Обнови или переустанови Leaf."
+msgstr "Файлы шейдеров Leaf неполны. Обновите или переустановите Leaf."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Left/Right"
@@ -1540,7 +1550,7 @@ msgstr "Самые запускаемые"
 
 #: internal/settings/storage_ui.c
 msgid "Mounted"
-msgstr "Смонтирована"
+msgstr "Установлена"
 
 #: cmd/jawaka-menu/main.c
 msgid "Move"
@@ -1560,7 +1570,7 @@ msgstr "NEC PC-98"
 
 #: internal/settings/settings.c
 msgid "Nearby"
-msgstr "Рядом"
+msgstr "Доступные устройства"
 
 #: internal/settings/storage_ui.c
 msgid "Needs check"
@@ -1568,7 +1578,7 @@ msgstr "Нужна проверка"
 
 #: internal/settings/storage_ui.c
 msgid "Needs repair"
-msgstr "Нужен ремонт"
+msgstr "Нужно восстановление"
 
 #: internal/launcher/system_names.c
 msgid "Neo Geo"
@@ -1788,11 +1798,11 @@ msgstr "PIN"
 
 #: cmd/jawaka-launcher/main.c
 msgid "PINs did not match - try again"
-msgstr "PIN-коды не совпадают — попробуй ещё раз"
+msgstr "PIN-коды не совпадают — попробуйте ещё раз"
 
 #: internal/settings/settings.c
 msgid "Paired"
-msgstr "Сопряжение"
+msgstr "Сопряжённые устройства"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat"
@@ -1848,7 +1858,7 @@ msgstr "Выберите другой BIOS Saturn в меню опций."
 
 #: internal/settings/settings.c
 msgid "Play"
-msgstr "Играть"
+msgstr "Воспроизвести"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Play anyway"
@@ -1876,7 +1886,7 @@ msgstr "Время в игре"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Please wait"
-msgstr "Подожди"
+msgstr "Подождите"
 
 #: internal/launcher/system_names.c
 msgid "Ports"
@@ -1908,11 +1918,11 @@ msgstr "Подготовка к сохранению"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Press MENU to exit"
-msgstr "Нажми MENU для выхода"
+msgstr "Нажмите MENU для выхода"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Press Menu again"
-msgstr "Нажми Menu ещё раз"
+msgstr "Нажмите Menu ещё раз"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Previous page"
@@ -1972,7 +1982,7 @@ msgstr "Недавние"
 
 #: cmd/jawaka-menu/main.c
 msgid "Recommended shaders are unavailable. Update or reinstall Leaf."
-msgstr "Рекомендованные шейдеры недоступны. Обнови или переустанови Leaf."
+msgstr "Рекомендованные шейдеры недоступны. Обновите или переустановите Leaf."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reconnect Bluetooth"
@@ -2144,7 +2154,7 @@ msgstr "Настройки RetroArch"
 
 #: cmd/jawaka-menu/main.c
 msgid "RetroArch did not confirm the shader. Reopen Shader or restart the game."
-msgstr "RetroArch не подтвердил шейдер. Заново открой «Шейдер» или перезапусти игру."
+msgstr "RetroArch не подтвердил шейдер. Заново откройте «Шейдер» или перезапустите игру."
 
 #: cmd/jawaka-menu/main.c
 msgid "RetroArch is not available. Shader unchanged."
@@ -2240,7 +2250,7 @@ msgstr "Сохранить глобально"
 
 #: cmd/jawaka-menu/main.c
 msgid "Save your edits in RetroArch before you leave."
-msgstr "Сохрани правки в RetroArch перед выходом."
+msgstr "Сохраните правки в RetroArch перед выходом."
 
 #: internal/settings/settings.c
 msgid "Saved; active after restart"
@@ -2264,15 +2274,15 @@ msgstr "Ошибка сканирования"
 
 #: internal/retroarch/shader_strings.c
 msgid "Scanlines and an aperture mask with a flat screen and crisp scaling."
-msgstr "Развёртка и апертурная маска, плоский экран и чёткое масштабирование."
+msgstr "Сканлайны и апертурная маска, плоский экран и чёткое масштабирование."
 
 #: internal/retroarch/shader_strings.c
 msgid "Scanlines and aperture mask with screen curvature, rounded corners and vignetting."
-msgstr "Развёртка и апертурная маска с кривизной экрана, скруглёнными углами и виньеткой."
+msgstr "Сканлайны и апертурная маска с кривизной экрана, скруглёнными углами и виньеткой."
 
 #: internal/retroarch/shader_strings.c
 msgid "Scanlines reduce brightness, especially when combined with BFI."
-msgstr "Развёртка снижает яркость, особенно вместе с вставкой чёрных кадров."
+msgstr "Сканлайны снижают яркость, особенно вместе с вставкой чёрных кадров."
 
 #: internal/settings/settings.c
 msgid "Scanning"
@@ -2392,7 +2402,7 @@ msgstr "Выбрать"
 
 #: internal/launcher/bios.c
 msgid "Selected BIOS card is not mounted"
-msgstr "Карта с выбранным BIOS не смонтирована"
+msgstr "Карта с выбранным BIOS не установлена"
 
 #: internal/launcher/bios.c
 msgid "Selected BIOS file cannot be read"
@@ -2620,7 +2630,7 @@ msgstr "Стиль"
 
 #: internal/retroarch/shader_strings.c
 msgid "Subtle Scanlines"
-msgstr "Тонкая развёртка"
+msgstr "Тонкие сканлайны"
 
 #: internal/launcher/system_names.c
 msgid "Super Famicom"
@@ -2656,19 +2666,19 @@ msgstr "Сидней"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Syncthing: Checking saves"
-msgstr "Синхронизация: проверка сохранений"
+msgstr "Syncthing: проверка сохранений"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Syncthing: Stopping"
-msgstr "Синхронизация: остановка"
+msgstr "Syncthing: остановка"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Syncthing: Syncing %d item"
-msgstr "Синхронизация: синхронизация (%d)"
+msgstr "Syncthing: синхронизация %d элемента"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Syncthing: Syncing %d items"
-msgstr "Синхронизация: синхронизация (%d)"
+msgstr "Syncthing: синхронизация %d элементов"
 
 #: cmd/jawaka-menu/main.c
 msgid "System"
@@ -2908,7 +2918,7 @@ msgstr "Часовой пояс"
 
 #: internal/settings/storage_ui.c
 msgid "To repair it, turn off your device and check the card on a computer."
-msgstr "Для восстановления выключите устройство и проверь карту на компьютере."
+msgstr "Для восстановления выключите устройство и проверьте карту на компьютере."
 
 #: internal/settings/timezones.c
 msgid "Tonga"
@@ -2932,7 +2942,7 @@ msgstr "TurboGrafx-CD"
 
 #: internal/settings/storage_ui.c
 msgid "Turn off your device and check the card on a computer."
-msgstr "Выключите устройство и проверь карту на компьютере."
+msgstr "Выключите устройство и проверьте карту на компьютере."
 
 #: internal/settings/settings.c
 msgid "Turn on Save Before Power Off first"
@@ -3072,7 +3082,7 @@ msgstr "Время работы"
 
 #: cmd/jawaka-menu/main.c
 msgid "Use Advanced to edit it in RetroArch."
-msgstr "Для правки в RetroArch используй «Расширенное»."
+msgstr "Для правки в RetroArch используйте «Расширенное»."
 
 #: internal/retroarch/shader_strings.c
 msgid "Use only for GBA content."
@@ -3112,7 +3122,7 @@ msgstr "Virtual Boy"
 
 #: internal/settings/settings.c
 msgid "Visible"
-msgstr "Показать"
+msgstr "Показано"
 
 #: internal/settings/settings.c
 msgid "Volume"
@@ -3152,7 +3162,7 @@ msgstr "Вы снова можете сохранять файлы."
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card check did not finish successfully."
-msgstr "Проверку вашей SD-карты не удалось завершить успешно."
+msgstr "Проверка вашей SD-карты не завершилась успешно."
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card is protected"
@@ -3164,19 +3174,19 @@ msgstr "Ваша SD-карта защищена, так как при после
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Your SD card is read-only"
-msgstr "Твоя SD-карта только для чтения"
+msgstr "Ваша SD-карта только для чтения"
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card is read-only after a file system error. You can't save new files or changes to this card. This can happen after an unexpected shutdown."
-msgstr "SD-карта стала доступной только для чтения после ошибки файловой системы. Новые файлы и изменения сохранить нельзя. Бывает после внезапного выключения."
+msgstr "Ваша SD-карта стала доступной только для чтения после ошибки файловой системы. Новые файлы и изменения сохранить нельзя. Бывает после внезапного выключения."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your SD card is read-only. Nothing new can be saved to it."
-msgstr "SD-карта только для чтения. Новое записать нельзя."
+msgstr "Ваша SD-карта только для чтения. Новые файлы записать нельзя."
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card is read-only. The cause couldn't be determined. You can't save new files or changes to this card."
-msgstr "SD-карта только для чтения. Причину установить не удалось. Нельзя записывать или редактировать файлы."
+msgstr "Ваша SD-карта только для чтения. Причину установить не удалось. Нельзя записывать или редактировать файлы."
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card is still protected. Turn off your device, repair the card on a computer, safely eject it, then insert it and turn your device on to check it again."
@@ -3184,19 +3194,19 @@ msgstr "Ваша SD-карта по-прежнему защищена. Выкл�
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your SD card is waiting for repair. Nothing new can be saved to it."
-msgstr "SD-карта ожидает восстановления. Нельзя записывать или редактировать файлы."
+msgstr "Ваша SD-карта ожидает восстановления. Нельзя записывать или редактировать файлы."
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card is write-protected"
-msgstr "SD-карта защищена от записи"
+msgstr "Ваша SD-карта защищена от записи"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your SD card isn't available."
-msgstr "SD-карта недоступна."
+msgstr "Ваша SD-карта недоступна."
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card needs repair"
-msgstr "SD-карте нужен ремонт"
+msgstr "Ваша SD-карта нуждается в восстановлении"
 
 #: internal/settings/storage_ui.c
 msgid "Your card passed the file system check."
@@ -3212,7 +3222,7 @@ msgstr "Устройство не может писать на карту. Ес�
 
 #: internal/settings/storage_ui.c
 msgid "Your device will restart to check and repair this card on battery power. If the battery drops below 30 percent before repair starts, it won't run. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first."
-msgstr "Ваше устройство перезагрузится, чтобы проверить и восстановить карту памяти от аккумулятора. Если до начала восстановления уровень заряда упадет ниже 30 процентов, восстановление не запустится. Повреждённые файлы могут быть обрезаны, переименованы или восстановлены под новыми именами. Сначала сделайте резервную копию важных файлов на компьютере."
+msgstr "Ваше устройство перезагрузится, чтобы проверить и восстановить карту памяти от аккумулятора. Если до начала восстановления уровень заряда упадёт ниже 30 процентов, восстановление не запустится. Повреждённые файлы могут быть обрезаны, переименованы или восстановлены под новыми именами. Сначала сделайте резервную копию важных файлов на компьютере."
 
 #: internal/settings/storage_ui.c
 msgid "Your device will restart to check and repair this card. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first if you need to recover them. Keep your device connected to power until the check finishes."
