@@ -32,6 +32,14 @@ static long long scalar(sqlite3 *db, const char *sql) {
     return value;
 }
 
+static int reject_v7(void *context, int action, const char *name,
+                     const char *value, const char *database, const char *trigger) {
+    (void)context; (void)database; (void)trigger;
+    return action == SQLITE_PRAGMA && name && value &&
+           strcmp(name, "user_version") == 0 && strcmp(value, "7") == 0
+        ? SQLITE_DENY : SQLITE_OK;
+}
+
 int main(void) {
     char fresh[] = "/tmp/jawaka-schema-fresh.XXXXXX";
     int fresh_fd = mkstemp(fresh);
@@ -40,13 +48,18 @@ int main(void) {
     unlink(fresh);
     sqlite3 *db = NULL;
     if (jw_db_open(fresh, &db) != 0 || jw_db_apply_schema(db) != 0 ||
-        scalar(db, "PRAGMA user_version") != 6 ||
+        scalar(db, "PRAGMA user_version") != 7 ||
         scalar(db, "SELECT COUNT(*) FROM pragma_table_info('games') "
                    "WHERE name IN ('source_id','rom_relpath','image_root_kind',"
                    "'image_relpath')") != 4 ||
         scalar(db, "SELECT COUNT(*) FROM pragma_table_info('apps') "
                    "WHERE name='min_leaf_version'") != 1) {
-        fail(db, "fresh v6 schema");
+        fail(db, "fresh v7 schema");
+    }
+    if (scalar(db, "SELECT COUNT(*) FROM pragma_table_info('hidden_roms') "
+                   "WHERE name IN ('source_id','rom_relpath','member') "
+                   "AND \"notnull\"=1 AND pk>0") != 3) {
+        fail(db, "fresh visibility schema");
     }
     if (scalar(db, "SELECT COUNT(*) FROM pragma_table_info('pakrat_installs') "
                    "WHERE name='commit_token' AND \"notnull\"=0") != 1) {
@@ -99,8 +112,17 @@ int main(void) {
         "'2026-07-29T00:00:00Z');"
         "INSERT INTO apps(pak_dir,name,pak_version,min_jawaka_version)"
         "VALUES('Apps/mlp1/Existing.pak','Existing','1.0.0','0.0.1');");
+    sqlite3_set_authorizer(db, reject_v7, NULL);
+    if (jw_db_apply_schema(db) == 0 ||
+        scalar(db, "PRAGMA user_version") != 6 ||
+        scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE name='hidden_roms'") != 0) {
+        fail(db, "failed v7 migration was not rolled back");
+    }
+    sqlite3_set_authorizer(db, NULL, NULL);
     if (jw_db_apply_schema(db) != 0 ||
         jw_db_apply_schema(db) != 0 ||
+        scalar(db, "PRAGMA user_version") != 7 ||
+        scalar(db, "SELECT COUNT(*) FROM hidden_roms") != 0 ||
         scalar(db, "SELECT COUNT(*) FROM pragma_table_info('apps') "
                    "WHERE name='min_leaf_version'") != 1 ||
         scalar(db, "SELECT COUNT(*) FROM pragma_table_info('pakrat_installs') "
@@ -161,7 +183,7 @@ int main(void) {
         "(10,'display_name','Older',10),(20,'display_name','Newer',20);");
 
     if (jw_db_apply_schema(db) != 0) fail(db, "migration");
-    if (scalar(db, "PRAGMA user_version") != 6) fail(db, "wrong version");
+    if (scalar(db, "PRAGMA user_version") != 7) fail(db, "wrong version");
     if (scalar(db, "SELECT COUNT(*) FROM games") != 3 ||
         scalar(db, "SELECT COUNT(*) FROM games WHERE id=10") != 1 ||
         scalar(db, "SELECT playtime_s FROM games WHERE id=10") != 12 ||
@@ -246,7 +268,7 @@ int main(void) {
     fd = mkstemp(future);
     if (fd < 0 || sqlite3_open(future, &db) != SQLITE_OK) fail(db, "future open");
     close(fd);
-    exec_ok(db, "PRAGMA user_version=7;");
+    exec_ok(db, "PRAGMA user_version=8;");
     if (jw_db_apply_schema(db) == 0) fail(db, "future schema accepted");
     sqlite3_close(db);
 

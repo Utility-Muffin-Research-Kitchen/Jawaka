@@ -194,4 +194,11 @@ CREATE TABLE IF NOT EXISTS library_relocation_items (
 CREATE INDEX IF NOT EXISTS library_relocation_items_game_idx
     ON library_relocation_items(game_id);
 
-PRAGMA user_version = 6;
+CREATE TABLE IF NOT EXISTS hidden_roms (
+    source_id   TEXT NOT NULL,
+    rom_relpath TEXT NOT NULL,
+    member      TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (source_id, rom_relpath, member)
+);
+
+PRAGMA user_version = 7;

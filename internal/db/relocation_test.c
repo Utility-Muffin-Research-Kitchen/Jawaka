@@ -22,7 +22,11 @@ static void seed(sqlite3 *db) {
         "INSERT INTO games(id,system,name,source_id,rom_relpath,rom_path,"
         "image_root_kind,image_relpath,image_path) VALUES("
         "42,'PORTS','Bully','primary','PORTS/Bully.sh','Roms/PORTS/Bully.sh',"
-        "'images','PORTS/Bully.png','Images/PORTS/Bully.png');",
+        "'images','PORTS/Bully.png','Images/PORTS/Bully.png');"
+        "INSERT INTO hidden_roms VALUES"
+        "('primary','PORTS/Bully.sh',''),"
+        "('primary','PORTS/Bully.sh','member'),"
+        "('primary','PORTS/Other.sh','');",
         NULL, NULL, NULL) == SQLITE_OK);
 }
 
@@ -92,6 +96,20 @@ int main(void) {
     assert(jw_db_scan_prune(db) == 0);
     assert(query_int(db, "SELECT count(*) FROM games WHERE id=42 AND name='Bully';") == 1);
 
+    /* A failure after the mapping and visibility updates rolls back both. */
+    assert(sqlite3_exec(db,
+        "CREATE TRIGGER fail_move BEFORE UPDATE OF state ON library_relocation_ops "
+        "BEGIN SELECT RAISE(ABORT,'injected relocation failure'); END;",
+        NULL, NULL, NULL) == SQLITE_OK);
+    assert(jw_db_relocation_commit(db, "move-1", &status, error, sizeof(error)) ==
+           JW_RELOCATION_ERROR);
+    assert(query_int(db, "SELECT count(*) FROM games WHERE id=42 AND source_id='primary';") == 1);
+    assert(query_int(db, "SELECT count(*) FROM hidden_roms WHERE source_id='primary' "
+                         "AND rom_relpath='PORTS/Bully.sh';") == 2);
+    assert(query_int(db, "SELECT CAST(value AS INTEGER) FROM settings "
+                         "WHERE key='library.generation';") == 5);
+    assert(sqlite3_exec(db, "DROP TRIGGER fail_move;", NULL, NULL, NULL) == SQLITE_OK);
+
     assert(jw_db_relocation_commit(db, "move-1", &status, error, sizeof(error)) == 0);
     assert(strcmp(status.state, "committed") == 0);
     assert(status.mapping_generation == 6);
@@ -99,6 +117,12 @@ int main(void) {
                          "WHERE key='library.generation';") == 6);
     assert(query_int(db, "SELECT count(*) FROM games WHERE id=42 AND "
                          "source_id='secondary_sd';") == 1);
+    assert(query_int(db, "SELECT count(*) FROM hidden_roms WHERE source_id='secondary_sd' "
+                         "AND rom_relpath='PORTS/Bully.sh';") == 2);
+    assert(query_int(db, "SELECT count(*) FROM hidden_roms WHERE source_id='primary' "
+                         "AND rom_relpath='PORTS/Bully.sh';") == 0);
+    assert(query_int(db, "SELECT count(*) FROM hidden_roms WHERE source_id='primary' "
+                         "AND rom_relpath='PORTS/Other.sh';") == 1);
     assert(jw_db_relocation_commit(db, "move-1", &status, error, sizeof(error)) == 0);
     assert(status.mapping_generation == 6);
 
@@ -106,9 +130,24 @@ int main(void) {
     assert(jw_db_open(path, &db) == 0);
     assert(jw_db_apply_schema(db) == 0);
     assert(jw_db_relocation_game_reserved(db, 42));
+    assert(sqlite3_exec(db,
+        "CREATE TRIGGER fail_move BEFORE UPDATE OF state ON library_relocation_ops "
+        "BEGIN SELECT RAISE(ABORT,'injected revert failure'); END;",
+        NULL, NULL, NULL) == SQLITE_OK);
+    assert(jw_db_relocation_revert(db, "move-1", &status, error, sizeof(error)) ==
+           JW_RELOCATION_ERROR);
+    assert(query_int(db, "SELECT count(*) FROM games WHERE id=42 AND source_id='secondary_sd';") == 1);
+    assert(query_int(db, "SELECT count(*) FROM hidden_roms WHERE source_id='secondary_sd' "
+                         "AND rom_relpath='PORTS/Bully.sh';") == 2);
+    assert(query_int(db, "SELECT CAST(value AS INTEGER) FROM settings "
+                         "WHERE key='library.generation';") == 6);
+    assert(sqlite3_exec(db, "DROP TRIGGER fail_move;", NULL, NULL, NULL) == SQLITE_OK);
     assert(jw_db_relocation_revert(db, "move-1", &status, error, sizeof(error)) == 0);
     assert(strcmp(status.state, "reverted") == 0);
     assert(status.mapping_generation == 7);
+    assert(query_int(db, "SELECT count(*) FROM hidden_roms WHERE source_id='primary' "
+                         "AND rom_relpath='PORTS/Bully.sh';") == 2);
+    assert(query_int(db, "SELECT count(*) FROM hidden_roms WHERE source_id='secondary_sd';") == 0);
     assert(jw_db_relocation_revert(db, "move-1", &status, error, sizeof(error)) == 0);
     assert(status.mapping_generation == 7);
 

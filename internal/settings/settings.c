@@ -1538,6 +1538,31 @@ void jw_settings_ra_account_value(const jw_settings_ui *ui, char *out,
     }
 }
 
+static void jw__clear_hidden_games(jw_settings_ui *ui) {
+    free(ui->hidden_games);
+    ui->hidden_games = NULL;
+    ui->hidden_games_count = 0;
+    ui->hidden_games_loaded = false;
+}
+
+static bool jw__load_hidden_games(jw_settings_ui *ui) {
+    jw__clear_hidden_games(ui);
+    cat_list_state_init(&ui->hidden_games_list, 7);
+    int count = 0;
+    if (jw_db_count_hidden_games(ui->db_path, &count) != 0) return false;
+    if (count > 0) {
+        ui->hidden_games = calloc((size_t)count, sizeof(*ui->hidden_games));
+        if (!ui->hidden_games) return false;
+        if (jw_db_list_hidden_games(ui->db_path, ui->hidden_games, count,
+                                    &ui->hidden_games_count) != 0) {
+            jw__clear_hidden_games(ui);
+            return false;
+        }
+    }
+    ui->hidden_games_loaded = true;
+    return true;
+}
+
 void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                           const char *initial_theme_name,
                           const char *socket_path) {
@@ -1566,6 +1591,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->lighting_list,    JW_LIGHTING_ROW_COUNT);
     cat_list_state_init(&ui->accounts_list,    JW_ACCOUNTS_ROW_COUNT);
     cat_list_state_init(&ui->games_list,    JW_GAMES_ROW_COUNT);
+    cat_list_state_init(&ui->hidden_games_list, 7);
     cat_list_state_init(&ui->scrape_edit_list, 8);
     cat_list_state_init(&ui->scrape_download_list, 8);
     /* en is always offered; the rest are whatever tables are installed. Resolved
@@ -1913,6 +1939,7 @@ void jw_settings_ui_enter(jw_settings_ui *ui) {
 
 void jw_settings_ui_close(jw_settings_ui *ui) {
     if (!ui) return;
+    jw__clear_hidden_games(ui);
     if (ui->bt_op != JW_BT_OP_NONE) {
         jw_bt_cancel_operation();
         ui->bt_op = JW_BT_OP_NONE;
@@ -1938,7 +1965,9 @@ void jw_settings_ui_open(jw_settings_ui *ui, jw_settings_screen screen) {
     if (!ui) return;
     ui->open = true;
     ui->screen = screen;
-    if (screen == JW_SETTINGS_UPDATE) {
+    if (screen == JW_SETTINGS_HIDDEN_GAMES) {
+        (void)jw__load_hidden_games(ui);
+    } else if (screen == JW_SETTINGS_UPDATE) {
         ui->update_list.cursor = 0;
         ui->update_list.scroll_offset = 0;
         ui->update_msg[0] = '\0';
@@ -4577,6 +4606,63 @@ static void jw__render_games(const jw_settings_ui *ui, int x, int y, int w, int 
                         "Reset RetroArch Config", "Defaults", false);
 
     jw__render_nav_row(&ui->games_list, x, ly, w, JW_GAMES_ACCOUNTS, "Accounts");
+    jw__render_nav_row(&ui->games_list, x, ly, w, JW_GAMES_HIDDEN_GAMES, JW_UI("Hidden Games"));
+}
+
+static void jw__draw_hidden_game(int i, int x, int y, int w, int h,
+                                 float focus, void *user) {
+    const jw_settings_ui *ui = user;
+    const jw_game_entry *game = &ui->hidden_games[i];
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int gap = cat_scale(2);
+    int text_y = y + (h - TTF_FontHeight(body) - gap - TTF_FontHeight(small)) / 2;
+    int text_x = x + cat_scale(24);
+    int text_w = w - cat_scale(36);
+    const char *source = strcmp(game->source_id, "primary") == 0
+        ? T("launcher SD card") : strcmp(game->source_id, "secondary_sd") == 0
+        ? T("second SD card") : game->source_id;
+    char context[640];
+    if (game->id > 0)
+        snprintf(context, sizeof(context), "%s: %s", source, game->rom_relpath);
+    else
+        snprintf(context, sizeof(context), T("%s: Not in your library"), source);
+    cat_draw_text_ellipsized(body, game->id > 0 && game->name[0]
+        ? game->name : game->rom_relpath, text_x, text_y,
+        cat_draw_color_lerp(theme->text, theme->highlighted_text, focus), text_w);
+    cat_draw_text_ellipsized(small, context, text_x,
+        text_y + TTF_FontHeight(body) + gap,
+        cat_draw_color_lerp(theme->hint, theme->highlighted_text, focus), text_w);
+}
+
+static void jw__render_hidden_games(const jw_settings_ui *ui,
+                                     int x, int y, int w, int h) {
+    jw__draw_header(JW_UI("Hidden Games"), x, y, w);
+    SDL_Rect content = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    if (!ui->hidden_games_count) {
+        const char *message = ui->hidden_games_loaded
+            ? T("No hidden games.") : T("Couldn't load hidden games.");
+        cat_draw_text_ellipsized(body, message, content.x + cat_scale(12),
+            content.y + (content.h - TTF_FontHeight(body)) / 2,
+            cat_get_theme()->hint, content.w - cat_scale(24));
+        return;
+    }
+    int item_h = TTF_FontHeight(body) +
+        TTF_FontHeight(cat_get_font(CAT_FONT_SMALL)) + cat_scale(12);
+    cat_box box = { content.x, content.y, content.w, content.h, 0, 0, 0, 0 };
+    int visible = 0;
+    SDL_Rect list_box = cat_box_fit_rows(&box, item_h, ui->hidden_games_count,
+                                        &visible, &item_h);
+    cat_list_state *list = (cat_list_state *)&ui->hidden_games_list;
+    if (list->visible_rows != visible) {
+        list->visible_rows = visible;
+        cat_list_state_jump(list, list->cursor, ui->hidden_games_count);
+    }
+    cat_draw_list_pane_layered(list_box.x, list_box.y, list_box.w, list_box.h,
+        ui->hidden_games_count, list, item_h, jw__draw_scrape_queue_focus,
+        jw__draw_hidden_game, (void *)ui);
 }
 
 /* Account row: like jw__render_list_row, but the status value marquees while the
@@ -6143,6 +6229,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_LIGHTING:   jw__render_lighting(ui, x, y, w, h);   break;
         case JW_SETTINGS_ACCOUNTS:   jw__render_accounts(ui, x, y, w, h);                break;
         case JW_SETTINGS_GAMES:   jw__render_games(ui, x, y, w, h);                   break;
+        case JW_SETTINGS_HIDDEN_GAMES: jw__render_hidden_games(ui, x, y, w, h);          break;
         case JW_SETTINGS_SCRAPE_PRIORITY: jw__render_scrape_priority(ui, x, y, w, h);    break;
         case JW_SETTINGS_SCRAPE_QUEUE:    jw__render_scrape_queue(ui, x, y, w, h);       break;
         case JW_SETTINGS_SCRAPE_QUEUE_DETAIL: jw__render_scrape_queue_detail(ui, x, y, w, h); break;
@@ -7196,6 +7283,10 @@ static bool jw__enter_screen(jw_settings_ui *ui, jw_settings_screen screen,
         ui->games_list.cursor = 0;
         ui->games_list.scroll_offset = 0;
         jw__refresh_performance(ui);   /* Game Performance row lives here now */
+        break;
+    case JW_SETTINGS_HIDDEN_GAMES:
+        if (!jw__load_hidden_games(ui) && status_buf && status_size > 0)
+            snprintf(status_buf, status_size, "%s", T("Couldn't load hidden games."));
         break;
     case JW_SETTINGS_SYSTEM:
         ui->system_list.cursor = 0;
@@ -8268,6 +8359,11 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                                            status_buf, status_size);
                     break;
                 }
+                if (ui->games_list.cursor == JW_GAMES_HIDDEN_GAMES) {
+                    (void)jw__enter_screen(ui, JW_SETTINGS_HIDDEN_GAMES,
+                                           status_buf, status_size);
+                    break;
+                }
                 ui->scrape_edit_is_region =
                     ui->games_list.cursor == JW_GAMES_REGION;
                 ui->scrape_edit_grabbed = false;
@@ -8278,6 +8374,47 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
             }
             case CAT_BTN_B:
                 ui->screen = JW_SETTINGS_HOME;
+                break;
+            default:
+                break;
+        }
+        break;
+
+    case JW_SETTINGS_HIDDEN_GAMES:
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->hidden_games_list, -1, ui->hidden_games_count);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->hidden_games_list, +1, ui->hidden_games_count);
+                break;
+            case CAT_BTN_A: {
+                int row = ui->hidden_games_list.cursor;
+                if (row < 0 || row >= ui->hidden_games_count) break;
+                const jw_game_entry *game = &ui->hidden_games[row];
+                int rc = jw_db_clear_hidden_game(ui->db_path, game->source_id,
+                                                 game->rom_relpath);
+                if (rc != 0) {
+                    if (status_buf && status_size > 0)
+                        snprintf(status_buf, status_size, "%s", rc == JW_DB_RC_READONLY
+                            ? T("Your library is read-only. Your game is still hidden.")
+                            : T("Couldn't unhide your game."));
+                    if (rc == JW_DB_RC_READONLY)
+                        (void)jw_storage_ui_show_library_read_only(ui->socket_path);
+                    break;
+                }
+                ui->visibility_changed = true;
+                if (status_buf && status_size > 0)
+                    snprintf(status_buf, status_size, "%s", T("Game unhidden"));
+                --ui->hidden_games_count;
+                memmove(&ui->hidden_games[row], &ui->hidden_games[row + 1],
+                    (size_t)(ui->hidden_games_count - row) * sizeof(*ui->hidden_games));
+                cat_list_state_jump(&ui->hidden_games_list, row, ui->hidden_games_count);
+                break;
+            }
+            case CAT_BTN_B:
+                jw__clear_hidden_games(ui);
+                ui->screen = JW_SETTINGS_GAMES;
                 break;
             default:
                 break;

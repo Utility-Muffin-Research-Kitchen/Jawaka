@@ -17969,11 +17969,12 @@ int main(int argc, char *argv[]) {
        otherwise defer a freshness scan past frontend-ready. */
     {
         bool need_initial_scan = state.library_generation <= 0;
-        jw_library_summary summary;
-        memset(&summary, 0, sizeof(summary));
+        /* Hidden games still populate the cache; browse counts can be zero. */
+        jw_library_stats stats;
+        memset(&stats, 0, sizeof(stats));
         if (!need_initial_scan) {
-            need_initial_scan = jw_db_read_summary(state.db_path, &summary) != 0 ||
-                                (summary.game_count <= 0 && summary.app_count <= 0);
+            need_initial_scan = jw_db_read_stats(state.db_path, &stats) != 0 ||
+                                (stats.game_count <= 0 && stats.app_count <= 0);
         }
         if (need_initial_scan) {
             state.library_populated = false;
@@ -17981,7 +17982,7 @@ int main(int argc, char *argv[]) {
                 jw_log_warn("startup library scan could not start; launcher will show cache if available");
             }
         } else {
-            state.library_populated = summary.game_count > 0 || summary.app_count > 0;
+            state.library_populated = stats.game_count > 0 || stats.app_count > 0;
             jw_log_info("startup library scan deferred (generation=%d)",
                         state.library_generation);
         }

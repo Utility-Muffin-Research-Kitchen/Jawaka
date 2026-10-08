@@ -90,6 +90,18 @@ static void jw__storage_ui_message(const char *message) {
     (void)cat_confirmation(&opts, &result);
 }
 
+bool jw_storage_ui_show_library_read_only(const char *socket_path) {
+    jw_ipc_storage_status_info card = {0};
+    if (socket_path && socket_path[0] &&
+        jw_ipc_get_storage_status(socket_path, jw_storage_ui_sources[0],
+                                  &card, NULL, 0) == 0 &&
+        (jw_storage_ui_is_read_only(&card) || jw_storage_ui_needs_repair(&card))) {
+        return jw_storage_ui_show_warning(socket_path, &card);
+    }
+    jw__storage_ui_message(T("Your library is read-only. You can't save changes. Open Settings > System > SD Cards to check your card."));
+    return false;
+}
+
 static bool jw__storage_ui_confirm(const char *message, const char *cancel,
                                    const char *confirm) {
     cat_footer_item footer[] = {

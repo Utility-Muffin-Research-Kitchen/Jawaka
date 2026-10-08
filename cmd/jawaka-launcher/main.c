@@ -146,7 +146,8 @@ typedef enum {
     JW_ACTION_ROW_PERFORMANCE,
     JW_ACTION_ROW_SCRAPE,        /* game: replace art */
     JW_ACTION_ROW_SCRAPE_CANCEL, /* swap-in while the target is queued */
-    JW_ACTION_ROW_RESET
+    JW_ACTION_ROW_RESET,
+    JW_ACTION_ROW_HIDE
 } jw_action_row_kind;
 
 /* ─── Saturn BIOS picker ───────────────────────────────────────────────────
@@ -1027,12 +1028,20 @@ static void jw__system_activity_tick(jw_launcher_state *state) {
 
 /* A fresh output buffer detects repeated feedback without treating navigation
    as a new message. Leaving a page discards its feedback, not ongoing work. */
+static int jw__refresh_after_visibility_write(const char *db_path,
+                                              jw_launcher_state *state);
+
 static bool jw__system_settings_input(jw_launcher_state *state, jw_settings_ui *ui,
                                       cat_button button, bool *theme_changed) {
     jw_settings_screen before = jw_settings_ui_screen(ui);
     char feedback[256] = "";
     bool open = jw_settings_ui_handle_button(ui, button, feedback, sizeof(feedback),
                                               theme_changed);
+    if (ui->visibility_changed) {
+        ui->visibility_changed = false;
+        if (jw__refresh_after_visibility_write(state->db_path, state) != 0)
+            snprintf(feedback, sizeof(feedback), "%s", T("Game unhidden. Library refresh failed."));
+    }
     if (!open || before != jw_settings_ui_screen(ui))
         state->system_activity.feedback.text[0] = '\0';
     else if (feedback[0])
@@ -1208,6 +1217,12 @@ static void jw__draw_settings_footer(const jw_launcher_state *state) {
             { CAT_BTN_A, "Scrape", true, JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 3);
+    } else if (scr == JW_SETTINGS_HIDDEN_GAMES) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_B, "Back",   true, JW_HINT("B") },
+            { CAT_BTN_A, "Unhide", true, JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, state->settings.hidden_games_count > 0 ? 2 : 1);
     } else if (scr == JW_SETTINGS_HOME_TABS) {
         bool grab = state->settings.home_tabs_grabbed;
         cat_footer_item footer[] = {
@@ -1416,7 +1431,9 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
         return -1;
     }
 
-    jw_db_list_systems(db_path, state->systems, JW_MAX_SYSTEMS, &state->system_count);
+    int result = 0;
+    if (jw_db_list_systems(db_path, state->systems, JW_MAX_SYSTEMS, &state->system_count) != 0)
+        result = -1;
     jw__system_icon_memo_clear(state);
     char catalog_error[160];
     jw_ra_catalog *catalog =
@@ -1446,10 +1463,12 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     if (jw_db_list_recent_games(db_path, state->recents, JW_MAX_RECENTS,
                                 &state->recents_count) != 0) {
         state->recents_count = 0;
+        result = -1;
     }
     if (jw_db_list_favorite_games(db_path, state->favorites, JW_MAX_FAVORITES,
                                   &state->favorites_count) != 0) {
         state->favorites_count = 0;
+        result = -1;
     }
     if (state->pakrat_open) {
         jw__load_pakrat_store(state);
@@ -1477,6 +1496,9 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
             cat_list_state_jump(&state->game_list, game_cursor, state->game_count);
         } else if (rc == 1 || (rc == 0 && state->game_count <= 0)) {
             jw__close_game_browser(state);
+        } else if (rc != 0) {
+            jw__close_game_browser(state);
+            result = -1;
         }
     }
 
@@ -1570,7 +1592,7 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     }
 
     state->scan_ready = true;
-    return 0;
+    return result;
 }
 
 static void jw__status_poller_kick(void);
@@ -6617,6 +6639,9 @@ static void jw__action_row_strings(const jw_launcher_state *state,
                          : "Reset System Overrides");
             snprintf(value, value_size, "%s", "Clear");
             break;
+        case JW_ACTION_ROW_HIDE:
+            snprintf(title, title_size, "%s", T("Hide Game"));
+            break;
         default:
             break;
     }
@@ -8976,6 +9001,7 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
                                       ? JW_ACTION_ROW_SCRAPE_CANCEL
                                       : JW_ACTION_ROW_SCRAPE);
         jw__action_add_row(state, JW_ACTION_ROW_RESET);
+        jw__action_add_row(state, JW_ACTION_ROW_HIDE);
     }
     cat_list_state_init(&state->action_list, 7);
     cat_list_state_jump(&state->action_list, old_cursor, state->action_row_count);
@@ -10194,7 +10220,9 @@ static void jw__open_apps(jw_launcher_state *state) {
    current position is stashed in /tmp right before launching and restored on the
    next start. /tmp is deliberate: it survives the game round-trip but clears on
    reboot, so a cold boot still honors the Startup Tab setting. */
+#ifndef JW_RESUME_PATH
 #define JW_RESUME_PATH "/tmp/jawaka-launcher-resume"
+#endif
 /* Dropped by the System menu's "Search" item; opens the search overlay on respawn. */
 #define JW_OPEN_SEARCH_MARKER "/tmp/jawaka-open-search"
 
@@ -10217,6 +10245,26 @@ static void jw__save_resume(const jw_launcher_state *state) {
     fprintf(fp, "game_cursor=%d\n", state->game_list.cursor);
     fprintf(fp, "game_system=%s\n", state->game_system);
     fclose(fp);
+}
+
+static int jw__refresh_after_visibility_write(const char *db_path,
+                                              jw_launcher_state *state) {
+    int rc = jw__reload_library_from_db(db_path, state);
+    if (state->switcher_open && jw_game_switcher_load(&state->switcher, db_path) != 0)
+        rc = -1;
+    if (rc != 0) {
+        /* A stale cache must not bring a successfully hidden game back. */
+        jw__close_game_browser(state);
+        state->system_count = state->flat_count = 0;
+        state->favorites_count = state->recents_count = 0;
+        state->search_open = false;
+        state->search_count = 0;
+        state->switcher_open = false;
+        cat_list_state_jump(&state->list, 0, 0);
+    }
+    jw__save_resume(state);
+    cat_request_frame();
+    return rc;
 }
 
 /* Load and consume (delete) the resume breadcrumb. True if one was present. */
@@ -10751,6 +10799,27 @@ static void jw__reset_action_overrides(const char *db_path,
     }
 }
 
+static void jw__hide_action_game(const char *socket_path, const char *db_path,
+                                  jw_launcher_state *state, bool *running) {
+    if (state->action_scope != JW_ACTION_GAME || state->action_game.id <= 0)
+        return;
+    int rc = jw_db_set_game_hidden(db_path, state->action_game.id, true);
+    if (rc == JW_DB_RC_READONLY) {
+        if (jw_storage_ui_show_library_read_only(socket_path)) *running = false;
+        return;
+    }
+    if (rc != 0) {
+        snprintf(state->status, sizeof(state->status), "%s", T("Could not hide this game"));
+        return;
+    }
+    state->actions_open = false;
+    state->action_scope = JW_ACTION_NONE;
+    rc = jw__refresh_after_visibility_write(db_path, state);
+    snprintf(state->status, sizeof(state->status), "%s", rc == 0
+        ? T("Game hidden. Unhide it in Settings > Games > Hidden Games.")
+        : T("Game hidden. Library refresh failed."));
+}
+
 static bool jw__screenscraper_account_configured(const char *db_path) {
     char username[64] = "";
     return db_path && db_path[0] &&
@@ -10869,6 +10938,9 @@ static void jw__select_action_row(const char *socket_path, const char *db_path,
             break;
         case JW_ACTION_ROW_RESET:
             jw__reset_action_overrides(db_path, state);
+            break;
+        case JW_ACTION_ROW_HIDE:
+            jw__hide_action_game(socket_path, db_path, state, running);
             break;
         default:
             break;

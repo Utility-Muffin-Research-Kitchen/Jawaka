@@ -15,7 +15,8 @@ typedef struct {
     char sample_summary[256];
 } jw_library_summary;
 
-/* Aggregate library + playtime stats for the System menu's Info pages. */
+/* Aggregate library + playtime stats for the System menu's Info pages.
+   Lifetime totals include hidden games; the title-bearing top list does not. */
 typedef struct {
     char name[128];
     char system[64];
@@ -179,6 +180,21 @@ int  jw_db_list_games_for_system(const char *db_path, const char *system,
 int  jw_db_search_library(const char *db_path, const char *query,
                           jw_search_result *out, int max_count, int *out_count);
 
+/* Visibility changes only the empty-member preference for the game's stable
+   source/path key. Identity lookups, metadata and member preferences survive.
+   Writes return JW_DB_RC_READONLY/BUSY/IOERR, or -1 for other errors.
+   Hiding returns JW_DB_RC_NO_ROW if the game no longer exists; clearing an
+   absent preference succeeds. */
+int  jw_db_set_game_hidden(const char *db_path, int game_id, int hidden);
+int  jw_db_is_game_hidden(const char *db_path, int game_id, int *out_hidden);
+int  jw_db_clear_hidden_game(const char *db_path, const char *source_id,
+                              const char *rom_relpath);
+/* Hidden Games includes missing rows: id is 0, name falls back to rom_relpath,
+   and source_id/rom_relpath remain available to clear the stored preference. */
+int  jw_db_count_hidden_games(const char *db_path, int *out_count);
+int  jw_db_list_hidden_games(const char *db_path, jw_game_entry *out,
+                              int max_count, int *out_count);
+
 /* Favorites. kind is "game" or "app"; target_id is the games/apps id.
    set_favorite adds (on != 0) or removes (on == 0); it is idempotent.
    list_favorite_games returns favorited games in case-insensitive alphabetical
@@ -200,7 +216,9 @@ int  jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
    Idempotent — removing an absent row succeeds. */
 int  jw_db_remove_recent(const char *db_path, const char *kind, int target_id);
 
-/* Scoped content actions/settings. game settings are keyed by stable games.id;
+/* Scoped content actions/settings. Identity lookups deliberately include hidden
+   games (Focus selections, boot resume and running sessions use them).
+   Game settings are keyed by stable games.id;
    system settings are keyed by canonical Jawaka system id. Empty values should
    normally be deleted by callers rather than stored. */
 int  jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,

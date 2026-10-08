@@ -688,6 +688,23 @@ schema-v6-test: | $(BUILD)/bin
 		$(LDLIBS_COMMON)
 	$(BUILD)/bin/schema-v6-test
 
+.PHONY: visibility-test visibility-ui-test game-switcher-test
+visibility-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/visibility-test \
+		internal/db/visibility_test.c internal/db/db.c internal/db/relocation.c \
+		internal/storage/sources.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/visibility-test
+
+visibility-ui-test: | $(BUILD)/bin check-catastrophe check-sdl
+	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/visibility-ui-test \
+		internal/launcher/visibility_ui_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
+	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/visibility-ui-test
+
+game-switcher-test: | $(BUILD)/bin check-catastrophe check-sdl
+	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/game-switcher-test \
+		internal/launcher/game_switcher_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
+	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/game-switcher-test
+
 rumble-settings-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/rumble-settings-test \
 		internal/db/rumble_settings_test.c internal/db/db.c internal/db/relocation.c \

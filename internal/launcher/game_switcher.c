@@ -223,10 +223,27 @@ static bool jw__switcher_same_game(const jw_game_switcher *sw,
     return strcmp(entry->rom_path, rom_path) == 0;
 }
 
-void jw_game_switcher_set_current(jw_game_switcher *sw, const char *system,
+void jw_game_switcher_set_current(jw_game_switcher *sw, const char *db_path,
+                                  const char *system,
                                   const char *rom_path, const char *name,
                                   const char *image_path) {
     if (!sw || !rom_path || !rom_path[0]) {
+        return;
+    }
+
+    /* Session paths are absolute; primary-card DB paths are SD-relative. */
+    jw_game_entry game;
+    int found = jw_db_get_game_by_rom_path(db_path, rom_path, &game);
+    size_t root_len = strlen(sw->sdcard_root);
+    if (found != 0 && root_len > 0 &&
+        strncmp(rom_path, sw->sdcard_root, root_len) == 0 &&
+        rom_path[root_len] == '/') {
+        found = jw_db_get_game_by_rom_path(db_path, rom_path + root_len + 1, &game);
+    }
+    int hidden = 0;
+    /* A pruned row may still have a hidden preference. Only inject known
+       visible games; B resumes the session independently of this tile. */
+    if (found != 0 || jw_db_is_game_hidden(db_path, game.id, &hidden) != 0 || hidden) {
         return;
     }
 

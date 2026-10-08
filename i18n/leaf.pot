@@ -160,6 +160,10 @@ msgstr ""
 msgid "%s: %d icons over %dpx skipped, %d off-size"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "%s: Not in your library"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid ", %d not found"
 msgstr ""
@@ -864,6 +868,10 @@ msgstr ""
 msgid "Core"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Could not hide this game"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Could not save"
 msgstr ""
@@ -872,8 +880,16 @@ msgstr ""
 msgid "Couldn't install %s"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Couldn't load hidden games."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't resume your game. Open it to try loading your save."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Couldn't unhide your game."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1156,12 +1172,28 @@ msgstr ""
 msgid "Game Switcher"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Game hidden. Library refresh failed."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Game hidden. Unhide it in Settings > Games > Hidden Games."
+msgstr ""
+
 #: cmd/jawaka-osd/game_launch.c
 msgid "Game not saved"
 msgstr ""
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Game saved"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Game unhidden"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Game unhidden. Library refresh failed."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1222,6 +1254,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Hidden"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hidden Games"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Hide Game"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1658,6 +1698,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "No games found"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "No hidden games."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2993,6 +3037,10 @@ msgid "Unavailable"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Unhide"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Uninstall"
 msgstr ""
 
@@ -3241,6 +3289,14 @@ msgid "Your last shutdown didn't finish saving."
 msgstr ""
 
 #: internal/settings/storage_ui.c
+msgid "Your library is read-only. You can't save changes. Open Settings > System > SD Cards to check your card."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Your library is read-only. Your game is still hidden."
+msgstr ""
+
+#: internal/settings/storage_ui.c
 msgid "Your other SD card is still read-only, so your library can't update yet."
 msgstr ""
 
@@ -3292,7 +3348,7 @@ msgstr ""
 msgid "just now"
 msgstr ""
 
-#: internal/settings/storage_ui.c
+#: internal/settings/settings.c
 msgid "launcher SD card"
 msgstr ""
 
@@ -3324,7 +3380,7 @@ msgstr ""
 msgid "refresh rate unavailable on this platform"
 msgstr ""
 
-#: internal/settings/storage_ui.c
+#: internal/settings/settings.c
 msgid "second SD card"
 msgstr ""
 
