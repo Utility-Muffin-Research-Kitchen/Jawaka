@@ -2,6 +2,7 @@
 static char delete_resume_path[4096];
 #define JW_RESUME_PATH delete_resume_path
 #define jw_ipc_delete_begin test_delete_begin
+#define jw_ipc_delete_disc_begin test_delete_disc_begin
 #define jw_ipc_delete_poll test_delete_poll
 #define jw_ipc_delete_commit test_delete_commit
 #define jw_ipc_delete_cancel test_delete_cancel
@@ -19,6 +20,8 @@ static jw_ipc_delete_phase commit_phase = JW_IPC_DELETE_COMMITTING;
 static int commit_rc;
 static char readonly_source[32];
 static char warning_source[32];
+static bool disc_request, final_disc, shared_disc;
+static int disc_begins;
 
 static void fixture_status(jw_ipc_delete_status *status, jw_ipc_delete_phase phase) {
     jw_ipc_delete_status_free(status);
@@ -32,6 +35,14 @@ static void fixture_status(jw_ipc_delete_status *status, jw_ipc_delete_phase pha
     status->file_count = 2;
     status->bytes = 8192;
     status->shared_count = status->keep_count = 1;
+    if (disc_request) {
+        status->disc_count = 1;
+        status->playlist_edit = !final_disc;
+        status->final_disc = final_disc;
+        status->playlist_replaced = !final_disc && phase == JW_IPC_DELETE_DONE;
+        snprintf(status->disc_name, sizeof(status->disc_name), "%s", final_disc ? "Hidden Disc" : "Opening");
+        status->remaining_discs = final_disc ? 0 : 1;
+    }
     status->files_count = 3;
     status->files = calloc(status->files_count, sizeof(*status->files));
     assert(status->files);
@@ -42,6 +53,17 @@ static void fixture_status(jw_ipc_delete_status *status, jw_ipc_delete_phase pha
         status->files[i].keep = i == 2;
         status->files[i].size = 4096;
     }
+    if (disc_request && !final_disc) {
+        status->files[2].keep = 2;
+        snprintf(status->files[2].rom_relpath, sizeof(status->files[2].rom_relpath), "PS/Adventure.m3u");
+        status->shared_count = 0;
+        if (shared_disc) {
+            status->files[0].keep = status->files[1].keep = 1;
+            status->bytes = status->file_count = 0;
+            status->shared_count = 2;
+            status->keep_count = 3;
+        }
+    }
 }
 
 int test_delete_begin(const char *socket, const char *source, const char *relative,
@@ -49,6 +71,21 @@ int test_delete_begin(const char *socket, const char *source, const char *relati
     (void)socket;
     assert(!strcmp(source, "primary") && !strcmp(relative, "PS/Adventure.m3u"));
     ++begins;
+    disc_request = false;
+    *session = (jw_ipc_delete_session *)(uintptr_t)1;
+    fixture_status(status, begin_phase);
+    return 0;
+}
+
+int test_delete_disc_begin(const char *socket, const char *source, const char *relative,
+                            const char *disc_source, const char *disc_path, const char *member,
+                            jw_ipc_delete_session **session, jw_ipc_delete_status *status) {
+    (void)socket;
+    assert(!strcmp(source, "primary") && !strcmp(relative, "PS/Adventure.m3u"));
+    assert(!strcmp(disc_source, "primary") && !strcmp(disc_path, final_disc ? "PS/disc2.chd" : "PS/disc1.chd"));
+    assert(!member[0]);
+    ++disc_begins;
+    disc_request = true;
     *session = (jw_ipc_delete_session *)(uintptr_t)1;
     fixture_status(status, begin_phase);
     return 0;
@@ -89,8 +126,8 @@ bool test_storage_warning(const char *socket, const jw_ipc_storage_status_info *
     return false;
 }
 
-static void screenshot(void) {
-    const char *path = getenv("JW_DELETE_SCREENSHOT");
+static void screenshot(const char *variable) {
+    const char *path = getenv(variable);
     if (!path || !path[0]) return;
     SDL_Surface *pixels = SDL_CreateRGBSurfaceWithFormat(0, cat_get_screen_width(),
         cat_get_screen_height(), 32, SDL_PIXELFORMAT_RGBA32);
@@ -98,6 +135,147 @@ static void screenshot(void) {
                                          pixels->pixels, pixels->pitch) == 0);
     assert(IMG_SavePNG(pixels, path) == 0);
     SDL_FreeSurface(pixels);
+}
+
+static void write_fixture(const char *root, const char *name, const char *text) {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/Roms/PS/%s", root, name);
+    FILE *file = fopen(path, "wb");
+    assert(file && fputs(text, file) >= 0 && fclose(file) == 0);
+}
+
+static void attach_catalog(jw_launcher_state *state) {
+    jw_ra_catalog_free(state->system_catalog);
+    state->system_catalog = calloc(1, sizeof(*state->system_catalog));
+    assert(state->system_catalog);
+    state->system_catalog->systems = calloc(1, sizeof(*state->system_catalog->systems));
+    assert(state->system_catalog->systems);
+    state->system_catalog->system_count = 1;
+    state->system_catalog->systems[0].id = strdup("PS");
+    state->system_catalog->systems[0].name = strdup("PlayStation");
+}
+
+static void check_disc_deletion(jw_launcher_state *state, const char *root) {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/Roms", root);
+    assert(mkdir(path, 0755) == 0);
+    snprintf(path, sizeof(path), "%s/Roms/PS", root);
+    assert(mkdir(path, 0755) == 0);
+    write_fixture(root, "Adventure.m3u", "disc1.chd|Opening\r\ndisc2.chd|Hidden Disc\r\n#SAVEDISK:Save Disk\r\n");
+    write_fixture(root, "disc1.chd", "synthetic first disc");
+    write_fixture(root, "disc2.chd", "synthetic second disc");
+    snprintf(path, sizeof(path), "%s/Roms/PS/Adventure.m3u", root);
+    sqlite3 *db = NULL;
+    assert(jw_db_open(state->db_path, &db) == 0 && jw_db_scan_begin(db) == 0);
+    assert(jw_db_insert_game_stable(db, "PS", "Synthetic Adventure", "primary", "PS/Adventure.m3u",
+                                   path, "", "", "") == 0);
+    jw_db_close(db);
+    jw_game_entry parent;
+    assert(jw_db_get_game_by_source_relpath(state->db_path, "primary", "PS/Adventure.m3u", &parent) == 0);
+    assert(jw_db_set_rom_hidden(state->db_path, "primary", "PS/disc2.chd", "", 1) == 0);
+    assert(jw_db_set_favorite(state->db_path, "game", parent.id, 1) == 0);
+    attach_catalog(state);
+    jw__open_game_actions(state->db_path, state, &parent);
+    state->discs_open = true;
+    assert(state->action_content.disc_count == 2 && state->disc_visible_count == 1);
+    assert(jw__can_delete_disc(state));
+    state->system_catalog->systems[0].provider = strdup("mlp1/Custom.pak");
+    assert(!jw__can_delete_disc(state));
+    bool running = true;
+    jw__handle_discs_input("", state->db_path, state, CAT_BTN_X, &running);
+    assert(!state->delete_open);
+    free(state->system_catalog->systems[0].provider);
+    state->system_catalog->systems[0].provider = NULL;
+    begin_phase = JW_IPC_DELETE_READY;
+    commit_phase = JW_IPC_DELETE_COMMITTING;
+    final_disc = false;
+    shared_disc = true;
+    jw__render_discs(state);
+    screenshot("JW_DELETE_DISCS_SCREENSHOT");
+    jw__handle_discs_input("", state->db_path, state, CAT_BTN_X, &running);
+    assert(disc_begins == 1 && !state->delete_confirm && state->delete_status.playlist_edit);
+    assert(!strcmp(jw__delete_title(state), "Delete Disc") && !state->delete_status.bytes);
+    assert(state->delete_status.remaining_discs == 1 && !state->delete_status.final_disc);
+    jw__render_launcher(state);
+    screenshot("JW_DELETE_DISC_SCREENSHOT");
+    int before = commits;
+    jw__handle_delete_input(state, CAT_BTN_A);
+    assert(commits == before && state->discs_open && state->action_content.disc_count == 2);
+    shared_disc = false;
+    /* The daemon may still be committing after its response is lost. */
+    commit_phase = JW_IPC_DELETE_ERROR;
+    commit_rc = -1;
+    jw__handle_discs_input("", state->db_path, state, CAT_BTN_X, &running);
+    jw__handle_delete_input(state, CAT_BTN_RIGHT);
+    jw__handle_delete_input(state, CAT_BTN_A);
+    assert(commits == before + 1 && !state->delete_result_known);
+    jw__handle_delete_input(state, CAT_BTN_B);
+    assert(state->delete_reconciled && !state->delete_open);
+    assert(!state->actions_open && !state->discs_open && !state->action_content.disc_count);
+    commit_rc = 0;
+    commit_phase = JW_IPC_DELETE_COMMITTING;
+    attach_catalog(state);
+    jw__open_game_actions(state->db_path, state, &parent);
+    state->discs_open = true;
+    before = commits;
+    jw__handle_discs_input("", state->db_path, state, CAT_BTN_X, &running);
+    jw__handle_delete_input(state, CAT_BTN_RIGHT);
+    jw__handle_delete_input(state, CAT_BTN_A);
+    assert(commits == before + 1);
+    /* The fake daemon now publishes a completed edit to the disposable playlist. */
+    write_fixture(root, "Adventure.m3u", "disc2.chd|Hidden Disc\r\n#SAVEDISK:Save Disk\r\n");
+    snprintf(path, sizeof(path), "%s/Roms/PS/disc1.chd", root);
+    assert(unlink(path) == 0);
+    state->delete_next_poll = 0;
+    jw__delete_tick(state, &running);
+    assert(state->delete_status.playlist_replaced && state->delete_reconciled);
+    assert(state->actions_open && state->discs_open && state->action_content.disc_count == 1);
+    assert(state->disc_visible_count == 0); /* the surviving hidden disc still belongs to the game */
+    jw_game_entry current;
+    assert(jw_db_get_game_by_id(state->db_path, parent.id, &current) == 0 && current.favorite);
+    jw__handle_delete_input(state, CAT_BTN_B);
+    attach_catalog(state);
+    jw__handle_discs_input("", state->db_path, state, CAT_BTN_B, &running);
+    jw__action_refresh_rows(state);
+    assert(state->action_rows[state->action_row_count - 2] == JW_ACTION_ROW_DISCS);
+    cat_list_state_jump(&state->action_list, state->action_row_count - 2, state->action_row_count);
+    jw__handle_actions_input("", state->db_path, state, CAT_BTN_A, &running);
+    assert(state->discs_open && state->action_content.disc_count == 1);
+    jw__handle_discs_input("", state->db_path, state, CAT_BTN_Y, &running);
+    assert(state->disc_visible_count == 1 && state->disc_hidden[0]);
+    final_disc = true;
+    jw__handle_discs_input("", state->db_path, state, CAT_BTN_X, &running);
+    assert(state->delete_status.final_disc && !state->delete_status.playlist_edit && !state->delete_confirm);
+    assert(!strcmp(jw__delete_title(state), "Delete Game"));
+    jw__render_launcher(state);
+    screenshot("JW_DELETE_FINAL_DISC_SCREENSHOT");
+    assert(access(path, F_OK) == -1); /* only the earlier first-disc edit has happened */
+    snprintf(path, sizeof(path), "%s/Roms/PS/Adventure.m3u", root);
+    assert(access(path, F_OK) == 0);
+    before = commits;
+    jw__handle_delete_input(state, CAT_BTN_RIGHT);
+    jw__handle_delete_input(state, CAT_BTN_A);
+    assert(commits == before + 1); /* one explicit confirmation covers whole-game scope */
+    assert(unlink(path) == 0);
+    snprintf(path, sizeof(path), "%s/Roms/PS/disc2.chd", root);
+    assert(unlink(path) == 0);
+    assert(jw_db_open(state->db_path, &db) == 0);
+    jw_db_rom_key removed[] = {{"primary", "PS/Adventure.m3u"}, {"primary", "PS/disc2.chd"}};
+    assert(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK);
+    assert(jw_db_reconcile_removed_roms(db, removed, 2) == 0);
+    assert(sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK);
+    jw_db_close(db);
+    assert(test_delete_poll(state->delete_session, &state->delete_status) == 0);
+    assert(state->delete_status.phase == JW_IPC_DELETE_DONE);
+    /* Back can arrive before the regular frame tick after a quick result. */
+    jw__handle_delete_input(state, CAT_BTN_B);
+    assert(!state->actions_open && !state->discs_open && !state->delete_open);
+    jw_ra_catalog_free(state->system_catalog);
+    state->system_catalog = NULL;
+    snprintf(path, sizeof(path), "%s/Roms/PS", root);
+    assert(rmdir(path) == 0);
+    snprintf(path, sizeof(path), "%s/Roms", root);
+    assert(rmdir(path) == 0);
 }
 
 int main(void) {
@@ -174,7 +352,7 @@ int main(void) {
     jw__delete_begin(state, &game);
     assert(state->delete_open && !state->delete_confirm && begins == 1);
     jw__render_launcher(state);
-    screenshot();
+    screenshot("JW_DELETE_SCREENSHOT");
     jw__handle_delete_input(state, CAT_BTN_A);
     assert(!state->delete_open && !commits && cancels == 1);
 
@@ -219,6 +397,7 @@ int main(void) {
     jw__handle_delete_input(state, CAT_BTN_RIGHT);
     jw__handle_delete_input(state, CAT_BTN_A);
     assert(commits == 2); /* a failed or lost commit never replays */
+    state->delete_reconciled = true;
     jw__handle_delete_input(state, CAT_BTN_B);
 
     commit_rc = -1;
@@ -228,6 +407,7 @@ int main(void) {
     assert(commits == 3 && !state->delete_result_known);
     jw__handle_delete_input(state, CAT_BTN_A);
     assert(commits == 3);
+    state->delete_reconciled = true;
     jw__handle_delete_input(state, CAT_BTN_B);
     commit_rc = 0;
 
@@ -261,11 +441,21 @@ int main(void) {
     jw__delete_close(state);
     jw_settings_ui_close(&state->settings);
     state->system_catalog = NULL;
+    check_disc_deletion(state, root);
+    /* A lone CUE or cartridge has no playlist discs; never show "Discs: 0". */
+    jw_ipc_delete_status summary = {.file_count = 1, .bytes = 4096};
+    char text[256];
+    jw__delete_summary(&summary, text, sizeof(text));
+    assert(!strstr(text, "Discs") && !strncmp(text, "Files: 1. ", 10));
+    summary.disc_count = 2;
+    jw__delete_summary(&summary, text, sizeof(text));
+    assert(!strncmp(text, "Discs: 2. Files: 1. ", 20));
     g_present_state = NULL;
     unlink(state->db_path);
     free(state);
     cat_quit();
+    unlink(delete_resume_path); /* the refresh path saves a resume breadcrumb */
     rmdir(root);
-    puts("delete-ui-test: eligibility, Cancel default, file inspection, no replay, read-only and Hidden Games passed");
+    puts("delete-ui-test: game/disc scope, hidden final disc, refreshed playlist, no replay and Cancel default passed");
     return 0;
 }

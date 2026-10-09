@@ -35,6 +35,11 @@ typedef struct {
     char missing_sources[512];
     bool missing_descriptors;
     bool writable_progress;
+    bool playlist_edit;
+    bool final_disc;
+    bool playlist_replaced;
+    char disc_name[256];
+    size_t remaining_discs;
     uint64_t bytes;
     size_t disc_count;
     size_t file_count; /* proposed removal, including already missing files */
@@ -53,6 +58,11 @@ typedef struct {
 int jw_ipc_delete_begin(const char *socket_path, const char *source_id,
                         const char *rom_relpath, jw_ipc_delete_session **session,
                         jw_ipc_delete_status *status);
+int jw_ipc_delete_disc_begin(const char *socket_path, const char *source_id,
+                             const char *rom_relpath, const char *disc_source_id,
+                             const char *disc_rom_relpath, const char *member,
+                             jw_ipc_delete_session **session,
+                             jw_ipc_delete_status *status);
 int jw_ipc_delete_poll(jw_ipc_delete_session *session, jw_ipc_delete_status *status);
 int jw_ipc_delete_commit(jw_ipc_delete_session *session, const char *token,
                          jw_ipc_delete_status *status);

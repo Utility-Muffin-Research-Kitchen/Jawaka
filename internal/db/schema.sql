@@ -201,4 +201,4 @@ CREATE TABLE IF NOT EXISTS hidden_roms (
     PRIMARY KEY (source_id, rom_relpath, member)
 );
 
-PRAGMA user_version = 7;
+PRAGMA user_version = 6;

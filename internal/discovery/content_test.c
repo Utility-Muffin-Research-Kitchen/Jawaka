@@ -241,6 +241,54 @@ static void test_case_rules(void) {
     jw_content_free(&content);
 }
 
+static void test_hash_names_and_labels(void) {
+    /* RetroArch only treats '#' after .zip, .7z or .apk as an archive selector. */
+    write_file("cardA/Roms/PS/Hash #1 (Disc 1).chd", "one");
+    write_file("cardA/Roms/PS/set.7z", "seven");
+    write_file("cardA/Roms/PS/hash.m3u",
+               "#LABEL:Directive label\nHash #1 (Disc 1).chd|\n"
+               "ARCHIVE.ZIP#Disc #2.cue|Upper case\nset.7z#Disc 3.cue\n"
+               "#EXTINF:0,Kept\n#EXTINF:0,\nnot.zip.bak#x.chd\n");
+    jw_content content = inspect("PS/hash.m3u", NULL);
+    assert(content.disc_count == 4);
+    assert(!strcmp(content.discs[0].rom_relpath, "PS/Hash #1 (Disc 1).chd") && !content.discs[0].member[0]);
+    assert(!content.files[content.discs[0].file_index].missing);
+    assert(!strcmp(content.discs[0].label, "Directive label"));
+    assert(!strcmp(content.discs[1].member, "Disc #2.cue") && !strcmp(content.discs[1].label, "Upper case"));
+    assert(!strcmp(content.discs[2].rom_relpath, "PS/set.7z") && !strcmp(content.discs[2].member, "Disc 3.cue"));
+    assert(!strcmp(content.discs[3].rom_relpath, "PS/not.zip.bak#x.chd") && !content.discs[3].member[0]);
+    assert(!strcmp(content.discs[3].label, "Kept"));
+    jw_content_free(&content);
+
+    /* Long directive labels are display-only: shorten them at a character boundary. */
+    char playlist[1200] = "#LABEL:", label[512];
+    memset(label, 'x', 300); label[300] = '\0';
+    strcat(playlist, label); strcat(playlist, "\nHash #1 (Disc 1).chd\n#EXTINF:0,");
+    for (int i = 0; i < 200; i++) strcat(playlist, "\xc3\xa9");
+    strcat(playlist, "\nHash #1 (Disc 1).chd\n");
+    write_file("cardA/Roms/PS/long-label.m3u", playlist);
+    content = inspect("PS/long-label.m3u", NULL);
+    assert(content.disc_count == 2 && strlen(content.discs[0].label) == 255);
+    assert(strlen(content.discs[1].label) == 254 && (unsigned char)content.discs[1].label[253] == 0xa9);
+    jw_content_free(&content);
+}
+
+static void test_error_location(void) {
+    /* A malformed descriptor anywhere must be findable from the error alone. */
+    write_file("cardA/Roms/PS/locate-outer.m3u", "locate-inner.cue\n");
+    write_file("cardA/Roms/PS/locate-inner.cue", "REM no FILE records\n");
+    jw_content content;
+    char error[512];
+    assert(jw_content_inspect(&sources, "primary", "PS/locate-outer.m3u", NULL,
+                              &content, error, sizeof(error)) == -1);
+    assert(strstr(error, "track records (in ") && strstr(error, "PS/locate-inner.cue)"));
+    assert(!strstr(error, "locate-outer"));
+    write_file("cardA/Roms/PS/locate-ref.m3u", "../../../outside.bin\n");
+    assert(jw_content_inspect(&sources, "primary", "PS/locate-ref.m3u", NULL,
+                              &content, error, sizeof(error)) == -1);
+    assert(strstr(error, "outside the mounted ROM roots") && strstr(error, "PS/locate-ref.m3u)"));
+}
+
 static void test_limits(void) {
     char path[JW_STORAGE_PATH_MAX], text[1200];
     memset(text, 'a', 600);
@@ -280,6 +328,67 @@ static void test_limits(void) {
     fails("PS/many-discs.m3u", NULL, "too many discs");
 }
 
+static void test_many_directories(void) {
+    /* Past the old directory and file caps; one inspection graph covers every root. */
+    enum { GAMES = 3000 };
+    static jw_content_root roots[GAMES];
+    static char relpaths[GAMES][48];
+    char name[128];
+    directory("cardA/Roms/Many");
+    write_file("cardA/Roms/Many/shared.bin", "shared");
+    for (int i = 0; i < GAMES; i++) {
+        snprintf(name, sizeof(name), "cardA/Roms/Many/g%04d", i);
+        directory(name);
+        snprintf(name, sizeof(name), "cardA/Roms/Many/g%04d/Game.bin", i);
+        write_file(name, "x");
+        snprintf(name, sizeof(name), "cardA/Roms/Many/g%04d/Game.cue", i);
+        write_file(name, "FILE \"Game.bin\" BINARY\nFILE \"../shared.bin\" BINARY\n");
+        snprintf(relpaths[i], sizeof(relpaths[i]), "Many/g%04d/Game.cue", i);
+        roots[i] = (jw_content_root){"primary", relpaths[i], NULL, 0};
+    }
+    jw_content content;
+    char error[512];
+    if (jw_content_inspect_many(&sources, roots, GAMES, false, NULL, NULL, &content, error, sizeof(error))) {
+        fprintf(stderr, "many directories: %s\n", error);
+        assert(0);
+    }
+    assert(content.file_count == 2 * GAMES + 1 && content.reference_count == 2 * GAMES);
+    assert(content.launch_file == roots[0].file_index);
+    size_t shared = SIZE_MAX, shared_references = 0;
+    for (size_t i = 0; i < content.file_count; i++)
+        if (!strcmp(content.files[i].rom_relpath, "Many/shared.bin")) shared = i;
+    for (size_t i = 0; i < content.reference_count; i++)
+        shared_references += content.references[i].child == shared;
+    assert(shared != SIZE_MAX && shared_references == GAMES);
+    for (int i = 0; i < GAMES; i++) {
+        const jw_content_file *file = &content.files[roots[i].file_index];
+        assert(!strcmp(file->rom_relpath, relpaths[i]) && !file->missing && file->descriptor);
+        assert(!strcmp(file->source_id, "primary") && strstr(file->path, relpaths[i]));
+    }
+    jw_content_free(&content);
+    assert(!content.files && !content.references && !content.file_count);
+
+    /* A wide directory is name-indexed; a miss must still recover the on-disk spelling. */
+    directory("cardA/Roms/Many/wide");
+    for (int i = 0; i < 64; i++) {
+        snprintf(name, sizeof(name), "cardA/Roms/Many/wide/disc%02d.bin", i);
+        write_file(name, "x");
+    }
+    write_file("cardA/Roms/Many/wide.m3u", "wide/disc07.bin\nwide/DISC08.BIN\nwide/disc99.bin\n");
+    char path[JW_STORAGE_PATH_MAX];
+    join(path, sizeof(path), fixture, "cardA/Roms/Many/wide/DISC08.BIN");
+    struct stat st;
+    bool insensitive = stat(path, &st) == 0;
+    content = inspect("Many/wide.m3u", NULL);
+    assert(content.disc_count == 3);
+    assert(!strcmp(content.discs[0].rom_relpath, "Many/wide/disc07.bin"));
+    assert(!content.files[content.discs[0].file_index].missing);
+    assert(!strcmp(content.discs[1].rom_relpath, insensitive ? "Many/wide/disc08.bin" : "Many/wide/DISC08.BIN"));
+    assert(content.files[content.discs[1].file_index].missing == !insensitive);
+    assert(content.files[content.discs[2].file_index].missing);
+    jw_content_free(&content);
+}
+
 int main(void) {
     char temporary[] = "/tmp/jw-content-XXXXXX";
     assert(mkdtemp(temporary));
@@ -300,7 +409,10 @@ int main(void) {
     test_missing_and_errors();
     test_sources_and_symlinks();
     test_case_rules();
+    test_hash_names_and_labels();
+    test_error_location();
     test_limits();
+    test_many_directories();
     char command[JW_STORAGE_PATH_MAX + 16];
     snprintf(command, sizeof(command), "rm -rf '%s'", fixture);
     assert(system(command) == 0);

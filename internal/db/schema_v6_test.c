@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static void fail(sqlite3 *db, const char *message) {
@@ -32,12 +33,61 @@ static long long scalar(sqlite3 *db, const char *sql) {
     return value;
 }
 
-static int reject_v7(void *context, int action, const char *name,
-                     const char *value, const char *database, const char *trigger) {
+/* Released Jawaka refuses any user_version above 6, so additive tables must
+   never raise it. */
+static int reject_version_change(void *context, int action, const char *name,
+                                 const char *value, const char *database, const char *trigger) {
     (void)context; (void)database; (void)trigger;
-    return action == SQLITE_PRAGMA && name && value &&
-           strcmp(name, "user_version") == 0 && strcmp(value, "7") == 0
+    return action == SQLITE_PRAGMA && name && value && strcmp(name, "user_version") == 0
         ? SQLITE_DENY : SQLITE_OK;
+}
+
+static void check_unreleased_v7_and_read_only(void) {
+    /* Development builds stamped hidden_roms as v7; it returns to v6 intact. */
+    char dir[] = "/tmp/jawaka-schema-v7.XXXXXX", path[256];
+    if (!mkdtemp(dir)) fail(NULL, "v7 mkdtemp");
+    snprintf(path, sizeof(path), "%s/library.db", dir);
+    sqlite3 *db = NULL;
+    if (jw_db_open(path, &db) != 0 || jw_db_apply_schema(db) != 0) fail(db, "v7 fixture");
+    exec_ok(db, "INSERT INTO hidden_roms VALUES('primary','GB/Hidden.gb','');"
+                "PRAGMA user_version=7;");
+    if (jw_db_apply_schema(db) != 0 || scalar(db, "PRAGMA user_version") != 6 ||
+        scalar(db, "SELECT COUNT(*) FROM hidden_roms") != 1) {
+        fail(db, "unreleased v7 library did not return to v6");
+    }
+    if (jw_db_scan_begin(db) != 0 ||
+        jw_db_insert_game(db, "GB", "Visible", "Roms/GB/Visible.gb", NULL) != 0 ||
+        jw_db_insert_game(db, "GB", "Hidden", "Roms/GB/Hidden.gb", NULL) != 0 ||
+        jw_db_scan_prune(db) != 0) {
+        fail(db, "read-only fixture games");
+    }
+    /* What an older release leaves behind: the same v6 library without hidden_roms. */
+    exec_ok(db, "DROP TABLE hidden_roms;");
+    sqlite3_close(db);
+    if (chmod(path, 0444) != 0 || chmod(dir, 0555) != 0) fail(NULL, "chmod read-only");
+    jw_system_entry systems[4];
+    jw_game_entry games[4];
+    int count = 0, hidden = 0;
+    if (access(path, W_OK) == 0) {
+        puts("schema-v6-test: read-only checks skipped for a privileged user");
+    } else if (jw_db_list_systems(path, systems, 4, &count) != 0 || count != 1 ||
+               jw_db_list_games_for_system(path, "GB", games, 4, &count) != 0 || count != 2 ||
+               jw_db_is_rom_hidden(path, "primary", "GB/Hidden.gb", "", &hidden) != 0 || hidden ||
+               jw_db_set_rom_hidden(path, "primary", "GB/Hidden.gb", "", 1) != JW_DB_RC_READONLY) {
+        fail(NULL, "a read-only library from an older release must still browse");
+    }
+    if (chmod(dir, 0755) != 0 || chmod(path, 0644) != 0) fail(NULL, "chmod writable");
+    /* The first writable open adds the table; the version stays readable by older releases. */
+    if (jw_db_list_games_for_system(path, "GB", games, 4, &count) != 0 || count != 2 ||
+        jw_db_open(path, &db) != 0 ||
+        scalar(db, "SELECT COUNT(*) FROM main.sqlite_master WHERE name='hidden_roms'") != 1 ||
+        scalar(db, "SELECT COUNT(*) FROM temp.sqlite_master WHERE name='hidden_roms'") != 0 ||
+        scalar(db, "PRAGMA user_version") != 6) {
+        fail(db, "writable open did not add the visibility table");
+    }
+    sqlite3_close(db);
+    unlink(path);
+    rmdir(dir);
 }
 
 int main(void) {
@@ -48,13 +98,13 @@ int main(void) {
     unlink(fresh);
     sqlite3 *db = NULL;
     if (jw_db_open(fresh, &db) != 0 || jw_db_apply_schema(db) != 0 ||
-        scalar(db, "PRAGMA user_version") != 7 ||
+        scalar(db, "PRAGMA user_version") != 6 ||
         scalar(db, "SELECT COUNT(*) FROM pragma_table_info('games') "
                    "WHERE name IN ('source_id','rom_relpath','image_root_kind',"
                    "'image_relpath')") != 4 ||
         scalar(db, "SELECT COUNT(*) FROM pragma_table_info('apps') "
                    "WHERE name='min_leaf_version'") != 1) {
-        fail(db, "fresh v7 schema");
+        fail(db, "fresh v6 schema");
     }
     if (scalar(db, "SELECT COUNT(*) FROM pragma_table_info('hidden_roms') "
                    "WHERE name IN ('source_id','rom_relpath','member') "
@@ -112,16 +162,10 @@ int main(void) {
         "'2026-07-29T00:00:00Z');"
         "INSERT INTO apps(pak_dir,name,pak_version,min_jawaka_version)"
         "VALUES('Apps/mlp1/Existing.pak','Existing','1.0.0','0.0.1');");
-    sqlite3_set_authorizer(db, reject_v7, NULL);
-    if (jw_db_apply_schema(db) == 0 ||
-        scalar(db, "PRAGMA user_version") != 6 ||
-        scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE name='hidden_roms'") != 0) {
-        fail(db, "failed v7 migration was not rolled back");
-    }
-    sqlite3_set_authorizer(db, NULL, NULL);
+    sqlite3_set_authorizer(db, reject_version_change, NULL);
     if (jw_db_apply_schema(db) != 0 ||
         jw_db_apply_schema(db) != 0 ||
-        scalar(db, "PRAGMA user_version") != 7 ||
+        scalar(db, "PRAGMA user_version") != 6 ||
         scalar(db, "SELECT COUNT(*) FROM hidden_roms") != 0 ||
         scalar(db, "SELECT COUNT(*) FROM pragma_table_info('apps') "
                    "WHERE name='min_leaf_version'") != 1 ||
@@ -146,6 +190,7 @@ int main(void) {
                    "AND min_leaf_version='0.7.0'") != 1) {
         fail(db, "current v6 additive migration");
     }
+    sqlite3_set_authorizer(db, NULL, NULL);
     sqlite3_close(db);
     unlink(current);
 
@@ -183,7 +228,8 @@ int main(void) {
         "(10,'display_name','Older',10),(20,'display_name','Newer',20);");
 
     if (jw_db_apply_schema(db) != 0) fail(db, "migration");
-    if (scalar(db, "PRAGMA user_version") != 7) fail(db, "wrong version");
+    if (scalar(db, "PRAGMA user_version") != 6 ||
+        scalar(db, "SELECT COUNT(*) FROM hidden_roms") != 0) fail(db, "wrong version");
     if (scalar(db, "SELECT COUNT(*) FROM games") != 3 ||
         scalar(db, "SELECT COUNT(*) FROM games WHERE id=10") != 1 ||
         scalar(db, "SELECT playtime_s FROM games WHERE id=10") != 12 ||
@@ -271,6 +317,8 @@ int main(void) {
     exec_ok(db, "PRAGMA user_version=8;");
     if (jw_db_apply_schema(db) == 0) fail(db, "future schema accepted");
     sqlite3_close(db);
+
+    check_unreleased_v7_and_read_only();
 
     unlink(future);
     unlink(unsafe);

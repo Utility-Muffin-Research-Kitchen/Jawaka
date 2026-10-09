@@ -5,13 +5,22 @@ from ordinary browsing. **Settings > Games > Hidden Games** lets you restore
 it, including when every game is hidden. ROMs, favorites, history, overrides,
 saves and artwork remain in place.
 
-The library stores hidden identities in schema v7's `hidden_roms` table. An
-empty `member` identifies a physical launch or disc path. An explicit M3U
-`archive.zip#member` selector uses a non-empty member key. Game Hide/Unhide
-leaves separate disc and member choices alone. Scans retain preferences even
-when a file disappears. Relocation moves
-the exact file's keys in its existing transaction. A missing library row still
-appears in Hidden Games by its stored path so you can clear its preference.
+The library stores hidden identities in a `hidden_roms` table added to schema
+v6 without changing its version, so earlier Leaf releases and other readers
+of `library.db` still open the library; they just ignore the preferences,
+which return when you upgrade again. A library that a development build
+stamped as v7 returns to v6 on its next writable open. A library from an
+earlier release gains the table on its first writable open; on a card that is
+already read-only, browsing works with nothing hidden and visibility changes
+report the read-only card. An empty `member` identifies a physical launch or
+disc path. An explicit M3U `archive.zip#member` selector uses a non-empty
+member key. As in RetroArch, only a `#` directly after `.zip`, `.7z` or `.apk`
+starts a member; any other `#` is part of the filename, as in
+`Game #1 (Disc 1).cue`. Game Hide/Unhide leaves separate disc and member
+choices alone. Scans retain preferences even when a file disappears.
+Relocation moves the exact file's keys in its existing transaction. A missing
+library row still appears in Hidden Games by its stored path so you can clear
+its preference.
 
 ## Browse query audit
 
@@ -44,9 +53,10 @@ existing storage result and opens the SD card warning with its repair action.
 ## Disc visibility
 
 Open **Options > Manage Discs** on an M3U playlist to hide individual discs.
-The list follows playlist order and uses playlist labels or filenames. A CUE
-and its tracks appear as one disc. **Show Hidden** reveals hidden discs with
-an **Unhide** action. The page stays available with one disc or every disc
+The list follows playlist order and uses playlist labels (`|label`, `#EXTINF:`
+or RetroArch's `#LABEL:`, shortened past 255 bytes) or filenames. A CUE and
+its tracks appear as one disc. **Show Hidden** reveals hidden discs with an
+**Unhide** action. The page stays available with one disc or every disc
 hidden. Your playlist stays playable, and in-game disc swapping keeps the
 original membership and order.
 
@@ -64,8 +74,9 @@ references using actual filesystem lookup rules. Existing paths use their
 on-disk spelling; missing referenced files keep their normalized identity.
 Archive selectors stay separate from host filename case. Unreadable or
 malformed descriptors, unsafe paths and bounded inspection limits report an
-error. Inspection and Hide/Unhide don't change descriptors, ROMs or scanner
-grouping.
+error. A parse error names the innermost descriptor that failed, so a bad file
+on either card can be found and fixed. Inspection and Hide/Unhide don't change
+descriptors, ROMs or scanner grouping.
 
 ## Delete Game
 
@@ -73,13 +84,14 @@ grouping.
 and its exclusively owned ROM files. It stays last in the menu, after
 **Manage Discs** when available. **Hidden Games** offers the same action for
 eligible indexed game rows. Unassociated hidden paths and archive members
-remain available to unhide. **Delete Disc** is not part of this change.
+remain available to unhide.
 
-You see the game, source card, disc and file counts, expected freed space,
-shared files kept, and a reminder that deletion is permanent. **Files** opens
-the exact file list; **Back** returns to the summary. **Cancel** is selected
-initially. Choose **Delete Game** explicitly to confirm. Preparing the preview
-is cancellable, and hidden discs are included in the full game.
+You see the game, source card, file count (and disc count for a playlist),
+expected freed space, shared files kept, and a reminder that deletion is
+permanent. **Files** opens the exact file list; **Back** returns to the
+summary. **Cancel** is selected initially. Choose **Delete Game** explicitly
+to confirm. Preparing the preview is cancellable, and hidden discs are
+included in the full game.
 
 Delete is offered only for the following release system IDs, provided their
 current catalog formats remain supported:
@@ -100,15 +112,29 @@ EasyRPG, PORTS, DC, NAOMI, ATOMISWAVE, PCE/PCECD, SATURN and MD32X are excluded.
 
 Preview preparation reads M3U/M3U8, CUE, GDI, TOC and CMD descriptors across
 every mounted source's ROM tree, including hidden and scan-suppressed files.
+macOS AppleDouble metadata files (`._Name` with Apple's binary header, or
+empty) are skipped; a text playlist with such a name is still read.
 It also includes indexed game identities as owners. Exact normalized paths,
 current absolute cross-card references and filesystem identity determine
 sharing. A separate game using the selected launch file blocks deletion and
 is named in the error. Other shared files remain on disk. Those leftovers can
 appear as standalone games or be regrouped by the existing scanner later.
+The scanner still treats any `#` in a playlist entry as a member separator, so
+a disc such as `Game #1 (Disc 1).cue` can be listed beside its playlist;
+Delete Game on that entry is blocked because the playlist uses it.
+
+The search scales roughly linearly with your library. It stops with an error
+only past 1,000,000 ROM-tree entries, 65,536 descriptors, 131,072 referenced
+files, 65,536 directories, 262,144 cached directory names or 32 MB of
+descriptor text (4 MB per descriptor). These bound memory on the MLP1, where a
+commit briefly holds two copies of the search.
 
 If a known card isn't inserted, the preview names it and says its playlists
-weren't checked. You can continue after the usual confirmation. A mounted
-card with unreadable or malformed descriptors instead stops the operation.
+weren't checked. A card is known when your library has games on it or a
+playlist on a mounted card refers to it; an empty second card slot doesn't
+warn. You can
+continue after the usual confirmation. A mounted card with unreadable or
+malformed descriptors instead stops the operation.
 There are no readers for `.uae`, `.ccd`, `.mds`, `.conf`, `.bat`, `.exe`, `.sh`
 or `.dat`. Incoming references from those formats cannot be detected, such as
 a PORTS script that launches a ROM in another system. This is an ownership
@@ -119,6 +145,14 @@ Protection includes configured data roots and indexed artwork inside ROM
 directories. Deletion never expands a title stem or removes a folder
 recursively. A PC98 preview warns that progress stored inside a writable
 game image is erased with that image. Containers aren't unpacked or rewritten.
+
+PlayStation's default core, PCSX ReARMed, also reads same-name `.toc`, `.ccd`,
+`.mds` or `.cue` files beside a loaded `.img`, `.mdf` or `.iso`, plus `.sub`
+subchannel and `.sbi` LibCrypt data. Deletion never matches title stems, so
+deleting such an image leaves those sidecars in place and the preview doesn't
+list them. The core also falls back to a CUE `FILE` entry's bare filename when
+its path doesn't exist; deletion follows the exact path, so a track found only
+that way is kept.
 
 ### Daemon mutation and retry
 
@@ -152,30 +186,74 @@ daemon publishes the library generation after reconciliation, including
 partial removal, and the launcher refreshes its browse and Hidden Games caches.
 Re-adding a deleted ROM doesn't recover that removed metadata.
 
+## Delete Disc
+
+In **Options > Manage Discs**, select a disc and choose **Delete Disc** for a
+supported system. **Show Hidden** lets you select hidden discs too. The preview
+names the disc and its game, shows the files affected and how many playlist
+entries will remain, and starts with **Cancel** selected.
+
+Confirming removes that disc's entries from this playlist and deletes only
+its exclusive files. Repeated entries for the same exact source/path/archive
+member are removed together. Files used by a remaining disc, a different
+archive member or another game are kept. An edit that keeps every payload can
+free zero bytes. A playlist used by another game cannot be edited; the error
+names that game, and Hide stays available.
+
+One remaining disc keeps the same playlist path and parent game metadata,
+including favorites, history, overrides and Focus selection. **Manage Discs**
+stays available. If no disc would remain, hidden discs included, you see a
+whole-game preview before anything changes. One **Delete Game** confirmation
+covers that displayed scope; an empty playlist is never written.
+
+The daemon prepares and syncs a complete replacement in a hidden temporary
+file beside the playlist before removing any payload. Retained entries keep
+their original bytes, including order, quoting, labels and line endings.
+Comments and directives such as `#SAVEDISK` remain intact. The selected
+entries and their associated `#EXTINF` and `#LABEL` lines are removed, so a
+label never moves to the next disc. After exclusive
+payloads and child descriptors are removed and synced, the daemon checks the
+parent again and atomically replaces it, then syncs its directory.
+
+The same source checks, one-use token, coordination and retry rules apply as
+for **Delete Game**. A failure before replacement keeps the original playlist,
+even if some exclusive files were already removed. A fresh preview can finish
+the operation. A failure after replacement reports that the playlist changed.
+Successful edits refresh the library even when no physical file was removed.
+Saves, states, artwork and shared-file visibility choices remain unchanged.
+
 ## Checks
 
 - `make content-test` covers descriptors, filesystem case behavior, path
   aliases, selectors, missing references and unsafe or malformed input. Run
   it on both case-sensitive and case-insensitive storage.
-- `make schema-v6-test visibility-test relocation-test` covers migration,
-  visibility queries, metadata retention, rescans and relocation.
+- `make schema-v6-test visibility-test relocation-test` covers migration, the
+  unchanged v6 version (including a development v7 library), read-only
+  libraries from earlier releases, visibility queries, metadata retention,
+  rescans and relocation.
 - `make visibility-ui-test settings-status-test game-switcher-test` exercises
   the real launcher/settings/menu handlers with disposable databases and SDL's
   dummy renderer, including empty lists, disc restoration, parent/disc
   independence, unchanged playlist bytes and independent B Resume.
 - `make delete-test` covers eligibility, shared ownership across cards,
   missing-card warnings, protected data, changed previews, dependency ordering
-  and partial-failure retry with disposable content.
+  and partial-failure retry with disposable content. It also checks a
+  2,600-game disc library beyond the original search limits, AppleDouble
+  sidecars, `#` in filenames, `#LABEL:` removal and descriptor-named errors.
+  Disc cases cover exact playlist rewriting, shared archive members,
+  final-disc escalation, and failures before replacement or during directory
+  sync.
 - `make deletion-db-test focus-test` covers exact-file reconciliation and
   transactional metadata/Focus cleanup, including later scan pruning.
 - `make delete-ui-test delete-client-test` covers the real deletion screen,
   initial Cancel selection, inspectable files, Hidden Games, read-only warnings,
   retained IPC sessions, malformed previews and lost-response replay prevention.
+  Manage Discs checks include one remaining disc and the final-disc preview.
 - `make rom-delete-ipc-smoke` exercises the daemon with synthetic ROMs and its
   preview/commit protocol, storage changes, coordination and fault injection.
 - `WORKSPACE_ROOT=/path/to/UMRK make phase3-fixture-scan-smoke` checks that
   existing nested-folder grouping remains unchanged. Continue running
   `make storage-sources-test relocation-test` for source and reservation changes.
 
-The remaining per-disc deletion stage is tracked in
+Deferred format readers and system groups are tracked in
 `umrk-workspace/plans/Jawaka/rom-visibility-and-deletion.md`.

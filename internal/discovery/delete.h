@@ -37,6 +37,10 @@ typedef struct {
     char missing_sources[512];
     bool missing_descriptor;
     bool writable_image;
+    bool playlist_edit;
+    bool final_disc;
+    char disc_name[256];
+    size_t remaining_discs;
     void *snapshot;
 } jw_delete_plan;
 
@@ -53,6 +57,7 @@ typedef struct {
     size_t absent_count;
     uint64_t bytes;
     size_t failed_index;
+    bool playlist_replaced;
 } jw_delete_result;
 
 bool jw_delete_supported(const jw_ra_system *system);
@@ -64,7 +69,18 @@ int jw_delete_plan_build(const jw_storage_source_list *sources,
                          const char *const *protected_paths, size_t protected_count,
                          jw_delete_cancelled cancelled, void *context,
                          jw_delete_plan *out, char *error, size_t error_size);
-/* Compare a fresh build to the reviewed plan before consuming its one-use token. */
+/* The selector uses only source_id, rom_relpath and member, never its index or label.
+   Every direct occurrence of the selected identity is removed. The final disc
+   produces a whole-game plan before any file or playlist change. */
+int jw_delete_disc_plan_build(const jw_storage_source_list *sources,
+                              const jw_ra_catalog *catalog,
+                              const char *source_id, const char *rom_relpath,
+                              const char *system_id, const jw_content_disc *disc,
+                              const jw_delete_owner *owners, size_t owner_count,
+                              const char *const *protected_paths, size_t protected_count,
+                              jw_delete_cancelled cancelled, void *context,
+                              jw_delete_plan *out, char *error, size_t error_size);
+/* Compare a fresh build to the reviewed plan before filesystem mutation. */
 bool jw_delete_plan_equal(const jw_delete_plan *a, const jw_delete_plan *b);
 bool jw_delete_plan_sources_match(const jw_delete_plan *plan,
                                    const jw_storage_source_list *current);

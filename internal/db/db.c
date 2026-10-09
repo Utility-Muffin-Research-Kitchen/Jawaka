@@ -14,14 +14,19 @@
 #include <stddef.h>
 #include <unistd.h>
 
-#define JW_DB_SCHEMA_VERSION 7
+#define JW_DB_SCHEMA_VERSION 6
+/* Development builds briefly stamped the additive hidden_roms table as v7. No
+   release shipped it, and every released Jawaka refuses a newer version, so
+   such a library returns to v6. */
+#define JW_DB_UNRELEASED_VERSION 7
 
 #define JW_VISIBLE_GAME(table) \
     "NOT EXISTS (SELECT 1 FROM hidden_roms h WHERE h.source_id=" table ".source_id " \
     "AND h.rom_relpath=" table ".rom_relpath AND h.member='') "
 
-#define JW_HIDDEN_SCHEMA_SQL \
-    "CREATE TABLE IF NOT EXISTS hidden_roms (" \
+/* An additive v6 table: older releases open the library and ignore it. */
+#define JW_HIDDEN_TABLE_SQL(schema) \
+    "CREATE TABLE IF NOT EXISTS " schema "hidden_roms (" \
     "source_id TEXT NOT NULL,rom_relpath TEXT NOT NULL," \
     "member TEXT NOT NULL DEFAULT ''," \
     "PRIMARY KEY(source_id,rom_relpath,member));"
@@ -152,7 +157,8 @@ static const char *kSchemaSql =
     ");\n"
     "\n"
     "CREATE INDEX IF NOT EXISTS pakrat_installs_install_path_idx\n"
-    "    ON pakrat_installs(install_path);\n";
+    "    ON pakrat_installs(install_path);\n"
+    "PRAGMA user_version = 6;\n";
 
 static const char *kRelocationSchemaSql =
     "PRAGMA foreign_keys = ON;\n"
@@ -681,6 +687,32 @@ static int jw__migrate_to_v6(sqlite3 *db) {
     return rc == SQLITE_DONE ? 0 : -1;
 }
 
+/* A library from an older release gains hidden_roms on its first writable
+   open. On a card that is already read-only this connection gets an empty
+   temporary table instead, so browse and visibility reads still work. */
+static int jw__visibility_table(sqlite3 *db) {
+    if (sqlite3_exec(db, JW_HIDDEN_TABLE_SQL("main.") "DROP TABLE IF EXISTS temp.hidden_roms;",
+                     NULL, NULL, NULL) == SQLITE_OK) return 0;
+    if (sqlite3_db_readonly(db, "main") != 1) return -1;
+    return sqlite3_exec(db, JW_HIDDEN_TABLE_SQL("temp."), NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+/* Only a library that predates the table needs it here; a fresh or unrelated
+   file has no games table and is left to jw_db_apply_schema. This runs before
+   the busy timeout, so a writer holding the library (a scan) never adds a wait
+   to the caller's own query; that only happens on a writable card, where
+   jawakad's startup schema has already added the table. */
+static void jw__ensure_visibility_table(sqlite3 *db) {
+    sqlite3_stmt *stmt = NULL;
+    bool missing = sqlite3_prepare_v2(db, "SELECT EXISTS(SELECT 1 FROM main.sqlite_master "
+                                      "WHERE type='table' AND name='games') AND NOT EXISTS("
+                                      "SELECT 1 FROM main.sqlite_master WHERE type='table' "
+                                      "AND name='hidden_roms');", -1, &stmt, NULL) == SQLITE_OK &&
+                   sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
+    if (missing) (void)jw__visibility_table(db);
+}
+
 int jw_db_open(const char *path, sqlite3 **out) {
     if (!path || !out) {
         return -1;
@@ -692,8 +724,19 @@ int jw_db_open(const char *path, sqlite3 **out) {
        SQLite file. Without a busy timeout a write that collides with another
        connection's lock (e.g. a favorite/recent write during a daemon scan)
        fails immediately with SQLITE_BUSY. Wait briefly instead. */
+    jw__ensure_visibility_table(*out);
     sqlite3_busy_timeout(*out, 2000);
     return 0;
+}
+
+/* Additive tables at the current version: no games-schema change and no
+   migration/backup cycle, so every released Jawaka still opens the library. */
+static int jw__apply_additive(sqlite3 *db) {
+    return jw__ensure_apps_min_leaf_version(db) == 0 &&
+                   jw__ensure_pakrat_commit_token(db) == 0 &&
+                   jw__exec(db, kRelocationSchemaSql) == 0
+               ? jw__visibility_table(db)
+               : -1;
 }
 
 int jw_db_apply_schema(sqlite3 *db) {
@@ -701,46 +744,28 @@ int jw_db_apply_schema(sqlite3 *db) {
         return -1;
     }
     int version = 0;
-    if (jw__schema_version(db, &version) != 0 ||
-        version > JW_DB_SCHEMA_VERSION) {
+    if (jw__schema_version(db, &version) != 0) {
+        return -1;
+    }
+    if (version == JW_DB_UNRELEASED_VERSION) {
+        if (jw__exec(db, "PRAGMA user_version = 6;") != 0) {
+            return -1;
+        }
+        version = JW_DB_SCHEMA_VERSION;
+    }
+    if (version > JW_DB_SCHEMA_VERSION) {
         return -1;
     }
     if (version == JW_DB_SCHEMA_VERSION) {
-        /* Current schemas receive additive protocol tables without changing the
-           stable games schema or forcing a migration/backup cycle. */
-        return jw__ensure_apps_min_leaf_version(db) == 0 &&
-                       jw__ensure_pakrat_commit_token(db) == 0
-                   ? jw__exec(db, kRelocationSchemaSql)
-                   : -1;
+        return jw__apply_additive(db);
     }
-    if (version > 0 && version < 6 && jw__migrate_to_v6(db) != 0) {
+    if (version > 0 && jw__migrate_to_v6(db) != 0) {
         return -1;
     }
-    if (version == 6) {
-        if (jw__exec(db, "BEGIN IMMEDIATE;") != 0) return -1;
-        if (jw__exec(db, JW_HIDDEN_SCHEMA_SQL "PRAGMA user_version=7;COMMIT;") != 0) {
-            sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
-            return -1;
-        }
-        return jw_db_apply_schema(db);
-    }
-    if (version > 0) {
-        return jw__exec(db, kSchemaSql) == 0 &&
-                       jw__exec(db, JW_HIDDEN_SCHEMA_SQL "PRAGMA user_version=7;") == 0 &&
-                       jw__ensure_apps_min_leaf_version(db) == 0 &&
-                       jw__ensure_pakrat_commit_token(db) == 0
-                   ? jw__exec(db, kRelocationSchemaSql)
-                   : -1;
-    }
-    if (jw__exec(db, "PRAGMA foreign_keys = ON;") != 0) {
+    if (version == 0 && jw__exec(db, "PRAGMA foreign_keys = ON;") != 0) {
         return -1;
     }
-    return jw__exec(db, kSchemaSql) == 0 &&
-                   jw__exec(db, JW_HIDDEN_SCHEMA_SQL "PRAGMA user_version=7;") == 0 &&
-                   jw__ensure_apps_min_leaf_version(db) == 0 &&
-                   jw__ensure_pakrat_commit_token(db) == 0
-               ? jw__exec(db, kRelocationSchemaSql)
-               : -1;
+    return jw__exec(db, kSchemaSql) == 0 ? jw__apply_additive(db) : -1;
 }
 
 void jw_db_close(sqlite3 *db) {
@@ -1347,7 +1372,7 @@ int jw_db_reconcile_removed_roms(sqlite3 *db, const jw_db_rom_key *removed,
             "DELETE FROM games WHERE source_id=? AND rom_relpath=?;",
             -1, &games, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db,
-            "DELETE FROM hidden_roms WHERE source_id=? AND rom_relpath=?;",
+            "DELETE FROM main.hidden_roms WHERE source_id=? AND rom_relpath=?;",
             -1, &hidden, NULL) != SQLITE_OK) goto done;
     for (size_t i = 0; i < count; ++i) {
         sqlite3_reset(games);
@@ -2880,8 +2905,10 @@ static int jw__write_visibility(const char *db_path, const char *sql,
     sqlite3 *db = NULL;
     sqlite3_stmt *stmt = NULL;
     int rc = -1;
-    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
-        sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) goto done;
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0) goto done;
+    /* A read-only library may only have the temporary stand-in table. */
+    if (sqlite3_db_readonly(db, "main") == 1) { rc = JW_DB_RC_READONLY; goto done; }
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) goto done;
     if (source_id) {
         sqlite3_bind_text(stmt, 1, source_id, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 2, rom_relpath, -1, SQLITE_TRANSIENT);
@@ -2902,10 +2929,10 @@ done:
 int jw_db_set_game_hidden(const char *db_path, int game_id, int hidden) {
     if (!db_path || game_id <= 0) return -1;
     const char *sql = hidden
-        ? "INSERT INTO hidden_roms(source_id,rom_relpath,member) "
+        ? "INSERT INTO main.hidden_roms(source_id,rom_relpath,member) "
           "SELECT source_id,rom_relpath,'' FROM games WHERE id=? "
           "ON CONFLICT(source_id,rom_relpath,member) DO UPDATE SET member='';"
-        : "DELETE FROM hidden_roms WHERE member='' AND (source_id,rom_relpath) "
+        : "DELETE FROM main.hidden_roms WHERE member='' AND (source_id,rom_relpath) "
           "IN (SELECT source_id,rom_relpath FROM games WHERE id=?);";
     return jw__write_visibility(db_path, sql, game_id, NULL, NULL, NULL, hidden != 0);
 }
@@ -2915,7 +2942,7 @@ int jw_db_clear_hidden_game(const char *db_path, const char *source_id,
     if (!db_path || !source_id || !source_id[0] ||
         !rom_relpath || !rom_relpath[0]) return -1;
     return jw__write_visibility(db_path,
-        "DELETE FROM hidden_roms WHERE source_id=? AND rom_relpath=? AND member='';",
+        "DELETE FROM main.hidden_roms WHERE source_id=? AND rom_relpath=? AND member='';",
         0, source_id, rom_relpath, NULL, 0);
 }
 
@@ -2932,9 +2959,9 @@ int jw_db_set_rom_hidden(const char *db_path, const char *source_id,
                           const char *rom_relpath, const char *member, int hidden) {
     if (!db_path || !jw__valid_visibility_key(source_id, rom_relpath, member)) return -1;
     const char *sql = hidden
-        ? "INSERT INTO hidden_roms(source_id,rom_relpath,member) VALUES(?,?,?) "
+        ? "INSERT INTO main.hidden_roms(source_id,rom_relpath,member) VALUES(?,?,?) "
           "ON CONFLICT(source_id,rom_relpath,member) DO NOTHING;"
-        : "DELETE FROM hidden_roms WHERE source_id=? AND rom_relpath=? AND member=?;";
+        : "DELETE FROM main.hidden_roms WHERE source_id=? AND rom_relpath=? AND member=?;";
     return jw__write_visibility(db_path, sql, 0, source_id, rom_relpath, member, 0);
 }
 
