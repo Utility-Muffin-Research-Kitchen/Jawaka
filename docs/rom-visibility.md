@@ -5,15 +5,22 @@ from ordinary browsing. **Settings > Games > Hidden Games** lets you restore
 it, including when every game is hidden. ROMs, favorites, history, overrides,
 saves and artwork remain in place.
 
-The library stores hidden identities in schema v7's `hidden_roms` table. An
-empty `member` identifies a physical launch or disc path. An explicit M3U
-`archive.zip#member` selector uses a non-empty member key. As in RetroArch,
-only a `#` directly after `.zip`, `.7z` or `.apk` starts a member; any other
-`#` is part of the filename, as in `Game #1 (Disc 1).cue`. Game Hide/Unhide
-leaves separate disc and member choices alone. Scans retain preferences even
-when a file disappears. Relocation moves
-the exact file's keys in its existing transaction. A missing library row still
-appears in Hidden Games by its stored path so you can clear its preference.
+The library stores hidden identities in a `hidden_roms` table added to schema
+v6 without changing its version, so earlier Leaf releases and other readers
+of `library.db` still open the library; they just ignore the preferences,
+which return when you upgrade again. A library that a development build
+stamped as v7 returns to v6 on its next writable open. A library from an
+earlier release gains the table on its first writable open; on a card that is
+already read-only, browsing works with nothing hidden and visibility changes
+report the read-only card. An empty `member` identifies a physical launch or
+disc path. An explicit M3U `archive.zip#member` selector uses a non-empty
+member key. As in RetroArch, only a `#` directly after `.zip`, `.7z` or `.apk`
+starts a member; any other `#` is part of the filename, as in
+`Game #1 (Disc 1).cue`. Game Hide/Unhide leaves separate disc and member
+choices alone. Scans retain preferences even when a file disappears.
+Relocation moves the exact file's keys in its existing transaction. A missing
+library row still appears in Hidden Games by its stored path so you can clear
+its preference.
 
 ## Browse query audit
 
@@ -220,8 +227,10 @@ Saves, states, artwork and shared-file visibility choices remain unchanged.
 - `make content-test` covers descriptors, filesystem case behavior, path
   aliases, selectors, missing references and unsafe or malformed input. Run
   it on both case-sensitive and case-insensitive storage.
-- `make schema-v6-test visibility-test relocation-test` covers migration,
-  visibility queries, metadata retention, rescans and relocation.
+- `make schema-v6-test visibility-test relocation-test` covers migration, the
+  unchanged v6 version (including a development v7 library), read-only
+  libraries from earlier releases, visibility queries, metadata retention,
+  rescans and relocation.
 - `make visibility-ui-test settings-status-test game-switcher-test` exercises
   the real launcher/settings/menu handlers with disposable databases and SDL's
   dummy renderer, including empty lists, disc restoration, parent/disc

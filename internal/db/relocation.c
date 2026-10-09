@@ -342,7 +342,7 @@ static int rel__move(sqlite3 *db, const char *operation_id, int forward,
         "image_relpath=NULLIF(?,''),rom_path=?,image_path=NULLIF(?,'') "
         "WHERE id=? AND source_id=? AND rom_relpath=?;";
     const char *visibility_sql =
-        "UPDATE OR REPLACE hidden_roms SET source_id=?,rom_relpath=? "
+        "UPDATE OR REPLACE main.hidden_roms SET source_id=?,rom_relpath=? "
         "WHERE source_id=? AND rom_relpath=?;";
     if (sqlite3_prepare_v2(db, select_sql, -1, &select, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db, update_sql, -1, &update, NULL) != SQLITE_OK ||
