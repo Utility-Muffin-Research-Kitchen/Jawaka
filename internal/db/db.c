@@ -698,7 +698,10 @@ static int jw__visibility_table(sqlite3 *db) {
 }
 
 /* Only a library that predates the table needs it here; a fresh or unrelated
-   file has no games table and is left to jw_db_apply_schema. */
+   file has no games table and is left to jw_db_apply_schema. This runs before
+   the busy timeout, so a writer holding the library (a scan) never adds a wait
+   to the caller's own query; that only happens on a writable card, where
+   jawakad's startup schema has already added the table. */
 static void jw__ensure_visibility_table(sqlite3 *db) {
     sqlite3_stmt *stmt = NULL;
     bool missing = sqlite3_prepare_v2(db, "SELECT EXISTS(SELECT 1 FROM main.sqlite_master "
@@ -721,8 +724,8 @@ int jw_db_open(const char *path, sqlite3 **out) {
        SQLite file. Without a busy timeout a write that collides with another
        connection's lock (e.g. a favorite/recent write during a daemon scan)
        fails immediately with SQLITE_BUSY. Wait briefly instead. */
-    sqlite3_busy_timeout(*out, 2000);
     jw__ensure_visibility_table(*out);
+    sqlite3_busy_timeout(*out, 2000);
     return 0;
 }
 
