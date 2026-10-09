@@ -1097,7 +1097,9 @@ settings-account-test: | $(BUILD)/bin check-catastrophe check-sdl
 settings-status-test: | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/settings-status-test \
 		internal/settings/settings_status_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
-	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/settings-status-test
+	mkdir -p $(BUILD)/settings-status/i18n
+	python3 tools/i18n-compile.py i18n/ru_RU.po -o $(BUILD)/settings-status/i18n/ru_RU.jwi
+	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/settings-status-test $(BUILD)/settings-status
 
 appearance-env-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -D_GNU_SOURCE -o $(BUILD)/bin/appearance-env-test \

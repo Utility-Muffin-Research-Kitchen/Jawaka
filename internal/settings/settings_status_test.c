@@ -471,7 +471,67 @@ static int check_boot_resume(void) {
     return 0;
 }
 
-static int check_layout_viewport(void) {
+static int check_color_temperature(SDL_Renderer *renderer, uint32_t *pixels,
+                                   const char *platform) {
+    setenv("UMRK_PLATFORM_PATH", platform, 1);
+    if (!jw_i18n_load("ru_RU")) return fail("could not load the Russian translation");
+    static const struct {
+        bool supported, hdmi;
+        int kelvin;
+        const char *value;
+    } cases[] = {
+        { true,  false, JW_PLATFORM_COLOR_TEMP_NEUTRAL_K, "Neutral" },
+        { false, false, JW_PLATFORM_COLOR_TEMP_NEUTRAL_K, "Unavailable" },
+        { true,  true,  JW_PLATFORM_COLOR_TEMP_NEUTRAL_K, "Panel only" },
+        { true,  false, JW_PLATFORM_COLOR_TEMP_MAX_K,     "10000 K" },
+    };
+    for (int bump = 0; bump <= CAT_FONT_BUMP_MAX; ++bump) {
+        if (cat_set_font_bump(bump) != CAT_OK) return fail("font bump failed");
+        for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+            jw_settings_ui ui = {0};
+            ui.open = true;
+            ui.screen = JW_SETTINGS_DISPLAY;
+            ui.color_temp_supported = cases[i].supported;
+            ui.color_temp_kelvin = cases[i].kelvin;
+            ui.hdmi_supported = true; /* No unrelated "Unavailable" in the HDMI row. */
+            ui.hdmi_connected = cases[i].hdmi;
+            ui.hdmi_output_mode = cases[i].hdmi ? 1 : 0;
+            cat_list_state_init(&ui.display_list, JW_DISPLAY_ROW_COUNT);
+            ui.display_list.cursor = JW_DISPLAY_COLOR_TEMP;
+            cat__text_cache_clear();
+            SDL_SetRenderDrawColor(renderer, 13, 29, 47, 255);
+            SDL_RenderClear(renderer);
+            jw_settings_ui_render(&ui, 12, 60, 936, 620);
+
+            /* Measurement does not populate this cache: the full value must
+               reach the renderer, rather than a byte-truncated UTF-8 prefix. */
+            const char *expected = T(cases[i].value);
+            bool rendered = false;
+            for (int j = 0; j < cat__g.text_cache.count; ++j)
+                if (!strcmp(cat__g.text_cache.entries[j].text, expected))
+                    rendered = true;
+            if (!rendered) {
+                fprintf(stderr, "settings-status-test: color temperature lost %s "
+                                "at font bump %d\n", expected, bump);
+                return 1;
+            }
+            if (SDL_RenderIsClipEnabled(renderer)) return fail("display page leaked its clip");
+            if (SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, pixels,
+                                     960 * sizeof(*pixels)) != 0)
+                return fail("could not inspect the display page");
+            for (int y = 0; y < 720; ++y)
+                for (int x = 0; x < 960; ++x)
+                    if ((x < 12 || x >= 948 || y < 60 || y >= 680) &&
+                        pixels[y * 960 + x] != 0xff0d1d2f)
+                        return fail("Russian display page drew outside its viewport");
+        }
+    }
+    jw_i18n_shutdown();
+    unsetenv("UMRK_PLATFORM_PATH");
+    return 0;
+}
+
+static int check_layout_viewport(const char *platform) {
     SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
     SDL_setenv("CAT_WINDOW_WIDTH", "960", 1);
     SDL_setenv("CAT_WINDOW_HEIGHT", "720", 1);
@@ -616,6 +676,7 @@ static int check_layout_viewport(void) {
                     return fail("hidden games drew outside its viewport");
     }
     jw_settings_ui_close(&hidden);
+    if (check_color_temperature(renderer, pixels, platform)) return 1;
     free(pixels);
     cat_quit();
     return 0;
@@ -1001,7 +1062,8 @@ static int check_hidden_discs(void) {
     return 0;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc != 2) return fail("expected the compiled translation directory");
     if (sqlite3_config(SQLITE_CONFIG_URI, 1) != SQLITE_OK)
         return fail("could not enable the read-only database fixture");
     jw_settings_ui ui = {0};
@@ -1150,7 +1212,7 @@ int main(void) {
 
     if (check_timezone_catalog() || check_timezone_lookup() ||
         check_timezone_selection()) return 1;
-    if (check_activity() || check_theme_selection() || check_layout_viewport()) return 1;
+    if (check_activity() || check_theme_selection() || check_layout_viewport(argv[1])) return 1;
     puts("PASS settings-status-test");
     return 0;
 }

@@ -213,6 +213,7 @@ msgid "100/120 Hz only"
 msgstr "Нужно 100/120 Гц"
 
 #: internal/settings/settings.c
+# Clock format, not a duration. Separate from the "24 Hour" entry.
 msgid "12 Hour"
 msgstr "12-часовой"
 
@@ -245,6 +246,7 @@ msgid "200 MHz"
 msgstr "200 МГц"
 
 #: internal/settings/settings.c
+# Clock format, not a duration. Separate from the "12 Hour" entry.
 msgid "24 Hour"
 msgstr "24-часовой"
 
@@ -805,6 +807,7 @@ msgid "Color Scheme"
 msgstr "Цветовая схема"
 
 #: internal/settings/settings.c
+# Display warmth/coolness slider, not a palette selector.
 msgid "Color Temperature"
 msgstr "Цветовая температура"
 
@@ -1225,6 +1228,7 @@ msgid "Hiccup"
 msgstr "Мигание"
 
 #: internal/settings/settings.c
+# Status bar value; the Show/Hide button has its own action entry.
 msgid "Hidden"
 msgstr "Скрыто"
 
@@ -1601,6 +1605,7 @@ msgid "Network: %s"
 msgstr "Сеть: %s"
 
 #: internal/settings/settings.c
+# Color temperature value at 6500 K: no correction. Keep the full word.
 msgid "Neutral"
 msgstr "Нейтральная"
 
@@ -1857,6 +1862,7 @@ msgid "Pick another Saturn BIOS from the options menu."
 msgstr "Выберите другой BIOS Saturn в меню опций."
 
 #: internal/settings/settings.c
+# Action that plays the test sound.
 msgid "Play"
 msgstr "Воспроизвести"
 
@@ -2477,6 +2483,7 @@ msgid "Sharp Shimmerless"
 msgstr "Резкие без мерцания"
 
 #: cmd/jawaka-launcher/main.c
+# A-button action when organizing Home Tabs; not the Visible/Hidden values.
 msgid "Show/Hide"
 msgstr "Показать/Скрыть"
 
@@ -3121,6 +3128,7 @@ msgid "Virtual Boy"
 msgstr "Virtual Boy"
 
 #: internal/settings/settings.c
+# Status bar value; the Show/Hide button has its own action entry.
 msgid "Visible"
 msgstr "Показано"
 

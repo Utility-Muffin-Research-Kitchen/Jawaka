@@ -3120,15 +3120,18 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     bool ct_enabled = ui->color_temp_supported && !ct_on_tv;
     int ct_span = JW_PLATFORM_COLOR_TEMP_MAX_K - JW_PLATFORM_COLOR_TEMP_MIN_K;
     int ct_fill = ((ui->color_temp_kelvin - JW_PLATFORM_COLOR_TEMP_MIN_K) * 100) / ct_span;
-    char ct_val[16];
+    char ct_kelvin[24];
+    const char *ct_val;
+    /* Keep translations intact: a byte-limited copy can split a UTF-8 character. */
     if (!ui->color_temp_supported) {
-        snprintf(ct_val, sizeof(ct_val), "%s", T("Unavailable"));
+        ct_val = T("Unavailable");
     } else if (ct_on_tv) {
-        snprintf(ct_val, sizeof(ct_val), "%s", T("Panel only"));
+        ct_val = T("Panel only");
     } else if (ui->color_temp_kelvin == JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
-        snprintf(ct_val, sizeof(ct_val), "%s", T("Neutral"));
+        ct_val = T("Neutral");
     } else {
-        snprintf(ct_val, sizeof(ct_val), T("%d K"), ui->color_temp_kelvin);
+        snprintf(ct_kelvin, sizeof(ct_kelvin), T("%d K"), ui->color_temp_kelvin);
+        ct_val = ct_kelvin;
     }
     if (ct_enabled) {
         jw__draw_slider_row_ex(ui, x, y_base, w, JW_DISPLAY_COLOR_TEMP, "Color Temperature",
