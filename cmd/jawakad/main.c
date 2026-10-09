@@ -15591,8 +15591,11 @@ static bool jw__ipc_connection_queue_json(jw_daemon_state *state, int index,
 }
 
 static void jw__tick_delete(jw_daemon_state *state) {
+    /* Sample busy first: a commit finishing between the two reads must still
+       publish before a disconnected job is destroyed below. */
+    bool busy = jw_delete_job_busy(state->delete_job);
     if (jw_delete_job_changed(state->delete_job)) jw__bump_library_generation(state);
-    if (jw_delete_job_busy(state->delete_job)) return;
+    if (busy) return;
     if (state->delete_job && state->delete_connection < 0) {
         jw_delete_job_destroy(state->delete_job);
         state->delete_job = NULL;

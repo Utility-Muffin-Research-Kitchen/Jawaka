@@ -100,6 +100,8 @@ class Fixture:
         write(self.primary / "Roms/PS/Partial.m3u", "PartialDisc.cue\n")
         write(self.primary / "Roms/PS/PartialDisc.cue", 'FILE "PartialTrack.bin" BINARY\n  TRACK 01 MODE2/2352\n')
         write(self.primary / "Roms/PS/PartialTrack.bin", b"partial payload\n")
+        # Finder's AppleDouble sidecar must never block an unrelated preview.
+        write(self.primary / "Roms/PS/._Disc.cue", b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        ")
         systems = []
         for code, extensions, playlists in (("GBA", ["gba", "zip", "7z"], []),
                                             ("PS", ["cue", "img", "pbp", "chd", "toc"], ["m3u"])):
@@ -430,6 +432,34 @@ def test_disc_parent_reservation(fixture):
         assert released.get("state") == "aborted", released
 
 
+def test_hash_filenames(fixture):
+    """A '#' outside archive.zip#member is a filename, so ownership still blocks."""
+    ps = fixture.primary / "Roms/PS"
+    write(ps / "Hash #1 (Disc 1).cue", 'FILE "Hash #1 (Disc 1).bin" BINARY\n  TRACK 01 MODE2/2352\n')
+    write(ps / "Hash #1 (Disc 1).bin", b"hash payload\n")
+    write(ps / "Hash #1.m3u", "Hash #1 (Disc 1).cue\n")
+    before = library_generation(fixture)
+    with Client(fixture.socket) as client:
+        client.request("scan-library")
+    wait_idle(fixture, before + 1)
+    db = sqlite3.connect(fixture.db_path)
+    rows = {row[0] for row in db.execute("SELECT rom_relpath FROM games WHERE rom_relpath LIKE 'PS/Hash%'")}
+    db.close()
+    # Scanner grouping is unchanged, so the CUE is listed beside its playlist.
+    assert rows == {"PS/Hash #1.m3u", "PS/Hash #1 (Disc 1).cue"}, rows
+    with Client(fixture.socket) as client:
+        blocked = client.preview("PS/Hash #1 (Disc 1).cue")
+        rejected(blocked)
+        assert "uses this game's launch file" in blocked.get("error", ""), blocked
+    with Client(fixture.socket) as client:
+        preview = client.preview("PS/Hash #1.m3u")
+        ready(preview)
+        kept = {item["rom_relpath"]: item["keep"] for item in preview["files"]}
+        assert kept == {"PS/Hash #1.m3u": 0, "PS/Hash #1 (Disc 1).cue": 1, "PS/Hash #1 (Disc 1).bin": 1}, kept
+        client.request("rom-delete-cancel")
+    assert (ps / "Hash #1 (Disc 1).bin").exists()
+
+
 def test_disc_rename_failure(fixture):
     original = b"RetryDisc.cue|First\r\nRetryKeep.chd|Second\r\n"
     relative, parent = add_playlist(fixture, "RetryEdit.m3u", original, {
@@ -607,6 +637,7 @@ def run(fixture):
     # Lose the terminal result after commit acceptance. A reconnect cannot
     # replay the old authorization, even if a new file takes the same path.
     lost_file = primary / "Roms/GBA/LostResponse.gba"
+    before_lost = library_generation(fixture)
     with Client(fixture.socket) as client:
         token = ready(client.preview("GBA/LostResponse.gba"))
         accepted = client.request("rom-delete-commit", token=token)
@@ -615,6 +646,10 @@ def run(fixture):
     while lost_file.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert not lost_file.exists(), "accepted deletion never completed after disconnect"
+    # The disconnected job is destroyed after it finishes; it must still publish.
+    while library_generation(fixture) <= before_lost and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert library_generation(fixture) > before_lost, "disconnected deletion did not publish its generation"
     write(lost_file, b"replacement after lost response")
     with Client(fixture.socket) as client:
         rejected(client.commit(token))
@@ -632,6 +667,7 @@ def run(fixture):
     test_disc_edits(fixture)
     test_disc_parent_reservation(fixture)
     test_disc_rename_failure(fixture)
+    test_hash_filenames(fixture)
 
 
 def main():

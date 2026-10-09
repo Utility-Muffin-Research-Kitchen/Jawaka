@@ -11,17 +11,34 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define JW_CONTENT_MAX_FILES 16384
+/* A deletion preview reads every descriptor on every mounted card, so the graph
+   limits sit above full disc libraries. Storage grows with use, not with the caps.
+   A commit holds two graphs (about 0.8 KB per file together), so these also keep
+   the worst case near 200 MB on the MLP1's 1 GB. */
+#define JW_CONTENT_MAX_FILES 131072
 #define JW_CONTENT_MAX_DISCS 1024
-#define JW_CONTENT_MAX_BYTES (16 * 1024 * 1024)
+#define JW_CONTENT_MAX_BYTES (32 * 1024 * 1024)
 #define JW_CONTENT_MAX_DEPTH 32
-#define JW_CONTENT_MAX_DIRS 2048
-#define JW_CONTENT_MAX_NAMES 65536
+#define JW_CONTENT_MAX_DIRS 65536
+#define JW_CONTENT_MAX_NAMES 262144
+#define JW_CONTENT_RELPATH_MAX 512
+#define JW_CONTENT_NAME_INDEX_MIN 32
+
+/* Open-addressed string index over an array the caller owns. A slot holds
+   item + 1 (0 is empty); the table stays at most half full. */
+typedef struct {
+    size_t *slots;
+    size_t size;
+} jw_content_index;
+
+typedef const char *(*jw_content_key)(const void *items, size_t item);
 
 typedef struct {
-    char path[JW_STORAGE_PATH_MAX];
+    char *path;
     char **names;
     size_t count;
+    size_t capacity;
+    jw_content_index index;
 } jw_content_dir;
 
 typedef struct {
@@ -31,14 +48,21 @@ typedef struct {
     jw_content *out;
     char *error;
     size_t error_size;
-    jw_content_dir *dirs;
+    jw_content_dir **dirs;
     size_t dir_count;
+    size_t dir_capacity;
+    jw_content_index dir_index;
     size_t name_count;
     size_t bytes_read;
-    unsigned char state[JW_CONTENT_MAX_FILES];
+    unsigned char *state;
+    size_t file_capacity;
+    size_t reference_capacity;
+    size_t disc_capacity;
+    jw_content_index file_index;
     size_t parents[JW_CONTENT_MAX_DEPTH + 1];
     bool collect_discs;
     bool allow_unavailable_references;
+    bool located;
     bool (*cancelled)(void *);
     void *context;
     char roots[JW_STORAGE_MAX_SOURCES][JW_STORAGE_PATH_MAX];
@@ -46,12 +70,25 @@ typedef struct {
 } jw_content_reader;
 
 static int jw__fail(jw_content_reader *r, const char *format, ...) {
+    r->located = false;
     if (r->error && r->error_size) {
         va_list args;
         va_start(args, format);
         vsnprintf(r->error, r->error_size, format, args);
         va_end(args);
     }
+    return -1;
+}
+
+/* Name the innermost descriptor that failed, once, so a malformed file on any
+   card can be found. Cancellation is not a descriptor problem. */
+static int jw__locate(jw_content_reader *r, const char *path) {
+    if (r->located || !r->error || !r->error_size || strstr(r->error, path) ||
+        (r->cancelled && r->cancelled(r->context))) return -1;
+    r->located = true;
+    size_t used = strlen(r->error);
+    if (used + 1 < r->error_size)
+        snprintf(r->error + used, r->error_size - used, " (in %.200s)", path);
     return -1;
 }
 
@@ -93,23 +130,100 @@ bool jw_content_is_descriptor_path(const char *path) {
     return path && jw__descriptor_kind(path) != 0;
 }
 
-static int jw__directory(jw_content_reader *r, const char *path, jw_content_dir **out) {
-    for (size_t i = 0; i < r->dir_count; i++) {
-        if (!strcmp(r->dirs[i].path, path)) { *out = &r->dirs[i]; return 0; }
+/* Geometric growth; on failure the caller keeps the old block. */
+static void *jw__grow(void *items, size_t *capacity, size_t need, size_t size) {
+    if (need <= *capacity) return items;
+    size_t grown = *capacity ? *capacity * 2 : 16;
+    while (grown < need) grown *= 2;
+    void *next = realloc(items, grown * size);
+    if (next) *capacity = grown;
+    return next;
+}
+
+static size_t jw__hash(const char *text) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (; *text; text++) hash = (hash ^ (unsigned char)*text) * 1099511628211ULL;
+    return (size_t)hash;
+}
+
+static size_t jw__index_find(const jw_content_index *index, const void *items,
+                             jw_content_key key, const char *text) {
+    if (!index->size) return SIZE_MAX;
+    size_t mask = index->size - 1;
+    for (size_t slot = jw__hash(text) & mask; index->slots[slot]; slot = (slot + 1) & mask)
+        if (!strcmp(key(items, index->slots[slot] - 1), text)) return index->slots[slot] - 1;
+    return SIZE_MAX;
+}
+
+/* Indexes items[item], whose key is text; items [0, count) are already indexed. */
+static int jw__index_put(jw_content_index *index, const void *items, jw_content_key key,
+                         size_t count, const char *text, size_t item) {
+    if ((count + 1) * 2 > index->size) {
+        size_t size = index->size ? index->size * 2 : 64;
+        while ((count + 1) * 2 > size) size *= 2;
+        size_t *slots = calloc(size, sizeof(*slots));
+        if (!slots) return -1;
+        for (size_t i = 0; i < count; i++) {
+            size_t slot = jw__hash(key(items, i)) & (size - 1);
+            while (slots[slot]) slot = (slot + 1) & (size - 1);
+            slots[slot] = i + 1;
+        }
+        free(index->slots);
+        index->slots = slots;
+        index->size = size;
     }
+    size_t slot = jw__hash(text) & (index->size - 1);
+    while (index->slots[slot]) slot = (slot + 1) & (index->size - 1);
+    index->slots[slot] = item + 1;
+    return 0;
+}
+
+static const char *jw__dir_key(const void *items, size_t item) {
+    return ((jw_content_dir *const *)items)[item]->path;
+}
+
+static const char *jw__name_key(const void *items, size_t item) {
+    return ((char *const *)items)[item];
+}
+
+static const char *jw__file_key(const void *items, size_t item) {
+    return ((const jw_content_file *)items)[item].path;
+}
+
+static void jw__free_dir(jw_content_dir *dir) {
+    if (!dir) return;
+    for (size_t i = 0; i < dir->count; i++) free(dir->names[i]);
+    free(dir->names);
+    free(dir->index.slots);
+    free(dir->path);
+    free(dir);
+}
+
+static int jw__directory(jw_content_reader *r, const char *path, jw_content_dir **out) {
+    size_t found = jw__index_find(&r->dir_index, r->dirs, jw__dir_key, path);
+    if (found != SIZE_MAX) { *out = r->dirs[found]; return 0; }
     if (r->dir_count == JW_CONTENT_MAX_DIRS)
         return jw__fail(r, "Content uses too many directories");
     DIR *dir = opendir(path);
     if (!dir) return jw__fail(r, "Cannot read directory %.160s: %s", path, strerror(errno));
-    jw_content_dir *cached = &r->dirs[r->dir_count++];
-    if (jw__copy(r, cached->path, sizeof(cached->path), path) < 0) { closedir(dir); return -1; }
+    jw_content_dir *cached = calloc(1, sizeof(*cached));
+    jw_content_dir **dirs = cached ? jw__grow(r->dirs, &r->dir_capacity, r->dir_count + 1, sizeof(*dirs)) : NULL;
+    if (dirs) r->dirs = dirs;
+    if (cached) cached->path = strdup(path);
+    if (!dirs || !cached->path ||
+        jw__index_put(&r->dir_index, r->dirs, jw__dir_key, r->dir_count, path, r->dir_count) < 0) {
+        jw__free_dir(cached);
+        closedir(dir);
+        return jw__fail(r, "Out of memory inspecting content");
+    }
+    r->dirs[r->dir_count++] = cached;
     int saved = 0;
     struct dirent *entry;
     errno = 0;
     while ((entry = readdir(dir))) {
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
         if (r->name_count == JW_CONTENT_MAX_NAMES) { saved = E2BIG; break; }
-        char **names = realloc(cached->names, (cached->count + 1) * sizeof(*names));
+        char **names = jw__grow(cached->names, &cached->capacity, cached->count + 1, sizeof(*names));
         if (!names) { saved = ENOMEM; break; }
         cached->names = names;
         names[cached->count] = strdup(entry->d_name);
@@ -120,9 +234,22 @@ static int jw__directory(jw_content_reader *r, const char *path, jw_content_dir 
     }
     if (!saved) saved = errno;
     if (closedir(dir) && !saved) saved = errno;
+    /* Big directories get a name index so each lookup is not a scan. */
+    for (size_t i = 0; !saved && cached->count >= JW_CONTENT_NAME_INDEX_MIN && i < cached->count; i++)
+        if (jw__index_put(&cached->index, cached->names, jw__name_key, i, cached->names[i], i) < 0) saved = ENOMEM;
     if (saved) return jw__fail(r, "Cannot read directory %.160s: %s", path, strerror(saved));
     *out = cached;
     return 0;
+}
+
+static const char *jw__find_name(const jw_content_dir *dir, const char *name) {
+    if (dir->index.size) {
+        size_t found = jw__index_find(&dir->index, dir->names, jw__name_key, name);
+        return found == SIZE_MAX ? NULL : dir->names[found];
+    }
+    for (size_t i = 0; i < dir->count; i++)
+        if (!strcmp(dir->names[i], name)) return dir->names[i];
+    return NULL;
 }
 
 /* Lookup first lets the host filesystem decide case equivalence. Inodes only
@@ -134,17 +261,14 @@ static int jw__actual_spelling(jw_content_reader *r, const char *path,
         jw__copy(r, out, out_size, "/") < 0) return -1;
     char *save = NULL;
     for (char *part = strtok_r(parts, "/", &save); part; part = strtok_r(NULL, "/", &save)) {
-        jw_content_dir *dir;
+        jw_content_dir *dir = NULL;
         if (jw__directory(r, out, &dir) < 0) return -1;
         char candidate[JW_STORAGE_PATH_MAX];
         if (jw__join(r, candidate, sizeof(candidate), out, part) < 0) return -1;
         struct stat requested;
         if (lstat(candidate, &requested))
             return jw__fail(r, "Cannot inspect %.160s: %s", candidate, strerror(errno));
-        const char *name = NULL;
-        for (size_t i = 0; i < dir->count; i++) {
-            if (!strcmp(dir->names[i], part)) { name = dir->names[i]; break; }
-        }
+        const char *name = jw__find_name(dir, part);
         if (!name) {
             for (size_t i = 0; i < dir->count; i++) {
                 if (jw__join(r, candidate, sizeof(candidate), out, dir->names[i]) < 0) return -1;
@@ -218,9 +342,24 @@ static int jw__origin_source(jw_content_reader *r, const char *path) {
     return -1;
 }
 
+/* The file owns copies of its normalized path and ROM-relative key. */
+static int jw__own(jw_content_reader *r, jw_content_file *file, const char *path, const char *relative) {
+    if (strlen(relative) >= JW_CONTENT_RELPATH_MAX)
+        return jw__fail(r, "Content path or label is too long: %.100s", relative);
+    file->path = strdup(path);
+    file->rom_relpath = strdup(relative);
+    return file->path && file->rom_relpath ? 0 : jw__fail(r, "Out of memory inspecting files");
+}
+
+static void jw__release(jw_content_file *file) {
+    free(file->path);
+    free(file->rom_relpath);
+    file->path = file->rom_relpath = NULL;
+}
+
 static int jw__resolve(jw_content_reader *r, const char *parent, const char *reference,
                        jw_content_file *file) {
-    char ref[JW_STORAGE_PATH_MAX], candidate[JW_STORAGE_PATH_MAX];
+    char ref[JW_STORAGE_PATH_MAX], candidate[JW_STORAGE_PATH_MAX], path[JW_STORAGE_PATH_MAX];
     if (!reference[0] || jw__copy(r, ref, sizeof(ref), reference) < 0)
         return jw__fail(r, "Empty or oversized content reference");
     for (char *p = ref; *p; p++) if (*p == '\\') *p = '/';
@@ -241,18 +380,17 @@ static int jw__resolve(jw_content_reader *r, const char *parent, const char *ref
             const char *relative = candidate + strlen(source->roms_path) + 1;
             if (strstr(relative, "../") || !strcmp(relative, "..") || strstr(relative, "/.."))
                 return jw__fail(r, "Cannot resolve traversal on an unmounted card: %.160s", reference);
-            if (jw__copy(r, file->path, sizeof(file->path), candidate) < 0 ||
-                jw__copy(r, file->source_id, sizeof(file->source_id), source->id) < 0 ||
-                jw__copy(r, file->rom_relpath, sizeof(file->rom_relpath), relative) < 0) return -1;
+            if (jw__copy(r, file->source_id, sizeof(file->source_id), source->id) < 0 ||
+                jw__own(r, file, candidate, relative) < 0) return -1;
             file->missing = true;
             return 0;
         }
     }
-    if (jw__normalize(r, candidate, file->path, sizeof(file->path), 0) < 0) return -1;
+    if (jw__normalize(r, candidate, path, sizeof(path), 0) < 0) return -1;
     int source_index = -1;
     for (int i = 0; i < r->sources->count; i++) {
-        if (r->roots[i][0] && jw__inside(file->path, r->roots[i])) {
-            if (source_index >= 0) return jw__fail(r, "Ambiguous ROM source: %.160s", file->path);
+        if (r->roots[i][0] && jw__inside(path, r->roots[i])) {
+            if (source_index >= 0) return jw__fail(r, "Ambiguous ROM source: %.160s", path);
             source_index = i;
         }
     }
@@ -264,8 +402,7 @@ static int jw__resolve(jw_content_reader *r, const char *parent, const char *ref
         return jw__fail(r, "Content reference escapes its ROM source: %.160s", reference);
     const jw_storage_source *source = &r->sources->sources[source_index];
     if (jw__copy(r, file->source_id, sizeof(file->source_id), source->id) < 0 ||
-        jw__copy(r, file->rom_relpath, sizeof(file->rom_relpath),
-                  file->path + strlen(r->roots[source_index]) + 1) < 0) return -1;
+        jw__own(r, file, path, path + strlen(r->roots[source_index]) + 1) < 0) return -1;
     struct stat st;
     if (lstat(file->path, &st)) {
         if (errno != ENOENT) return jw__fail(r, "Cannot inspect %.160s: %s", file->path, strerror(errno));
@@ -329,7 +466,7 @@ static int jw__visit(jw_content_reader *r, const char *parent, const char *refer
 static int jw__add_disc(jw_content_reader *r, size_t file_index,
                         const char *member, const char *label) {
     if (r->out->disc_count == JW_CONTENT_MAX_DISCS) return jw__fail(r, "Playlist has too many discs");
-    jw_content_disc *discs = realloc(r->out->discs, (r->out->disc_count + 1) * sizeof(*discs));
+    jw_content_disc *discs = jw__grow(r->out->discs, &r->disc_capacity, r->out->disc_count + 1, sizeof(*discs));
     if (!discs) return jw__fail(r, "Out of memory inspecting discs");
     r->out->discs = discs;
     jw_content_disc *disc = &discs[r->out->disc_count];
@@ -349,6 +486,38 @@ static int jw__add_disc(jw_content_reader *r, size_t file_index,
     return 0;
 }
 
+/* RetroArch names the next entry with #LABEL:<label> or #EXTINF:<runtime>,<label>.
+   Returns the trimmed label, empty when it names nothing, or NULL otherwise. */
+static char *jw__m3u_label(char *line) {
+    if (!strncasecmp(line, "#LABEL:", 7)) return jw__trim(line + 7);
+    if (strncasecmp(line, "#EXTINF:", 8)) return NULL;
+    char *comma = strchr(line + 8, ',');
+    return comma ? jw__trim(comma + 1) : line + strlen(line);
+}
+
+/* Directive labels are display-only, so a long one is shortened at a UTF-8
+   character boundary instead of failing the whole playlist. */
+static void jw__copy_label(char *out, size_t size, const char *text) {
+    size_t n = strlen(text);
+    if (n >= size) {
+        n = size - 1;
+        while (n && ((unsigned char)text[n] & 0xC0) == 0x80) n--;
+    }
+    memcpy(out, text, n);
+    out[n] = '\0';
+}
+
+/* Like RetroArch, only a '#' directly after .zip, .7z or .apk selects an
+   archive member; "Game #1 (Disc 1).cue" is an ordinary filename. */
+static char *jw__archive_delimiter(char *path) {
+    for (char *p = strchr(path, '#'); p; p = strchr(p + 1, '#')) {
+        size_t n = (size_t)(p - path);
+        if ((n > 4 && (!strncasecmp(p - 4, ".zip", 4) || !strncasecmp(p - 4, ".apk", 4))) ||
+            (n > 3 && !strncasecmp(p - 3, ".7z", 3))) return p;
+    }
+    return NULL;
+}
+
 static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, unsigned depth, size_t offset) {
     char next_label[256] = "";
     size_t descriptor_size = r->out->files[r->parents[depth]].descriptor_size;
@@ -358,9 +527,9 @@ static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, u
         size_t line_end = line_start + strlen(line);
         if (line_end < descriptor_size) line_end++;
         char *s = jw__trim(line);
-        if (!strncasecmp(s, "#EXTINF:", 8)) {
-            char *comma = strchr(s, ',');
-            if (comma && jw__copy(r, next_label, sizeof(next_label), jw__trim(comma + 1)) < 0) return -1;
+        char *directive = jw__m3u_label(s);
+        if (directive) {
+            if (*directive) jw__copy_label(next_label, sizeof(next_label), directive);
             continue;
         }
         if (!*s || *s == '#') continue;
@@ -372,7 +541,7 @@ static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, u
             if (n < 2 || s[n - 1] != '"') return jw__fail(r, "Playlist has an unterminated quote");
             s[n - 1] = '\0'; s++;
         }
-        char *member = strchr(s, '#');
+        char *member = jw__archive_delimiter(s);
         if (member) {
             *member++ = '\0';
             if (!*member) return jw__fail(r, "Playlist has an empty archive member");
@@ -380,7 +549,9 @@ static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, u
         size_t index;
         if (jw__visit(r, parent, s, depth + 1, &index) < 0) return -1;
         if (!depth && r->collect_discs) {
-            if (jw__add_disc(r, index, member ? member : "", label ? jw__trim(label) : next_label) < 0) return -1;
+            /* An empty "|" label keeps a preceding directive label, as in RetroArch. */
+            if (label) label = jw__trim(label);
+            if (jw__add_disc(r, index, member ? member : "", label && *label ? label : next_label) < 0) return -1;
             jw_content_disc *disc = &r->out->discs[r->out->disc_count - 1];
             disc->line_start = line_start;
             disc->line_end = line_end;
@@ -465,46 +636,67 @@ static int jw__parse_cmd(jw_content_reader *r, char *data, const char *parent, u
     return got < 0 ? -1 : 0;
 }
 
+static int jw__add_reference(jw_content_reader *r, size_t parent, size_t child) {
+    jw_content_reference *refs = jw__grow(r->out->references, &r->reference_capacity,
+                                          r->out->reference_count + 1, sizeof(*refs));
+    if (!refs) return jw__fail(r, "Out of memory inspecting references");
+    r->out->references = refs;
+    refs[r->out->reference_count++] = (jw_content_reference){parent, child};
+    return 0;
+}
+
+/* files and state grow together so state[i] always exists for files[i]. */
+static int jw__reserve_file(jw_content_reader *r) {
+    size_t capacity = r->file_capacity;
+    jw_content_file *files = jw__grow(r->out->files, &capacity, r->out->file_count + 1, sizeof(*files));
+    if (!files) return -1;
+    r->out->files = files;
+    if (capacity == r->file_capacity) return 0;
+    unsigned char *state = realloc(r->state, capacity);
+    if (!state) return -1;
+    r->state = state;
+    r->file_capacity = capacity;
+    return 0;
+}
+
 static int jw__visit(jw_content_reader *r, const char *parent, const char *reference,
                      unsigned depth, size_t *out_index) {
     if (r->cancelled && r->cancelled(r->context)) return jw__fail(r, "Content inspection cancelled");
     if (depth > JW_CONTENT_MAX_DEPTH) return jw__fail(r, "Content descriptors are nested too deeply");
     jw_content_file file = {0};
-    if (jw__resolve(r, parent, reference, &file) < 0) return -1;
-    for (size_t i = 0; i < r->out->file_count; i++) {
-        if (!strcmp(r->out->files[i].path, file.path)) {
-            if (r->state[i] == 1) return jw__fail(r, "Content descriptors contain a cycle: %.160s", file.rom_relpath);
-            *out_index = i;
-            if (depth) {
-                jw_content_reference *refs = realloc(r->out->references,
-                    (r->out->reference_count + 1) * sizeof(*refs));
-                if (!refs) return jw__fail(r, "Out of memory inspecting references");
-                r->out->references = refs;
-                refs[r->out->reference_count++] = (jw_content_reference){r->parents[depth - 1], i};
-            }
-            return 0;
+    if (jw__resolve(r, parent, reference, &file) < 0) { jw__release(&file); return -1; }
+    size_t seen = jw__index_find(&r->file_index, r->out->files, jw__file_key, file.path);
+    if (seen != SIZE_MAX) {
+        if (r->state[seen] == 1) {
+            jw__fail(r, "Content descriptors contain a cycle: %.160s", file.rom_relpath);
+            jw__release(&file);
+            return -1;
         }
+        jw__release(&file);
+        *out_index = seen;
+        return depth ? jw__add_reference(r, r->parents[depth - 1], seen) : 0;
     }
-    if (r->out->file_count == JW_CONTENT_MAX_FILES) return jw__fail(r, "Content references too many files");
-    size_t index = r->out->file_count++;
-    jw_content_file *files = realloc(r->out->files, r->out->file_count * sizeof(*files));
-    if (!files) { r->out->file_count--; return jw__fail(r, "Out of memory inspecting files"); }
-    r->out->files = files;
+    if (r->out->file_count == JW_CONTENT_MAX_FILES) {
+        jw__release(&file);
+        return jw__fail(r, "Content references too many files");
+    }
+    size_t index = r->out->file_count;
+    if (jw__reserve_file(r) < 0 ||
+        jw__index_put(&r->file_index, r->out->files, jw__file_key, index, file.path, index) < 0) {
+        jw__release(&file);
+        return jw__fail(r, "Out of memory inspecting files");
+    }
+    r->out->file_count++;
+    jw_content_file *files = r->out->files;
     files[index] = file;
     r->state[index] = 1;
     *out_index = index;
     r->parents[depth] = index;
-    if (depth) {
-        jw_content_reference *refs = realloc(r->out->references,
-            (r->out->reference_count + 1) * sizeof(*refs));
-        if (!refs) return jw__fail(r, "Out of memory inspecting references");
-        r->out->references = refs;
-        refs[r->out->reference_count++] = (jw_content_reference){r->parents[depth - 1], index};
-    }
+    if (depth && jw__add_reference(r, r->parents[depth - 1], index) < 0) return -1;
     int kind = jw__descriptor_kind(file.path);
     if (!file.missing && kind) {
         if (file.size > 4 * 1024 * 1024 || file.size > JW_CONTENT_MAX_BYTES - r->bytes_read)
-            return jw__fail(r, "Content descriptors exceed the inspection size limit");
+            return jw__fail(r, "Content descriptors exceed the inspection size limit: %.160s", file.path);
         FILE *fp = fopen(file.path, "rb");
         if (!fp) return jw__fail(r, "Cannot read descriptor %.160s: %s", file.path, strerror(errno));
         char *data = malloc((size_t)file.size + 1);
@@ -531,7 +723,7 @@ static int jw__visit(jw_content_reader *r, const char *parent, const char *refer
                      kind == 5 ? jw__parse_cmd(r, body, directory, depth) :
                                  jw__parse_tracks(r, body, directory, kind, depth);
         free(parsed);
-        if (result < 0) return -1;
+        if (result < 0) return jw__locate(r, r->out->files[index].path);
     }
     r->state[index] = 2;
     return 0;
@@ -539,7 +731,11 @@ static int jw__visit(jw_content_reader *r, const char *parent, const char *refer
 
 void jw_content_free(jw_content *content) {
     if (!content) return;
-    for (size_t i = 0; i < content->file_count; i++) free(content->files[i].descriptor);
+    for (size_t i = 0; i < content->file_count; i++) {
+        free(content->files[i].path);
+        free(content->files[i].rom_relpath);
+        free(content->files[i].descriptor);
+    }
     free(content->files);
     free(content->discs);
     free(content->references);
@@ -561,8 +757,6 @@ int jw_content_inspect_many(const jw_storage_source_list *sources,
     if (!sources || sources->count < 1 || sources->count > JW_STORAGE_MAX_SOURCES ||
         !roots || !root_count)
         return jw__fail(&reader, "Invalid content identity");
-    reader.dirs = calloc(JW_CONTENT_MAX_DIRS, sizeof(*reader.dirs));
-    if (!reader.dirs) return jw__fail(&reader, "Out of memory inspecting content");
     int result = -1;
     for (int i = 0; i < sources->count; i++) {
         if (!sources->sources[i].available) continue;
@@ -603,11 +797,11 @@ int jw_content_inspect_many(const jw_storage_source_list *sources,
     out->launch_file = roots[0].file_index;
     result = 0;
 done:
-    for (size_t i = 0; i < reader.dir_count; i++) {
-        for (size_t j = 0; j < reader.dirs[i].count; j++) free(reader.dirs[i].names[j]);
-        free(reader.dirs[i].names);
-    }
+    for (size_t i = 0; i < reader.dir_count; i++) jw__free_dir(reader.dirs[i]);
     free(reader.dirs);
+    free(reader.dir_index.slots);
+    free(reader.file_index.slots);
+    free(reader.state);
     if (result < 0) jw_content_free(out);
     return result;
 }

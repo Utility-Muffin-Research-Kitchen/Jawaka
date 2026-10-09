@@ -1161,6 +1161,10 @@ msgid "Files removed: %zu. Already absent: %zu."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Files: %zu. Estimated space freed: %s."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Filter"
 msgstr ""
 

@@ -12,15 +12,40 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define JW_DELETE_MAX_DESCRIPTORS 8192
-#define JW_DELETE_MAX_ENTRIES 200000
+#define JW_DELETE_MAX_DESCRIPTORS 65536
+#define JW_DELETE_MAX_ENTRIES 1000000
+
+/* The stat fields jw__same_stat compares, so a stamp stays small per graph file. */
+typedef struct {
+    dev_t dev;
+    ino_t ino;
+    mode_t mode;
+    off_t size;
+    time_t mtime_sec, ctime_sec;
+    long mtime_nsec, ctime_nsec;
+} jw_delete_id;
 
 typedef struct {
-    struct stat file;
-    struct stat directory;
+    jw_delete_id file;
+    dev_t directory_dev;
+    ino_t directory_ino;
     bool missing;
-    char parent[JW_STORAGE_PATH_MAX];
 } jw_delete_stamp;
+
+/* Graph references grouped by parent, in reference order. start/edges is a CSR
+   child list; stack and cursor are traversal scratch sized to the file count. */
+typedef struct {
+    size_t *start;
+    size_t *edges;
+    size_t *stack;
+    size_t *cursor;
+} jw_delete_children;
+
+/* Hash multimap from key hashes to graph file indices, for indexed owners. */
+typedef struct {
+    uint32_t hash;
+    size_t file;
+} jw_delete_slot;
 
 typedef struct {
     jw_content graph;
@@ -39,6 +64,7 @@ typedef struct {
     const jw_ra_catalog *catalog;
     jw_content_root *roots;
     size_t root_count;
+    size_t root_capacity;
     size_t entries;
     jw_delete_cancelled cancelled;
     void *context;
@@ -137,18 +163,36 @@ static int jw__join(char *out, size_t size, const char *root, const char *name) 
 static int jw__add_root(jw_delete_builder *b, const char *source_id, const char *path,
                         const jw_ra_system *system) {
     if (!strcasecmp(jw__extension(path), "cmd") && !system)
-        return jw__error(b->error, b->error_size, "CMD ownership inspection needs the PC98 catalog formats");
-    for (size_t i = 0; i < b->root_count; i++)
-        if (!strcmp(b->roots[i].source_id, source_id) && !strcmp(b->roots[i].rom_relpath, path)) return 0;
+        return jw__error(b->error, b->error_size, "CMD ownership inspection needs the PC98 catalog formats: %.160s", path);
+    /* The walk visits each path once, so only the launch root can repeat. */
+    if (b->root_count && !strcmp(b->roots[0].source_id, source_id) && !strcmp(b->roots[0].rom_relpath, path)) return 0;
     if (b->root_count >= JW_DELETE_MAX_DESCRIPTORS)
         return jw__error(b->error, b->error_size, "Too many descriptors to check safely");
-    jw_content_root *roots = realloc(b->roots, (b->root_count + 1) * sizeof(*roots));
-    if (!roots) return jw__error(b->error, b->error_size, "Out of memory checking ownership");
-    b->roots = roots;
+    if (b->root_count == b->root_capacity) {
+        size_t capacity = b->root_capacity ? b->root_capacity * 2 : 64;
+        jw_content_root *grown = realloc(b->roots, capacity * sizeof(*grown));
+        if (!grown) return jw__error(b->error, b->error_size, "Out of memory checking ownership");
+        b->roots = grown;
+        b->root_capacity = capacity;
+    }
+    jw_content_root *roots = b->roots;
     char *id = strdup(source_id), *relative = strdup(path);
     if (!id || !relative) { free(id); free(relative); return jw__error(b->error, b->error_size, "Out of memory checking ownership"); }
     roots[b->root_count++] = (jw_content_root){id, relative, system, 0};
     return 0;
+}
+
+/* macOS writes AppleDouble "._Name" metadata beside copied files on FAT and
+   exFAT cards. Only its binary header (or an empty file) is skipped; a real
+   playlist that happens to use the name is still read as an owner. */
+static bool jw__apple_double(const char *path, off_t size) {
+    if (!size) return true;
+    unsigned char magic[4];
+    FILE *fp = fopen(path, "rb");
+    bool match = fp && fread(magic, 1, sizeof(magic), fp) == sizeof(magic) &&
+                 !memcmp(magic, "\x00\x05\x16\x07", sizeof(magic));
+    if (fp) fclose(fp);
+    return match;
 }
 
 /* Walk all mounted ROM trees, including hidden and scanner-suppressed folders.
@@ -192,6 +236,7 @@ static int jw__walk(jw_delete_builder *b, const jw_storage_source *source,
         if (S_ISDIR(st.st_mode)) result = jw__walk(b, source, child, depth + 1);
         else if (jw_content_is_descriptor_path(child)) {
             if (!S_ISREG(st.st_mode)) result = jw__error(b->error, b->error_size, "Descriptor is not a regular file: %.160s", child);
+            else if (!strncmp(entry->d_name, "._", 2) && jw__apple_double(absolute, st.st_size)) continue;
             else result = jw__add_root(b, source->id, child, jw__path_system(b->catalog, child));
         }
         if (result) break;
@@ -206,44 +251,92 @@ static int jw__root_compare(const void *a, const void *b) {
     return result ? result : strcmp(x->rom_relpath, y->rom_relpath);
 }
 
-static void jw__mark(const jw_content *graph, size_t root, bool *marked) {
+static int jw__children(const jw_content *graph, jw_delete_children *children) {
+    size_t nodes = graph->file_count, edges = graph->reference_count;
+    children->start = calloc(nodes + 1, sizeof(*children->start));
+    children->edges = calloc(edges ? edges : 1, sizeof(*children->edges));
+    children->stack = calloc(nodes, sizeof(*children->stack));
+    children->cursor = calloc(nodes, sizeof(*children->cursor));
+    if (!children->start || !children->edges || !children->stack || !children->cursor) return -1;
+    for (size_t i = 0; i < edges; i++) children->start[graph->references[i].parent + 1]++;
+    for (size_t i = 0; i < nodes; i++) children->start[i + 1] += children->start[i];
+    memcpy(children->cursor, children->start, nodes * sizeof(*children->cursor));
+    for (size_t i = 0; i < edges; i++)
+        children->edges[children->cursor[graph->references[i].parent]++] = graph->references[i].child;
+    return 0;
+}
+
+/* Marks root and everything reachable from it. Nodes already marked were closed
+   by an earlier call, so marking many roots into one array is linear overall. */
+static void jw__mark(const jw_delete_children *children, size_t root, bool *marked) {
+    if (marked[root]) return;
+    size_t top = 0;
     marked[root] = true;
-    bool changed;
-    do {
-        changed = false;
-        for (size_t i = 0; i < graph->reference_count; i++) {
-            jw_content_reference ref = graph->references[i];
-            if (marked[ref.parent] && !marked[ref.child]) { marked[ref.child] = true; changed = true; }
+    children->stack[top++] = root;
+    while (top) {
+        size_t node = children->stack[--top];
+        for (size_t i = children->start[node]; i < children->start[node + 1]; i++) {
+            size_t child = children->edges[i];
+            if (marked[child]) continue;
+            marked[child] = true;
+            children->stack[top++] = child;
         }
-    } while (changed);
+    }
+}
+
+static void jw__id(const struct stat *st, jw_delete_id *id) {
+    id->dev = st->st_dev; id->ino = st->st_ino; id->mode = st->st_mode; id->size = st->st_size;
+#ifdef __APPLE__
+    id->mtime_sec = st->st_mtimespec.tv_sec; id->mtime_nsec = st->st_mtimespec.tv_nsec;
+    id->ctime_sec = st->st_ctimespec.tv_sec; id->ctime_nsec = st->st_ctimespec.tv_nsec;
+#else
+    id->mtime_sec = st->st_mtim.tv_sec; id->mtime_nsec = st->st_mtim.tv_nsec;
+    id->ctime_sec = st->st_ctim.tv_sec; id->ctime_nsec = st->st_ctim.tv_nsec;
+#endif
+}
+
+static bool jw__same_id(const jw_delete_id *a, const jw_delete_id *b) {
+    return a->dev == b->dev && a->ino == b->ino && a->mode == b->mode && a->size == b->size &&
+           a->mtime_sec == b->mtime_sec && a->mtime_nsec == b->mtime_nsec &&
+           a->ctime_sec == b->ctime_sec && a->ctime_nsec == b->ctime_nsec;
 }
 
 static bool jw__same_stat(const struct stat *a, const struct stat *b) {
-    if (a->st_dev != b->st_dev || a->st_ino != b->st_ino || a->st_mode != b->st_mode || a->st_size != b->st_size)
-        return false;
-#ifdef __APPLE__
-    return a->st_mtimespec.tv_sec == b->st_mtimespec.tv_sec && a->st_mtimespec.tv_nsec == b->st_mtimespec.tv_nsec &&
-           a->st_ctimespec.tv_sec == b->st_ctimespec.tv_sec && a->st_ctimespec.tv_nsec == b->st_ctimespec.tv_nsec;
-#else
-    return a->st_mtim.tv_sec == b->st_mtim.tv_sec && a->st_mtim.tv_nsec == b->st_mtim.tv_nsec &&
-           a->st_ctim.tv_sec == b->st_ctim.tv_sec && a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
-#endif
+    jw_delete_id x, y;
+    jw__id(a, &x); jw__id(b, &y);
+    return jw__same_id(&x, &y);
+}
+
+static bool jw__same_stamp(const jw_delete_id *stamp, const struct stat *st) {
+    jw_delete_id current;
+    jw__id(st, &current);
+    return jw__same_id(stamp, &current);
+}
+
+static int jw__parent(const char *path, char *out, size_t size) {
+    snprintf(out, size, "%s", path);
+    char *slash = strrchr(out, '/');
+    if (!slash) return -1;
+    *slash = '\0';
+    return 0;
 }
 
 static int jw__stamp(const jw_content_file *file, jw_delete_stamp *stamp, char *error, size_t error_size) {
     memset(stamp, 0, sizeof(*stamp));
     stamp->missing = file->missing;
-    if (lstat(file->path, &stamp->file)) {
+    struct stat st, directory;
+    if (lstat(file->path, &st)) {
         if (!file->missing || errno != ENOENT) return jw__error(error, error_size, "Content changed during preview: %.160s", file->rom_relpath);
-    } else if (file->missing || !S_ISREG(stamp->file.st_mode) || (uint64_t)stamp->file.st_size != file->size)
-        return jw__error(error, error_size, "Content changed during preview: %.160s", file->rom_relpath);
-    snprintf(stamp->parent, sizeof(stamp->parent), "%s", file->path);
-    char *slash = strrchr(stamp->parent, '/');
-    if (!slash) return jw__error(error, error_size, "Invalid content directory");
-    *slash = '\0';
-    if (stat(stamp->parent, &stamp->directory)) {
-        if (!file->missing || errno != ENOENT) return jw__error(error, error_size, "Cannot inspect content directory: %s", strerror(errno));
+    } else {
+        if (file->missing || !S_ISREG(st.st_mode) || (uint64_t)st.st_size != file->size)
+            return jw__error(error, error_size, "Content changed during preview: %.160s", file->rom_relpath);
+        jw__id(&st, &stamp->file);
     }
+    char parent[JW_STORAGE_PATH_MAX];
+    if (jw__parent(file->path, parent, sizeof(parent))) return jw__error(error, error_size, "Invalid content directory");
+    if (stat(parent, &directory)) {
+        if (!file->missing || errno != ENOENT) return jw__error(error, error_size, "Cannot inspect content directory: %s", strerror(errno));
+    } else { stamp->directory_dev = directory.st_dev; stamp->directory_ino = directory.st_ino; }
     return 0;
 }
 
@@ -274,14 +367,29 @@ static bool jw__protected(const jw_content_file *file, const jw_storage_source_l
     return !*suffix;
 }
 
-static void jw__order(const jw_content *graph, size_t index, bool *visited,
+/* Post-order over the children lists, iterative so a long descriptor chain
+   cannot exhaust the preview worker's stack. */
+static void jw__order(const jw_delete_children *children, size_t index, bool *visited,
                        const bool *selected, size_t *order, size_t *count) {
     if (visited[index]) return;
+    size_t top = 1;
     visited[index] = true;
-    for (size_t i = 0; i < graph->reference_count; i++)
-        if (graph->references[i].parent == index)
-            jw__order(graph, graph->references[i].child, visited, selected, order, count);
-    if (selected[index]) order[(*count)++] = index;
+    children->stack[0] = index;
+    children->cursor[0] = children->start[index];
+    while (top) {
+        size_t node = children->stack[top - 1];
+        if (children->cursor[top - 1] < children->start[node + 1]) {
+            size_t child = children->edges[children->cursor[top - 1]++];
+            if (visited[child]) continue;
+            visited[child] = true;
+            children->stack[top] = child;
+            children->cursor[top] = children->start[child];
+            top++;
+        } else {
+            if (selected[node]) order[(*count)++] = node;
+            top--;
+        }
+    }
 }
 
 void jw_delete_plan_free(jw_delete_plan *plan) {
@@ -315,7 +423,7 @@ static int jw__replacement(jw_delete_snapshot *snapshot, const jw_content_disc *
         }
         if (jw__same_disc(disc, selected)) {
             memset(omit + disc->line_start, 1, (disc->line_end - disc->line_start) * sizeof(*omit));
-            /* EXTINF belongs to the next disc; retain unrelated comments and directives. */
+            /* EXTINF and LABEL name the next disc; retain unrelated comments and directives. */
             for (size_t start = previous_end; start < disc->line_start;) {
                 size_t end = start;
                 while (end < disc->line_start && root->descriptor[end] != '\n') end++;
@@ -324,7 +432,8 @@ static int jw__replacement(jw_delete_snapshot *snapshot, const jw_content_disc *
                 if (!text && end >= 3 && !memcmp(root->descriptor, "\xef\xbb\xbf", 3)) text = 3;
                 size_t preserve_bom = text;
                 while (text < end && isspace((unsigned char)root->descriptor[text])) text++;
-                if (end - text >= 8 && !strncasecmp(root->descriptor + text, "#EXTINF:", 8))
+                if ((end - text >= 8 && !strncasecmp(root->descriptor + text, "#EXTINF:", 8)) ||
+                    (end - text >= 7 && !strncasecmp(root->descriptor + text, "#LABEL:", 7)))
                     memset(omit + preserve_bom, 1, (end - preserve_bom) * sizeof(*omit));
                 start = end;
             }
@@ -336,6 +445,63 @@ static int jw__replacement(jw_delete_snapshot *snapshot, const jw_content_disc *
     snapshot->replacement[snapshot->replacement_size] = '\0';
     free(omit);
     return 0;
+}
+
+static uint32_t jw__hash_text(uint32_t hash, const char *text) {
+    for (; *text; text++) hash = (hash ^ (unsigned char)*text) * 16777619u;
+    return hash;
+}
+
+static uint32_t jw__hash_final(uint32_t hash) {
+    hash ^= hash >> 16; hash *= 0x7feb352dU; hash ^= hash >> 15; hash *= 0x846ca68bU; hash ^= hash >> 16;
+    return hash;
+}
+
+static uint32_t jw__hash_name(const char *source_id, const char *rom_relpath) {
+    return jw__hash_final(jw__hash_text((jw__hash_text(2166136261u, source_id) ^ '/') * 16777619u, rom_relpath));
+}
+
+static uint32_t jw__hash_path(const char *path) {
+    return jw__hash_final(jw__hash_text(2166136261u, path));
+}
+
+static uint32_t jw__hash_inode(dev_t dev, ino_t ino) {
+    uint64_t mixed = (uint64_t)dev * 0x9E3779B97F4A7C15ULL ^ (uint64_t)ino;
+    return jw__hash_final((uint32_t)(mixed ^ (mixed >> 32)));
+}
+
+static void jw__slot_add(jw_delete_slot *slots, size_t mask, uint32_t hash, size_t file) {
+    size_t slot = hash & mask;
+    while (slots[slot].file) slot = (slot + 1) & mask;
+    slots[slot].hash = hash;
+    slots[slot].file = file + 1;
+}
+
+/* An indexed owner shares a graph file by ROM identity, resolved path or inode
+   (hard links may give several files one inode). resolved and st are NULL when
+   the owner is absent. Returns true once the launch file is shared and present. */
+static bool jw__owner_blocks(const jw_content *graph, const jw_delete_children *children,
+                             const jw_delete_stamp *stamps, const jw_delete_slot *slots, size_t mask,
+                             const jw_delete_owner *owner, const char *resolved, const struct stat *st,
+                             bool *shared) {
+    uint32_t hashes[3] = {jw__hash_name(owner->source_id, owner->rom_relpath),
+                          resolved ? jw__hash_path(resolved) : 0,
+                          st ? jw__hash_inode(st->st_dev, st->st_ino) : 0};
+    for (int kind = 0; kind < 3; kind++) {
+        if ((kind == 1 && !resolved) || (kind == 2 && !st)) continue;
+        for (size_t slot = hashes[kind] & mask; slots[slot].file; slot = (slot + 1) & mask) {
+            if (slots[slot].hash != hashes[kind]) continue;
+            size_t j = slots[slot].file - 1;
+            const jw_content_file *file = &graph->files[j];
+            bool same = kind == 0 ? !strcmp(owner->source_id, file->source_id) && !strcmp(owner->rom_relpath, file->rom_relpath) :
+                        kind == 1 ? !strcmp(resolved, file->path) :
+                        !file->missing && st->st_dev == stamps[j].file.dev && st->st_ino == stamps[j].file.ino;
+            if (!same) continue;
+            jw__mark(children, j, shared);
+            if (shared[graph->launch_file] && !graph->files[graph->launch_file].missing) return true;
+        }
+    }
+    return false;
 }
 
 static int jw__plan_build(const jw_storage_source_list *sources,
@@ -357,6 +523,9 @@ static int jw__plan_build(const jw_storage_source_list *sources,
         .cancelled = cancelled, .context = context, .error = error, .error_size = error_size};
     jw_delete_snapshot *snapshot = calloc(1, sizeof(*snapshot));
     bool *selected = NULL, *shared = NULL, *visited = NULL;
+    jw_delete_children children = {0};
+    jw_delete_slot *slots = NULL;
+    size_t slot_mask = 0;
     int result = -1;
     if (!snapshot) return jw__error(error, error_size, "Out of memory preparing deletion");
     out->snapshot = snapshot;
@@ -372,11 +541,7 @@ static int jw__plan_build(const jw_storage_source_list *sources,
     if (jw__add_root(&builder, source_id, rom_relpath, system)) goto done;
     for (int i = 0; i < sources->count; i++) {
         const jw_storage_source *source = &sources->sources[i];
-        if (!source->available) {
-            size_t used = strlen(out->missing_sources);
-            snprintf(out->missing_sources + used, sizeof(out->missing_sources) - used, "%s%s", used ? ", " : "", source->id);
-            continue;
-        }
+        if (!source->available) continue;
         if (stat(source->root_abs[0] ? source->root_abs : source->root, &snapshot->mounts[i])) {
             jw__error(error, error_size, "Cannot inspect mounted source %s: %s", source->id, strerror(errno)); goto done;
         }
@@ -391,6 +556,19 @@ static int jw__plan_build(const jw_storage_source_list *sources,
         jw__error(error, error_size, "The launch file identity changed. Refresh your library before deleting it.");
         goto done;
     }
+    /* Warn only about a card the library or this game uses. MLP1 always
+       registers its second slot, even when no card was ever inserted. */
+    for (int i = 0; i < sources->count; i++) {
+        const jw_storage_source *source = &sources->sources[i];
+        bool known = false;
+        for (size_t j = 0; !source->available && !known && j < owner_count; j++)
+            known = !strcmp(owners[j].source_id, source->id);
+        for (size_t j = 0; !source->available && !known && j < graph->file_count; j++)
+            known = !strcmp(graph->files[j].source_id, source->id);
+        if (!known) continue;
+        size_t used = strlen(out->missing_sources);
+        snprintf(out->missing_sources + used, sizeof(out->missing_sources) - used, "%s%s", used ? ", " : "", source->id);
+    }
     selected = calloc(graph->file_count, sizeof(*selected));
     shared = calloc(graph->file_count, sizeof(*shared));
     visited = calloc(graph->file_count, sizeof(*visited));
@@ -400,7 +578,8 @@ static int jw__plan_build(const jw_storage_source_list *sources,
     if (!selected || !shared || !visited || !snapshot->stamps || !snapshot->indices || !snapshot->order) {
         jw__error(error, error_size, "Out of memory preparing deletion"); goto done;
     }
-    jw__mark(graph, graph->launch_file, selected);
+    if (jw__children(graph, &children)) { jw__error(error, error_size, "Out of memory preparing deletion"); goto done; }
+    jw__mark(&children, graph->launch_file, selected);
     for (size_t i = 0; i < graph->file_count; i++) {
         if (cancelled && cancelled(context)) { jw__error(error, error_size, "Delete preview cancelled"); goto done; }
         bool available = false;
@@ -414,7 +593,7 @@ static int jw__plan_build(const jw_storage_source_list *sources,
         if (cancelled && cancelled(context)) { jw__error(error, error_size, "Delete preview cancelled"); goto done; }
         size_t root = builder.roots[i].file_index;
         if (!selected[root]) {
-            jw__mark(graph, root, shared);
+            jw__mark(&children, root, shared);
             if (shared[graph->launch_file] && !graph->files[graph->launch_file].missing) {
                 const char *name = builder.roots[i].rom_relpath;
                 for (size_t j = 0; j < owner_count; j++)
@@ -423,6 +602,21 @@ static int jw__plan_build(const jw_storage_source_list *sources,
                 jw__error(error, error_size, "Delete is blocked because %.160s uses this game's launch file. Hide Game is still available.", name);
                 goto done;
             }
+        }
+    }
+    if (owner_count) {
+        /* Up to three keys per graph file, kept at most half full. */
+        size_t size = 16;
+        while (size < graph->file_count * 6) size *= 2;
+        slots = calloc(size, sizeof(*slots));
+        if (!slots) { jw__error(error, error_size, "Out of memory preparing deletion"); goto done; }
+        slot_mask = size - 1;
+        for (size_t j = 0; j < graph->file_count; j++) {
+            const jw_content_file *file = &graph->files[j];
+            jw__slot_add(slots, slot_mask, jw__hash_name(file->source_id, file->rom_relpath), j);
+            jw__slot_add(slots, slot_mask, jw__hash_path(file->path), j);
+            if (!file->missing)
+                jw__slot_add(slots, slot_mask, jw__hash_inode(snapshot->stamps[j].file.dev, snapshot->stamps[j].file.ino), j);
         }
     }
     for (size_t i = 0; i < owner_count; i++) {
@@ -438,16 +632,9 @@ static int jw__plan_build(const jw_storage_source_list *sources,
         if (!present && errno != ENOENT) { jw__error(error, error_size, "Cannot inspect indexed game %.160s: %s", owner->name, strerror(errno)); goto done; }
         struct stat st;
         bool have_stat = present && stat(resolved, &st) == 0;
-        for (size_t j = 0; j < graph->file_count; j++) {
-            const jw_content_file *file = &graph->files[j];
-            bool same = !strcmp(owner->source_id, file->source_id) && !strcmp(owner->rom_relpath, file->rom_relpath);
-            if (present && !strcmp(resolved, file->path)) same = true;
-            if (have_stat && !file->missing && st.st_dev == snapshot->stamps[j].file.st_dev && st.st_ino == snapshot->stamps[j].file.st_ino) same = true;
-            if (!same) continue;
-            jw__mark(graph, j, shared);
-            if (shared[graph->launch_file] && !graph->files[graph->launch_file].missing) {
-                jw__error(error, error_size, "Delete is blocked because %.160s uses this game's launch file. Hide Game is still available.", owner->name); goto done;
-            }
+        if (jw__owner_blocks(graph, &children, snapshot->stamps, slots, slot_mask, owner,
+                             present ? resolved : NULL, have_stat ? &st : NULL, shared)) {
+            jw__error(error, error_size, "Delete is blocked because %.160s uses this game's launch file. Hide Game is still available.", owner->name); goto done;
         }
     }
     if (disc) {
@@ -469,7 +656,7 @@ static int jw__plan_build(const jw_storage_source_list *sources,
             memset(selected, 0, graph->file_count * sizeof(*selected));
             for (size_t i = 0; i < graph->disc_count; i++) {
                 const jw_content_disc *entry = &graph->discs[i];
-                jw__mark(graph, entry->file_index, jw__same_disc(entry, disc) ? selected : shared);
+                jw__mark(&children, entry->file_index, jw__same_disc(entry, disc) ? selected : shared);
             }
             selected[graph->launch_file] = true;
             if (jw__replacement(snapshot, disc, error, error_size)) goto done;
@@ -506,13 +693,14 @@ static int jw__plan_build(const jw_storage_source_list *sources,
         else { out->remove_count++; out->bytes += target->size; }
         if (target->missing) out->missing_count++;
     }
-    jw__order(graph, graph->launch_file, visited, selected, snapshot->order, &snapshot->order_count);
+    jw__order(&children, graph->launch_file, visited, selected, snapshot->order, &snapshot->order_count);
     out->disc_count = out->playlist_edit ? graph->disc_count - out->remaining_discs : graph->disc_count;
     out->writable_image = !strcmp(system_id, "PC98");
     result = 0;
 done:
     for (size_t i = 0; i < builder.root_count; i++) { free((char *)builder.roots[i].source_id); free((char *)builder.roots[i].rom_relpath); }
-    free(builder.roots); free(selected); free(shared); free(visited);
+    free(builder.roots); free(selected); free(shared); free(visited); free(slots);
+    free(children.start); free(children.edges); free(children.stack); free(children.cursor);
     if (result) jw_delete_plan_free(out);
     return result;
 }
@@ -595,7 +783,7 @@ bool jw_delete_plan_equal(const jw_delete_plan *a, const jw_delete_plan *b) {
     for (size_t i = 0; i < x->graph.file_count; i++) {
         const jw_content_file *p = &x->graph.files[i], *q = &y->graph.files[i];
         if (strcmp(p->path, q->path) || p->missing != q->missing || p->descriptor_size != q->descriptor_size ||
-            (!p->missing && !jw__same_stat(&x->stamps[i].file, &y->stamps[i].file)) ||
+            (!p->missing && !jw__same_id(&x->stamps[i].file, &y->stamps[i].file)) ||
             (p->descriptor_size && memcmp(p->descriptor, q->descriptor, p->descriptor_size))) return false;
     }
     for (size_t i = 0; i < x->graph.reference_count; i++)
@@ -622,25 +810,26 @@ static int jw__checked_file(const jw_delete_plan *plan, size_t slot,
     if (!jw_delete_plan_sources_match(plan, &snapshot->sources))
         return jw__error(error, error_size, "Mounted sources changed; open a fresh preview");
     const jw_delete_stamp *stamp = &snapshot->stamps[index];
-    char resolved[JW_STORAGE_PATH_MAX];
+    const jw_content_file *original = &snapshot->graph.files[index];
+    char resolved[JW_STORAGE_PATH_MAX], parent[JW_STORAGE_PATH_MAX];
     struct stat st;
-    if (!realpath(stamp->parent, resolved)) {
+    if (jw__parent(original->path, parent, sizeof(parent))) return jw__error(error, error_size, "Invalid content directory");
+    if (!realpath(parent, resolved)) {
         if (file->missing && errno == ENOENT && lstat(file->path, &st) && errno == ENOENT) return -2;
         return jw__error(error, error_size, "Content directory changed: %.160s", file->rom_relpath);
     }
-    if (strcmp(resolved, stamp->parent)) return jw__error(error, error_size, "Content directory changed: %.160s", file->rom_relpath);
-    int directory = open(stamp->parent, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (strcmp(resolved, parent)) return jw__error(error, error_size, "Content directory changed: %.160s", file->rom_relpath);
+    int directory = open(parent, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
     if (directory < 0) return jw__error(error, error_size, "Cannot open content directory: %s", strerror(errno));
-    if (fstat(directory, &st) || st.st_dev != stamp->directory.st_dev || st.st_ino != stamp->directory.st_ino) {
+    if (fstat(directory, &st) || st.st_dev != stamp->directory_dev || st.st_ino != stamp->directory_ino) {
         close(directory); return jw__error(error, error_size, "Content directory changed: %.160s", file->rom_relpath);
     }
     const char *name = strrchr(file->path, '/') + 1;
     int stat_result = fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW);
     if (file->missing && stat_result && errno == ENOENT) { close(directory); return -2; }
-    if (stat_result || file->missing || !jw__same_stat(&stamp->file, &st)) {
+    if (stat_result || file->missing || !jw__same_stamp(&stamp->file, &st)) {
         close(directory); return jw__error(error, error_size, "Content changed; open a fresh preview: %.160s", file->rom_relpath);
     }
-    const jw_content_file *original = &snapshot->graph.files[index];
     if (original->descriptor) {
         int fd = openat(directory, name, O_RDONLY | O_NOFOLLOW);
         if (fd < 0) { close(directory); return jw__error(error, error_size, "Cannot read descriptor %.160s: %s", file->rom_relpath, strerror(errno)); }
@@ -659,7 +848,7 @@ static int jw__checked_file(const jw_delete_plan *plan, size_t slot,
         if (close(fd)) bad = true;
         if (bad) { close(directory); return jw__error(error, error_size, "Descriptor changed; open a fresh preview: %.160s", file->rom_relpath); }
     }
-    if (fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW) || !jw__same_stat(&stamp->file, &st)) {
+    if (fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW) || !jw__same_stamp(&stamp->file, &st)) {
         close(directory); return jw__error(error, error_size, "Content changed; open a fresh preview: %.160s", file->rom_relpath);
     }
     return directory;
@@ -717,7 +906,7 @@ static int jw__prepare_replacement(const jw_delete_plan *plan, int directory,
     }
     if (fd < 0) { temporary[0] = '\0'; return jw__error(error, error_size, "Could not prepare replacement playlist: %s", strerror(errno)); }
     int failure = fstat(fd, stamp) ? errno : 0;
-    if (!failure && fchmod(fd, root->file.st_mode & 0777)) failure = errno;
+    if (!failure && fchmod(fd, root->file.mode & 0777)) failure = errno;
     size_t written = 0;
     while (!failure && written < snapshot->replacement_size) {
         ssize_t n = write(fd, snapshot->replacement + written, snapshot->replacement_size - written);

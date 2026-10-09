@@ -6931,6 +6931,17 @@ static const char *jw__delete_title(const jw_launcher_state *state) {
         ? T("Delete Disc") : T("Delete Game");
 }
 
+static void jw__delete_summary(const jw_ipc_delete_status *status, char *out, size_t size) {
+    char bytes[64];
+    jw__pakrat_format_size(status->bytes, bytes, sizeof(bytes));
+    /* Discs are counted from playlist entries; a lone CUE or cartridge omits the count. */
+    if (status->disc_count)
+        snprintf(out, size, T("Discs: %zu. Files: %zu. Estimated space freed: %s."),
+                 status->disc_count, status->file_count, bytes);
+    else
+        snprintf(out, size, T("Files: %zu. Estimated space freed: %s."), status->file_count, bytes);
+}
+
 static int jw__delete_body(jw_launcher_state *state, int x, int y, int w, bool draw) {
     const jw_ipc_delete_status *status = &state->delete_status;
     int top = y;
@@ -6979,9 +6990,7 @@ static int jw__delete_body(jw_launcher_state *state, int x, int y, int w, bool d
                      status->remaining_discs);
             y += jw__delete_line(line, x, y, w, draw);
         }
-        jw__pakrat_format_size(status->bytes, size, sizeof(size));
-        snprintf(line, sizeof(line), T("Discs: %zu. Files: %zu. Estimated space freed: %s."),
-                 status->disc_count, status->file_count, size);
+        jw__delete_summary(status, line, sizeof(line));
         y += jw__delete_line(line, x, y, w, draw);
         if (status->playlist_edit) {
             if (status->remaining_discs == 1)

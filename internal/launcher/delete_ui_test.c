@@ -442,10 +442,19 @@ int main(void) {
     jw_settings_ui_close(&state->settings);
     state->system_catalog = NULL;
     check_disc_deletion(state, root);
+    /* A lone CUE or cartridge has no playlist discs; never show "Discs: 0". */
+    jw_ipc_delete_status summary = {.file_count = 1, .bytes = 4096};
+    char text[256];
+    jw__delete_summary(&summary, text, sizeof(text));
+    assert(!strstr(text, "Discs") && !strncmp(text, "Files: 1. ", 10));
+    summary.disc_count = 2;
+    jw__delete_summary(&summary, text, sizeof(text));
+    assert(!strncmp(text, "Discs: 2. Files: 1. ", 20));
     g_present_state = NULL;
     unlink(state->db_path);
     free(state);
     cat_quit();
+    unlink(delete_resume_path); /* the refresh path saves a resume breadcrumb */
     rmdir(root);
     puts("delete-ui-test: game/disc scope, hidden final disc, refreshed playlist, no replay and Cancel default passed");
     return 0;

@@ -10,8 +10,9 @@
 
 typedef struct {
     char source_id[JW_STORAGE_SOURCE_ID_MAX];
-    char rom_relpath[512];
-    char path[JW_STORAGE_PATH_MAX];
+    /* Heap strings owned by the content; jw_content_free releases them. */
+    char *rom_relpath;
+    char *path;
     uint64_t size;
     bool missing;
     /* Exact descriptor bytes, including labels, directives and line endings. */
