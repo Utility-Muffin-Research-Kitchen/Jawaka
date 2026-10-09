@@ -202,6 +202,22 @@ static void check_disc_deletion(jw_launcher_state *state, const char *root) {
     jw__handle_delete_input(state, CAT_BTN_A);
     assert(commits == before && state->discs_open && state->action_content.disc_count == 2);
     shared_disc = false;
+    /* The daemon may still be committing after its response is lost. */
+    commit_phase = JW_IPC_DELETE_ERROR;
+    commit_rc = -1;
+    jw__handle_discs_input("", state->db_path, state, CAT_BTN_X, &running);
+    jw__handle_delete_input(state, CAT_BTN_RIGHT);
+    jw__handle_delete_input(state, CAT_BTN_A);
+    assert(commits == before + 1 && !state->delete_result_known);
+    jw__handle_delete_input(state, CAT_BTN_B);
+    assert(state->delete_reconciled && !state->delete_open);
+    assert(!state->actions_open && !state->discs_open && !state->action_content.disc_count);
+    commit_rc = 0;
+    commit_phase = JW_IPC_DELETE_COMMITTING;
+    attach_catalog(state);
+    jw__open_game_actions(state->db_path, state, &parent);
+    state->discs_open = true;
+    before = commits;
     jw__handle_discs_input("", state->db_path, state, CAT_BTN_X, &running);
     jw__handle_delete_input(state, CAT_BTN_RIGHT);
     jw__handle_delete_input(state, CAT_BTN_A);

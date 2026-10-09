@@ -10666,7 +10666,7 @@ static void jw__delete_reconcile(jw_launcher_state *state) {
     if (jw__refresh_after_visibility_write(state->db_path, state) != 0)
         jw_system_notice_set(&state->system_activity.feedback,
             T("Deletion finished. Library refresh failed."), SDL_GetTicks());
-    else if (state->delete_from_disc &&
+    else if (state->delete_from_disc && state->delete_result_known &&
         jw_db_get_game_by_source_relpath(state->db_path, parent.source_id, parent.rom_relpath, &current) == 0) {
         jw__open_game_actions(state->db_path, state, &current);
         state->discs_open = true;
