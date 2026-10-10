@@ -75,6 +75,7 @@ typedef struct {
     unsigned char physical_keys[(KEY_MAX + 8) / 8];
     int abs_value[ABS_CNT];
     int abs_deadzone[ABS_CNT];
+    int abs_fuzz[ABS_CNT];
     bool physical_state_valid;
     bool input_evdev_clock;
     bool input_dropped;
@@ -431,6 +432,7 @@ static bool jw__capture_abs_neutrals(jw_mlp1_input_proxy_data *data) {
             data->abs_neutral[code] = code >= ABS_HAT0X && code <= ABS_HAT3Y
                 ? 0 : (absinfo.minimum + absinfo.maximum) / 2;
             data->abs_deadzone[code] = absinfo.flat;
+            data->abs_fuzz[code] = absinfo.fuzz;
             data->abs_value[code] = absinfo.value;
         } else {
             return false;
@@ -696,30 +698,71 @@ static bool jw__volume_key(uint16_t code) {
     return code == KEY_VOLUMEUP || code == KEY_VOLUMEDOWN;
 }
 
-static bool jw__axis_active(const jw_mlp1_input_proxy_data *data, int code) {
-    int64_t center = data->abs_neutral[code];
-    int64_t deadzone = data->abs_deadzone[code];
+/* Where an axis rests, and how far from there it still counts as resting, for
+ * the Menu gesture only; gameplay uses the calibration's own deadzone.
+ *
+ * The band is the rest band plus the kernel's fuzz. The input core drops any
+ * reading within fuzz/2 of the last value it reported, so a stick that comes
+ * to rest stays reported wherever its last accepted reading left it, with no
+ * further event to correct that until it moves again; EVIOCGABS returns the
+ * same value. On the MLP1 (flat = fuzz = 1152, 72 units per ADC step) a stick
+ * resting 15 steps off center could latch past flat, and every Menu press was
+ * then vetoed as a stick chord until the stick happened to settle lower. Half
+ * the fuzz covers that latch; the other half covers ADC noise and a rest point
+ * at the edge of flat. */
+static void jw__axis_rest(const jw_mlp1_input_proxy_data *data, int code,
+                          int64_t *center, int64_t *band) {
+    *center = data->abs_neutral[code];
+    *band = data->abs_deadzone[code];
     if (code >= ABS_HAT0X && code <= ABS_HAT3Y) {
-        center = 0;
-        deadzone = 0;
-    } else if (data->cal.loaded && (code == ABS_X || code == ABS_Y)) {
-        center = code == ABS_X ? data->cal.x_zero : data->cal.y_zero;
+        *center = 0;
+        *band = 0;
+        return;
+    }
+    if (data->cal.loaded && (code == ABS_X || code == ABS_Y)) {
+        *center = code == ABS_X ? data->cal.x_zero : data->cal.y_zero;
         /* Menu gestures must tolerate the device's resting stick noise even
          * when gameplay calibration uses a smaller deadzone. */
-        if (data->cal.deadzone > deadzone) deadzone = data->cal.deadzone;
+        if (data->cal.deadzone > *band) *band = data->cal.deadzone;
     }
-    int64_t delta = (int64_t)data->abs_value[code] - center;
-    return delta > deadzone || delta < -deadzone;
+    *band += data->abs_fuzz[code];
 }
 
-static bool jw__menu_alone(const jw_mlp1_input_proxy_data *data) {
-    if (!data->physical_state_valid || data->power_held) return false;
+static bool jw__axis_active(const jw_mlp1_input_proxy_data *data, int code) {
+    int64_t center, band;
+    jw__axis_rest(data, code, &center, &band);
+    int64_t delta = (int64_t)data->abs_value[code] - center;
+    return delta > band || delta < -band;
+}
+
+/* explain: log what stops this press being a tap. A vetoed press reaches the
+   child as nothing at all, so without this a stick at rest looks exactly like
+   a dead button. Only at the press; the escape deadline rechecks every 50 ms. */
+static bool jw__menu_alone(const jw_mlp1_input_proxy_data *data, bool explain) {
+    if (!data->physical_state_valid || data->power_held) {
+        if (explain)
+            jw_log_info("input proxy: Menu press is not a tap: %s",
+                        data->physical_state_valid ? "Power is held" : "pad state unknown");
+        return false;
+    }
     for (int code = 0; code <= KEY_MAX; code++) {
-        if (code != BTN_MODE && jw__bit_is_set(data->physical_keys, code))
+        if (code != BTN_MODE && jw__bit_is_set(data->physical_keys, code)) {
+            if (explain)
+                jw_log_info("input proxy: Menu press is not a tap: key %d is held", code);
             return false;
+        }
     }
     for (int code = 0; code < ABS_CNT; code++) {
-        if (data->abs_present[code] && jw__axis_active(data, code)) return false;
+        if (data->abs_present[code] && jw__axis_active(data, code)) {
+            if (explain) {
+                int64_t center, band;
+                jw__axis_rest(data, code, &center, &band);
+                jw_log_info("input proxy: Menu press is not a tap: axis %d at %d, "
+                            "rests at %lld +/- %lld", code, data->abs_value[code],
+                            (long long)center, (long long)band);
+            }
+            return false;
+        }
     }
     return true;
 }
@@ -777,7 +820,7 @@ static void jw__menu_deadline(jw_input_proxy *proxy, uint64_t now) {
     jw_mlp1_input_proxy_data *data = proxy->backend_data;
     if (proxy->menu_config.escape_enabled && data->input_evdev_clock &&
         !data->swallow && data->menu_held && !data->chord_active &&
-        !data->menu_escape_reported && jw__menu_alone(data) &&
+        !data->menu_escape_reported && jw__menu_alone(data, false) &&
         now >= data->menu_down_ms &&
         now - data->menu_down_ms >= proxy->menu_config.escape_ms) {
         data->menu_escape_reported = true;
@@ -838,7 +881,7 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
                                      (uint64_t)ev->input_event_usec / 1000u;
                 data->menu_escape_reported = false;
                 jw__release_deferred_menu_tap(data, true);
-                if (!jw__menu_alone(data))
+                if (!jw__menu_alone(data, true))
                     jw__cancel_menu(proxy);
             }
             return;

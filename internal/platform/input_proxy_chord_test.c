@@ -180,6 +180,22 @@ static void tap_only(bool supports_menu) {
     g_claim_tap = !supports_menu;
 }
 
+/* The MLP1 pad as the unit in the 2026-10-10 report has it: the driver
+   registers both stick axes with flat 1152 and fuzz 1152, at 72 units per ADC
+   step, and the calibration capture recorded no center noise, so its deadzone
+   fell to the 600 floor. A content-pak core that takes Menu. */
+static void mlp1_pad(void) {
+    tap_only(true);
+    g_data.cal = (jw_stick_calibration){.loaded = true,
+        .x_min = -22463, .x_max = 27306, .y_min = -22635, .y_max = 24009,
+        .deadzone = 600, .out_min = -32768, .out_max = 32767};
+    for (int axis = ABS_X; axis <= ABS_Y; axis++) {
+        g_data.abs_present[axis] = true;
+        g_data.abs_deadzone[axis] = 1152;
+        g_data.abs_fuzz[axis] = 1152;
+    }
+}
+
 static void advance(uint64_t ms) {
     g_now += ms;
     jw_input_proxy_tick(&g_proxy);
@@ -609,34 +625,97 @@ int main(void) {
     /* MLP1 at rest: calibrated deadzone 600, kernel flat 1152, Y=-1008.
        Menu must tolerate the device's neutral range even when calibration
        uses a smaller deadzone for gameplay. Exercise noise before/during
-       Menu and deliberate movement just outside either larger threshold. */
+       Menu and deliberate movement just outside either larger threshold.
+       With fuzz, the kernel can report a resting stick up to fuzz/2 from
+       where it rests, so the band widens by the fuzz; without, it does not. */
     for (int axis = ABS_X; axis <= ABS_Y; axis++) {
         for (int calibration_zone = 600; calibration_zone <= 1600; calibration_zone += 1000) {
-            for (int sign = -1; sign <= 1; sign += 2) {
-                tap_only(true);
-                g_data.cal = (jw_stick_calibration){.loaded=true,
-                    .x_zero=100, .y_zero=-100, .deadzone=calibration_zone,
-                    .x_min=-27000, .x_max=28000, .y_min=-25000, .y_max=26000,
-                    .out_min=-32768, .out_max=32767};
-                int center = axis == ABS_X ? 100 : -100;
-                int neutral = calibration_zone > 1152 ? calibration_zone : 1152;
-                g_data.abs_deadzone[axis] = 1152;
-                feed_abs(axis, center + sign * 1008);
-                feed(BTN_MODE, 1);
-                feed_abs(axis, center - sign * neutral);
-                advance(150); feed(BTN_MODE, 0); advance(80);
-                const emitted tap[] = {{BTN_MODE, 1}, {BTN_MODE, 0}};
-                n = drain(got, 16);
-                expect_seq("resting stick noise still forwards Menu", got, n, tap, 2);
+            for (int fuzz = 0; fuzz <= 1152; fuzz += 1152) {
+                for (int sign = -1; sign <= 1; sign += 2) {
+                    tap_only(true);
+                    g_data.cal = (jw_stick_calibration){.loaded=true,
+                        .x_zero=100, .y_zero=-100, .deadzone=calibration_zone,
+                        .x_min=-27000, .x_max=28000, .y_min=-25000, .y_max=26000,
+                        .out_min=-32768, .out_max=32767};
+                    int center = axis == ABS_X ? 100 : -100;
+                    int neutral = (calibration_zone > 1152 ? calibration_zone : 1152) + fuzz;
+                    g_data.abs_deadzone[axis] = 1152;
+                    g_data.abs_fuzz[axis] = fuzz;
+                    feed_abs(axis, center + sign * 1008);
+                    feed(BTN_MODE, 1);
+                    feed_abs(axis, center - sign * neutral);
+                    advance(150); feed(BTN_MODE, 0); advance(80);
+                    const emitted tap[] = {{BTN_MODE, 1}, {BTN_MODE, 0}};
+                    n = drain(got, 16);
+                    expect_seq("resting stick noise still forwards Menu", got, n, tap, 2);
 
-                feed(BTN_MODE, 1);
-                feed_abs(axis, center + sign * (neutral + 1));
-                feed_abs(axis, center);
-                advance(3000); feed(BTN_MODE, 0); advance(80);
-                expect("real movement cancels tap and escape after returning to center",
-                       g_taps == 1 && g_thresholds == 0 && drain(got, 16) == 0);
+                    feed(BTN_MODE, 1);
+                    feed_abs(axis, center + sign * (neutral + 1));
+                    feed_abs(axis, center);
+                    advance(3000); feed(BTN_MODE, 0); advance(80);
+                    expect("real movement cancels tap and escape after returning to center",
+                           g_taps == 1 && g_thresholds == 0 && drain(got, 16) == 0);
+
+                    /* Held there before the press: never a tap either. */
+                    feed_abs(axis, center + sign * (neutral + 1));
+                    feed(BTN_MODE, 1); advance(100); feed(BTN_MODE, 0); advance(80);
+                    expect("stick held past the band vetoes the press",
+                           g_taps == 1 && drain(got, 16) == 0);
+                }
             }
         }
+    }
+
+    /* The DSperate report (Jawaka a492030, 2026-10-10): Menu taps worked,
+       then after stick use and two suspends a lone Menu press stopped doing
+       anything, until a full circle of the stick fixed it.
+
+       The input core drops every reading within fuzz/2 of the last value it
+       reported. A stick that springs back to rest therefore stays reported
+       wherever its last accepted reading left it, nothing arrives to correct
+       that until the stick next moves, and EVIOCGABS returns the same value.
+       That unit's Y rests at raw 701..703, which is 1080..1224 from center;
+       the Menu band was 1152, so a settle like the one below vetoed every
+       Menu press as a stick chord. */
+    {
+        const emitted tap[] = {{BTN_MODE, 1}, {BTN_MODE, 0}};
+        for (int axis = ABS_X; axis <= ABS_Y; axis++) {
+            for (int sign = -1; sign <= 1; sign += 2) {
+                mlp1_pad();
+                /* Released from full throw. The last report on the way back
+                   is 1700; the settled readings at 1224 are within fuzz/2 of
+                   it, so no further event comes. */
+                feed_abs(axis, sign * 20000);
+                feed_abs(axis, sign * 6000);
+                feed_abs(axis, sign * 1700);
+                for (int press = 0; press < 3; press++) {
+                    feed(BTN_MODE, 1); advance(100); feed(BTN_MODE, 0); advance(80);
+                    n = drain(got, 16);
+                    expect_seq("stick latched off center at rest still taps Menu",
+                               got, n, tap, 2);
+                }
+                expect("every latched press reached the tap callback", g_taps == 3);
+            }
+        }
+
+        /* The same latch across a suspend: the first reading after wake
+           lands at 2400 and is averaged in (1740), the next settled reading
+           pulls it to 1575, and every reading after that is within fuzz/2.
+           The resume flush reads 1575 back with EVIOCGABS. */
+        mlp1_pad();
+        g_data.abs_value[ABS_Y] = 1575;
+        jw_input_proxy_flush(&g_proxy);
+        expect("resume flush keeps the latched value", g_data.abs_value[ABS_Y] == 1575);
+        feed(BTN_MODE, 1); advance(100); feed(BTN_MODE, 0); advance(80);
+        n = drain(got, 16);
+        expect_seq("stick latched across a resume still taps Menu", got, n, tap, 2);
+
+        /* The band is still a band: a stick pushed a little way, and held
+           there, is a control in use. */
+        mlp1_pad();
+        feed_abs(ABS_Y, 3000);
+        feed(BTN_MODE, 1); advance(100); feed(BTN_MODE, 0); advance(80);
+        expect("lightly held stick still vetoes Menu", g_taps == 0 && drain(got, 16) == 0);
     }
 
     for (int after_term = 0; after_term < 2; after_term++) {
