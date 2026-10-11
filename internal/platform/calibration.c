@@ -8,9 +8,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Deadzone floor in raw stick units: even a quiet center reports some noise, so
-   never trust a profile that asks for a deadzone smaller than this. */
-#define JW_CAL_MIN_DEADZONE 600
+/* Deadzone floor in raw stick units: the driver's own deadzone (DT
+   button-adc-deadzone, 1800). loong1-joystick reports exactly 0 for anything
+   within 1800 of its center, but the input core's fuzz (1152) averages that 0
+   with the last reported value, and the driver then stops sending zeros. A
+   released stick therefore reads a leftover of up to 1151 that never decays,
+   a different one after each release. A smaller deadzone forwards it as a
+   constant deflection; this one swallows it and also smooths the driver's jump
+   from 0 straight to 1800. */
+#define JW_CAL_MIN_DEADZONE 1800
 /* Reject obviously-garbage bounds (the panel is a signed 16-bit axis). */
 #define JW_CAL_SANE_LIMIT   40000
 #define JW_CAL_MAX_BYTES    (64 * 1024)
@@ -97,6 +103,26 @@ static bool jw__cal_axis_sane(int32_t mn, int32_t zero, int32_t mx,
     return true;
 }
 
+/* Reach measured on three units (2026): X -21180..-22463 / 23256..27306,
+   Y -21765..-22635 / 23520..25056. Every one reaches these, so a stick with more
+   throw just hits full output a little early rather than never getting there.
+   No center is needed: the driver re-centers at every boot (median of its last
+   nine boot-time readings) and zeroes everything inside its deadzone. */
+void jw_calibration_default(jw_stick_calibration *out) {
+    if (!out) {
+        return;
+    }
+    *out = (jw_stick_calibration){
+        .loaded = true,
+        .x_min = -21000, .x_max = 23000,
+        .y_min = -21000, .y_max = 23000,
+        .x_zero = 0, .y_zero = 0,
+        .deadzone = JW_CAL_MIN_DEADZONE,
+        .out_min = -32768, .out_max = 32767,
+        .radial_clamp = false,   /* per-axis scaling, as Phase 0 settled */
+    };
+}
+
 bool jw_calibration_load(jw_stick_calibration *out) {
     if (!out) {
         return false;
@@ -115,13 +141,13 @@ bool jw_calibration_load(jw_stick_calibration *out) {
     cJSON *root = cJSON_Parse(text);
     free(text);
     if (!root) {
-        jw_log_warn("calibration: %s is not valid JSON; forwarding raw", path);
+        jw_log_warn("calibration: %s is not valid JSON; using the default", path);
         return false;
     }
 
     int32_t version = 0;
     if (!jw__cal_int(root, "version", &version) || version < 1) {
-        jw_log_warn("calibration: %s missing/unsupported version; forwarding raw",
+        jw_log_warn("calibration: %s missing/unsupported version; using the default",
                     path);
         cJSON_Delete(root);
         return false;
@@ -129,7 +155,7 @@ bool jw_calibration_load(jw_stick_calibration *out) {
 
     const cJSON *left = cJSON_GetObjectItemCaseSensitive(root, "left");
     if (!cJSON_IsObject(left)) {
-        jw_log_warn("calibration: %s has no 'left' block; forwarding raw", path);
+        jw_log_warn("calibration: %s has no 'left' block; using the default", path);
         cJSON_Delete(root);
         return false;
     }
@@ -139,7 +165,7 @@ bool jw_calibration_load(jw_stick_calibration *out) {
         !jw__cal_int(left, "x_max", &out->x_max) ||
         !jw__cal_int(left, "y_min", &out->y_min) ||
         !jw__cal_int(left, "y_max", &out->y_max)) {
-        jw_log_warn("calibration: %s missing axis bounds; forwarding raw", path);
+        jw_log_warn("calibration: %s missing axis bounds; using the default", path);
         cJSON_Delete(root);
         return false;
     }
@@ -168,7 +194,7 @@ bool jw_calibration_load(jw_stick_calibration *out) {
     if (out->out_min >= 0 || out->out_max <= 0 ||
         !jw__cal_axis_sane(out->x_min, out->x_zero, out->x_max, out->deadzone) ||
         !jw__cal_axis_sane(out->y_min, out->y_zero, out->y_max, out->deadzone)) {
-        jw_log_warn("calibration: %s failed sanity checks; forwarding raw", path);
+        jw_log_warn("calibration: %s failed sanity checks; using the default", path);
         memset(out, 0, sizeof(*out));
         return false;
     }
