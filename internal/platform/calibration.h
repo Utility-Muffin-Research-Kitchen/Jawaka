@@ -22,8 +22,13 @@ typedef struct {
    $USERDATA_PATH/input/loong-gamepad-calibration.json. On success fills *out
    with loaded=true and returns true. On any failure (missing, unreadable,
    malformed, or failing sanity checks) sets out->loaded=false and returns
-   false; callers must forward raw stick values unchanged in that case. */
+   false; callers then use jw_calibration_default(). A profile's deadzone never
+   drops below the driver's own (1800). */
 bool jw_calibration_load(jw_stick_calibration *out);
+
+/* The built-in Loong Gamepad calibration: a range every measured unit reaches,
+   zero at the driver's center, and the driver's deadzone. loaded=true. */
+void jw_calibration_default(jw_stick_calibration *out);
 
 /* Map one raw axis value to the normalized output range using deadzone-aware
    per-axis scaling. Pure; safe to call only when cal->loaded. is_x selects the

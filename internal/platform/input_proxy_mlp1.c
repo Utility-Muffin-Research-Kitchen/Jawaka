@@ -109,10 +109,7 @@ typedef struct {
        D-pad hat, not just the buttons. Hats rest at 0; sticks at their midpoint. */
     bool abs_present[ABS_CNT];
     int  abs_neutral[ABS_CNT];
-    jw_stick_calibration cal;      /* analog-stick range normalization (if loaded) */
-    int32_t obs_x_min, obs_x_max;  /* observed stick extremes (measure mode only) */
-    int32_t obs_y_min, obs_y_max;
-    uint64_t last_cal_log_ms;      /* throttle for the measure-mode extremes log */
+    jw_stick_calibration cal;      /* analog-stick normalization: profile or default */
     unsigned char held_keys[(KEY_MAX + 8) / 8];  /* buttons currently forwarded-down */
     /* Force-feedback effects uploaded by whoever holds the virtual pad. The
        kernel hands us the effect on upload and only the id on playback, so the
@@ -354,7 +351,8 @@ static int jw__open_power_key(void) {
     return -1;
 }
 
-static int jw__uinput_copy_capabilities(int input_fd, int uinput_fd) {
+static int jw__uinput_copy_capabilities(int input_fd, int uinput_fd,
+                                        const jw_stick_calibration *cal) {
     unsigned char ev_bits[(EV_MAX + 8) / 8];
     unsigned char key_bits[(KEY_MAX + 8) / 8];
     unsigned char abs_bits[(ABS_MAX + 8) / 8];
@@ -396,6 +394,13 @@ static int jw__uinput_copy_capabilities(int input_fd, int uinput_fd) {
             memset(&absinfo, 0, sizeof(absinfo));
             if (ioctl(input_fd, EVIOCGABS(code), &absinfo) < 0) {
                 return -1;
+            }
+            /* The stick's current value seeds the virtual axis, and anything
+               that opens the pad reads it before the first event. Seed it
+               normalized like every forwarded value, or a resting stick's
+               latched leftover shows up as a deflection until it next moves. */
+            if (code == ABS_X || code == ABS_Y) {
+                absinfo.value = jw_calibration_axis(cal, code == ABS_X, absinfo.value);
             }
             {
                 struct uinput_abs_setup setup;
@@ -439,7 +444,7 @@ static bool jw__capture_abs_neutrals(jw_mlp1_input_proxy_data *data) {
     return true;
 }
 
-static int jw__create_virtual_gamepad(int input_fd) {
+static int jw__create_virtual_gamepad(int input_fd, const jw_stick_calibration *cal) {
     /* O_RDWR, not O_WRONLY: force-feedback upload requests and playback commands
        come back to us *through* this fd, so the write-only handle the pad used
        before FF existed can no longer serve the device. */
@@ -448,7 +453,7 @@ static int jw__create_virtual_gamepad(int input_fd) {
         return -1;
     }
 
-    if (jw__uinput_copy_capabilities(input_fd, ufd) != 0) {
+    if (jw__uinput_copy_capabilities(input_fd, ufd, cal) != 0) {
         close(ufd);
         return -1;
     }
@@ -567,53 +572,16 @@ static void jw__emit_syn(jw_mlp1_input_proxy_data *data) {
     jw__write_event(data, EV_SYN, SYN_REPORT, 0);
 }
 
-/* Measure mode (no calibration profile): track this unit's real stick throw and
-   log it (throttled) so a profile can be hand-written from the device log. */
-static void jw__cal_observe(jw_mlp1_input_proxy_data *data,
-                            const struct input_event *ev) {
-    int32_t v = ev->value;
-    bool changed = false;
-    if (ev->code == ABS_X) {
-        if (v < data->obs_x_min) { data->obs_x_min = v; changed = true; }
-        if (v > data->obs_x_max) { data->obs_x_max = v; changed = true; }
-    } else { /* ABS_Y */
-        if (v < data->obs_y_min) { data->obs_y_min = v; changed = true; }
-        if (v > data->obs_y_max) { data->obs_y_max = v; changed = true; }
-    }
-    if (!changed) {
-        return;
-    }
-    uint64_t now = jw__monotonic_ms();
-    if (data->last_cal_log_ms != 0 && now - data->last_cal_log_ms < 400u) {
-        return;
-    }
-    data->last_cal_log_ms = now;
-    jw_log_info("calibration[measure]: ABS_X[%d..%d] ABS_Y[%d..%d] "
-                "(no profile; roll the stick fully to capture range)",
-                data->obs_x_min, data->obs_x_max,
-                data->obs_y_min, data->obs_y_max);
-}
-
-/* Forward an analog-stick axis event. With a loaded profile, remap the value to
-   the normalized output range before forwarding; otherwise forward raw and feed
-   the measure-mode observer. Non-stick ABS events never reach here. */
+/* Forward an analog-stick axis event, remapped to the normalized output range
+   (profile or built-in default). Non-stick ABS events never reach here. */
 static void jw__forward_stick_abs(jw_mlp1_input_proxy_data *data,
                                   const struct input_event *ev) {
     if (data->uinput_fd < 0) {
-        /* Watch-only mode: there is nothing to forward, and measure mode exists
-           only to author a profile for the remap directly below -- which never
-           runs here. Left on, it logged a range line every 400ms for the whole
-           of a standalone session every time the stick moved. */
-        return;
+        return;   /* watch-only mode: there is nothing to forward */
     }
-    if (data->cal.loaded) {
-        struct input_event out = *ev;
-        out.value = jw_calibration_axis(&data->cal, ev->code == ABS_X, ev->value);
-        jw__forward_event(data, &out);
-        return;
-    }
-    jw__cal_observe(data, ev);
-    jw__forward_event(data, ev);
+    struct input_event out = *ev;
+    out.value = jw_calibration_axis(&data->cal, ev->code == ABS_X, ev->value);
+    jw__forward_event(data, &out);
 }
 
 /* The one place symbolic shortcut buttons meet Linux codes. Settings and the
@@ -1225,11 +1193,12 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
        and let a stray stop for effect 0 through before anything was ever sent. */
     data->ff_playing_id = -1;
     data->last_activity_ms = jw__monotonic_ms();   /* don't count boot as idle */
-    data->obs_x_min = INT32_MAX;
-    data->obs_x_max = INT32_MIN;
-    data->obs_y_min = INT32_MAX;
-    data->obs_y_max = INT32_MIN;
-    jw_calibration_load(&data->cal);   /* loaded=false → forward raw + measure */
+    if (!jw_calibration_load(&data->cal)) {
+        jw_calibration_default(&data->cal);
+        jw_log_info("calibration: no profile; default X[%d..%d] Y[%d..%d] dz=%d",
+                    data->cal.x_min, data->cal.x_max, data->cal.y_min,
+                    data->cal.y_max, data->cal.deadzone);
+    }
 
     data->input_fd = jw__open_loong_gamepad(data->physical_path, sizeof(data->physical_path));
     if (data->input_fd < 0) {
@@ -1258,7 +1227,7 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
             free(data);
             return -1;
         }
-        data->uinput_fd = jw__create_virtual_gamepad(data->input_fd);
+        data->uinput_fd = jw__create_virtual_gamepad(data->input_fd, &data->cal);
         if (data->uinput_fd < 0) {
             jw_log_warn("input proxy: could not create virtual gamepad: %s", strerror(errno));
             close(data->input_fd);
