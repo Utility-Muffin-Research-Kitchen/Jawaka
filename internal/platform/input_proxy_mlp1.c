@@ -572,6 +572,31 @@ static void jw__emit_syn(jw_mlp1_input_proxy_data *data) {
     jw__write_event(data, EV_SYN, SYN_REPORT, 0);
 }
 
+/* Bring the virtual stick back in line with the physical one after a stretch of
+   dropped events (screen-off, sleep). Otherwise the virtual pad keeps the last
+   value it forwarded, often one from mid-motion, and reports that deflection
+   until the stick next moves. */
+static void jw__sync_stick(jw_mlp1_input_proxy_data *data) {
+    if (data->uinput_fd < 0) {
+        return;
+    }
+    bool wrote = false;
+    for (int code = ABS_X; code <= ABS_Y; code++) {
+        struct input_absinfo info;
+        if (!data->abs_present[code] ||
+            ioctl(data->input_fd, EVIOCGABS(code), &info) < 0) {
+            continue;
+        }
+        data->abs_value[code] = info.value;
+        jw__write_event(data, EV_ABS, (uint16_t)code,
+                        jw_calibration_axis(&data->cal, code == ABS_X, info.value));
+        wrote = true;
+    }
+    if (wrote) {
+        jw__emit_syn(data);
+    }
+}
+
 /* Forward an analog-stick axis event, remapped to the normalized output range
    (profile or built-in default). Non-stick ABS events never reach here. */
 static void jw__forward_stick_abs(jw_mlp1_input_proxy_data *data,
@@ -1571,6 +1596,8 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
            leaving it waiting for releases that are no longer coming. */
         jw__invalidate_input(data);
         jw__reset_chord_state(proxy);
+    } else if (!swallow && data->swallow) {
+        jw__sync_stick(data);   /* stick events were dropped with the screen off */
     }
     data->swallow = swallow;
     jw__api_unlock(data);
@@ -1752,6 +1779,7 @@ static void jw__flush(jw_input_proxy *proxy) {
        Menu-up. Reset for the same reason screen-off does. */
     jw__reset_chord_state(proxy);
     jw__read_physical_state(data);
+    jw__sync_stick(data);   /* the drain dropped stick events too */
     /* Whatever the sleep left queued is gone now, so the forwarding thread's
        resume check must not fire on the next, real press. */
     data->io_sleep_ref_ms = jw__slept_ms();
