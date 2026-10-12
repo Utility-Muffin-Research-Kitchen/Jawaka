@@ -4,14 +4,12 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "internal/ipc/delete_client.h"
-#include "internal/discovery/content.h"
 
 typedef struct jw_delete_job jw_delete_job;
 typedef struct cJSON cJSON;
 
 jw_delete_job *jw_delete_job_start(const char *db_path, const char *sdcard_root,
-                                  const char *source_id, const char *rom_relpath,
-                                  const jw_content_disc *disc);
+                                  const char *source_id, const char *rom_relpath);
 /* These functions run on the daemon main thread. Filesystem work stays on a
    worker, so the retained connection can poll or cancel preparation. */
 bool jw_delete_job_busy(jw_delete_job *job);

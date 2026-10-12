@@ -518,14 +518,10 @@ static char *jw__archive_delimiter(char *path) {
     return NULL;
 }
 
-static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, unsigned depth, size_t offset) {
+static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, unsigned depth) {
     char next_label[256] = "";
-    size_t descriptor_size = r->out->files[r->parents[depth]].descriptor_size;
     char *save = NULL;
     for (char *line = strtok_r(data, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
-        size_t line_start = offset + (size_t)(line - data);
-        size_t line_end = line_start + strlen(line);
-        if (line_end < descriptor_size) line_end++;
         char *s = jw__trim(line);
         char *directive = jw__m3u_label(s);
         if (directive) {
@@ -552,9 +548,6 @@ static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, u
             /* An empty "|" label keeps a preceding directive label, as in RetroArch. */
             if (label) label = jw__trim(label);
             if (jw__add_disc(r, index, member ? member : "", label && *label ? label : next_label) < 0) return -1;
-            jw_content_disc *disc = &r->out->discs[r->out->disc_count - 1];
-            disc->line_start = line_start;
-            disc->line_end = line_end;
         }
         next_label[0] = '\0';
     }
@@ -719,7 +712,7 @@ static int jw__visit(jw_content_reader *r, const char *parent, const char *refer
         memcpy(directory, file.path, strlen(file.path) + 1);
         char *slash = strrchr(directory, '/');
         if (slash == directory) slash[1] = '\0'; else *slash = '\0';
-        int result = kind == 1 ? jw__parse_m3u(r, body, directory, depth, (size_t)(body - parsed)) :
+        int result = kind == 1 ? jw__parse_m3u(r, body, directory, depth) :
                      kind == 5 ? jw__parse_cmd(r, body, directory, depth) :
                                  jw__parse_tracks(r, body, directory, kind, depth);
         free(parsed);
