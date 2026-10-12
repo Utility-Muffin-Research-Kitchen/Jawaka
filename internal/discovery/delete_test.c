@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
 
 static char fixture[JW_STORAGE_PATH_MAX];
@@ -17,14 +16,9 @@ static char *playlists[] = {"m3u"};
 static char *gba_extensions[] = {"gba"};
 static char *archives[] = {"zip", "7z"};
 static char *pc98_extensions[] = {"cmd", "hdi"};
-static jw_ra_system systems[] = {
-    {.id = "PS", .extensions = {ps_extensions, 3}, .playlist_extensions = {playlists, 1}},
-    {.id = "GBA", .extensions = {gba_extensions, 1}, .archive_extensions = {archives, 2}},
-    {.id = "PC98", .extensions = {pc98_extensions, 2}},
-};
-static jw_ra_catalog catalog = {.systems = systems, .system_count = 3};
-static jw_delete_owner owners[16];
-static size_t owner_count;
+static jw_ra_system ps = {.id = "PS", .extensions = {ps_extensions, 3}, .playlist_extensions = {playlists, 1}};
+static jw_ra_system gba = {.id = "GBA", .extensions = {gba_extensions, 1}, .archive_extensions = {archives, 2}};
+static jw_ra_system pc98 = {.id = "PC98", .extensions = {pc98_extensions, 2}};
 
 static void path(char *out, const char *relative) {
     int n = snprintf(out, JW_STORAGE_PATH_MAX, "%s/%s", fixture, relative);
@@ -39,11 +33,6 @@ static void put(const char *relative, const char *data) {
     FILE *fp = fopen(absolute, "wb"); assert(fp);
     assert(fwrite(data, 1, strlen(data), fp) == strlen(data)); assert(!fclose(fp));
 }
-static void put_bytes(const char *relative, const char *data, size_t size) {
-    char absolute[JW_STORAGE_PATH_MAX]; path(absolute, relative);
-    FILE *fp = fopen(absolute, "wb"); assert(fp);
-    assert(fwrite(data, 1, size, fp) == size); assert(!fclose(fp));
-}
 static bool exists(const char *relative) {
     char absolute[JW_STORAGE_PATH_MAX]; path(absolute, relative);
     return access(absolute, F_OK) == 0;
@@ -51,29 +40,20 @@ static bool exists(const char *relative) {
 static void remove_file(const char *relative) {
     char absolute[JW_STORAGE_PATH_MAX]; path(absolute, relative); assert(!unlink(absolute));
 }
-static void owner(const char *source, const char *relative, const char *name) {
-    assert(owner_count < sizeof(owners) / sizeof(owners[0]));
-    jw_delete_owner *o = &owners[owner_count++]; memset(o, 0, sizeof(*o));
-    snprintf(o->source_id, sizeof(o->source_id), "%s", source);
-    snprintf(o->rom_relpath, sizeof(o->rom_relpath), "%s", relative);
-    snprintf(o->name, sizeof(o->name), "%s", name);
-}
-static jw_delete_plan preview(const char *relative, const char *system) {
+static jw_delete_plan preview(const char *relative, jw_ra_system *system) {
     jw_delete_plan plan;
     char error[512];
-    int rc = jw_delete_plan_build(&sources, &catalog, "primary", relative, system,
-        owners, owner_count, NULL, 0, NULL, NULL, &plan, error, sizeof(error));
+    int rc = jw_delete_plan_build(&sources, system, "primary", relative, &plan, error, sizeof(error));
     if (rc) fprintf(stderr, "preview %s: %s\n", relative, error);
-    assert(rc == 0);
+    assert(rc == 0 && strlen(plan.digest) == 16);
     return plan;
 }
-static void blocked(const char *relative, const char *system, const char *message) {
+static void refused(const char *relative, jw_ra_system *system, const char *message) {
     jw_delete_plan plan;
     char error[512];
-    assert(jw_delete_plan_build(&sources, &catalog, "primary", relative, system,
-        owners, owner_count, NULL, 0, NULL, NULL, &plan, error, sizeof(error)) == -1);
+    assert(jw_delete_plan_build(&sources, system, "primary", relative, &plan, error, sizeof(error)) == -1);
     if (!strstr(error, message)) fprintf(stderr, "expected %s, got %s\n", message, error);
-    assert(strstr(error, message)); assert(!plan.files && !plan.snapshot);
+    assert(strstr(error, message)); assert(!plan.files && !plan.file_count);
 }
 static size_t slot(const jw_delete_plan *plan, const char *relative) {
     for (size_t i = 0; i < plan->file_count; i++) if (!strcmp(plan->files[i].rom_relpath, relative)) return i;
@@ -85,249 +65,153 @@ static jw_delete_result execute(jw_delete_plan *plan) {
     if (rc) fprintf(stderr, "execute: %s\n", error);
     assert(!rc); return result;
 }
+
 static void test_eligibility(void) {
-    assert(jw_delete_supported(&systems[0]) && jw_delete_supported(&systems[1]));
-    const char *denied[] = {"SCUMMVM", "PORTS", "DOS", "AMIGA", "ARCADE", "MAME", "DC", "PCE", "SATURN"};
+    const char *allowed[] = {"PS", "GBA", "PC98", "DOS", "AMIGA", "DC", "PCE", "SATURN", "SEGACD"};
+    for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) {
+        jw_ra_system s = {.id = (char *)allowed[i]}; assert(jw_delete_supported(&s));
+    }
+    const char *denied[] = {"ARCADE", "MAME", "MAME2003", "MAME2010", "NEOGEO", "NAOMI", "ATOMISWAVE", "PORTS"};
     for (size_t i = 0; i < sizeof(denied) / sizeof(denied[0]); i++) {
         jw_ra_system s = {.id = (char *)denied[i]}; assert(!jw_delete_supported(&s));
     }
-    jw_ra_system s = systems[0]; s.provider = "shared/Content.pak"; assert(!jw_delete_supported(&s));
-    char *unknown[] = {"cue", "ccd"}; s = systems[0]; s.extensions = (jw_ra_string_list){unknown, 2};
-    assert(!jw_delete_supported(&s));
+    assert(!jw_delete_supported(NULL));
+    jw_ra_system s = ps; s.provider = "shared/Content.pak"; assert(!jw_delete_supported(&s));
+    char *names[] = {"RPG_RT.ldb"};
+    s = (jw_ra_system){.id = "EASYRPG", .file_names = {names, 1}}; assert(!jw_delete_supported(&s));
+    put("A/Roms/GBA/Arcade.zip", "romset");
+    jw_ra_system arcade = {.id = "ARCADE"};
+    refused("GBA/Arcade.zip", &arcade, "isn't available");
+    assert(exists("A/Roms/GBA/Arcade.zip")); remove_file("A/Roms/GBA/Arcade.zip");
 }
-static void test_single_and_stale(void) {
-    put("A/Roms/GBA/Game.zip", "container"); owner("primary", "GBA/Game.zip", "Game");
-    jw_delete_plan first = preview("GBA/Game.zip", "GBA");
-    assert(first.file_count == 1 && first.remove_count == 1 && first.bytes == 9);
-    jw_delete_plan again = preview("GBA/Game.zip", "GBA"); assert(jw_delete_plan_equal(&first, &again));
+
+static void test_single_and_digest(void) {
+    put("A/Roms/GBA/Game.zip", "container");
+    jw_delete_plan first = preview("GBA/Game.zip", &gba);
+    assert(first.file_count == 1 && first.bytes == 9 && !first.writable_image);
+    jw_delete_plan again = preview("GBA/Game.zip", &gba);
+    assert(!strcmp(first.digest, again.digest));
     jw_delete_plan_free(&again);
-    sources.sources[0].mount_id++;
-    again = preview("GBA/Game.zip", "GBA"); assert(!jw_delete_plan_equal(&first, &again));
-    jw_delete_plan_free(&again); sources.sources[0].mount_id--;
-    put("A/Roms/GBA/Game.zip", "replacement");
-    again = preview("GBA/Game.zip", "GBA"); assert(!jw_delete_plan_equal(&first, &again));
-    jw_delete_result result; char error[512];
-    assert(jw_delete_execute(&first, NULL, NULL, &result, error, sizeof(error)) == -1);
-    assert(!result.removed_count && exists("A/Roms/GBA/Game.zip")); jw_delete_result_free(&result);
+    put("A/Roms/GBA/Game.zip", "a larger container");
+    again = preview("GBA/Game.zip", &gba);
+    assert(strcmp(first.digest, again.digest));
     jw_delete_plan_free(&first);
-    result = execute(&again); assert(result.removed_count == 1 && !exists("A/Roms/GBA/Game.zip"));
-    jw_delete_result_free(&result); jw_delete_plan_free(&again); owner_count = 0;
+    jw_delete_result result = execute(&again);
+    assert(result.removed_count == 1 && result.bytes == 18 && !exists("A/Roms/GBA/Game.zip"));
+    assert(result.outcomes[0] == JW_DELETE_REMOVED);
+    jw_delete_result_free(&result); jw_delete_plan_free(&again);
 }
-static void test_owners(void) {
-    put("A/Roms/PS/sub/Disc.cue", "FILE track.bin BINARY\n"); put("A/Roms/PS/sub/track.bin", "payload");
-    put("A/Roms/PS/Game.m3u", "sub/Disc.cue|Disc One\n#SAVEDISK:Save Disk\n");
-    owner("primary", "PS/Game.m3u", "Parent Game"); owner("primary", "PS/sub/Disc.cue", "Standalone Disc");
-    blocked("PS/sub/Disc.cue", "PS", "Parent Game");
-    jw_delete_plan plan = preview("PS/Game.m3u", "PS");
-    assert(plan.disc_count == 1 && plan.kept_count == 2 && plan.remove_count == 1);
-    assert(plan.files[slot(&plan, "PS/sub/Disc.cue")].keep == JW_DELETE_SHARED);
+
+/* A multi-disc game is its playlist, the discs it lists and their tracks. Leaving
+   any "(Disc N)" CUE behind would let the next scan regenerate the playlist. */
+static void test_multi_disc_order(void) {
+    put("A/Roms/PS/Game (Disc 1).cue", "FILE \"Game (Disc 1).bin\" BINARY\r\n");
+    put("A/Roms/PS/Game (Disc 1).bin", "first");
+    put("A/Roms/PS/sub/Game (Disc 2).cue", "FILE \"Game (Disc 2).bin\" BINARY\n");
+    put("A/Roms/PS/sub/Game (Disc 2).bin", "second");
+    put("A/Roms/PS/Game.m3u", "#EXTM3U\nGame (Disc 1).cue|One\nsub/Game (Disc 2).cue\n#SAVEDISK:Save Disk\n");
+    jw_delete_plan plan = preview("PS/Game.m3u", &ps);
+    assert(plan.file_count == 5 && !strcmp(plan.files[4].rom_relpath, "PS/Game.m3u"));
+    /* Tracks go before the CUE that names them, and every CUE before the playlist. */
+    assert(slot(&plan, "PS/Game (Disc 1).bin") < slot(&plan, "PS/Game (Disc 1).cue"));
+    assert(slot(&plan, "PS/sub/Game (Disc 2).bin") < slot(&plan, "PS/sub/Game (Disc 2).cue"));
     jw_delete_result result = execute(&plan);
-    assert(result.removed_count == 1 && exists("A/Roms/PS/sub/Disc.cue") && exists("A/Roms/PS/sub/track.bin"));
-    jw_delete_result_free(&result); jw_delete_plan_free(&plan); owner_count = 0;
-    remove_file("A/Roms/PS/sub/Disc.cue"); remove_file("A/Roms/PS/sub/track.bin");
-}
-static void test_cross_card_and_missing(void) {
-    put("A/Roms/PS/shared.chd", "shared"); put("A/Roms/PS/exclusive.chd", "exclusive");
-    put("A/Roms/PS/Game.m3u", "shared.chd\nexclusive.chd\n");
-    char reference[JW_STORAGE_PATH_MAX]; path(reference, "A/Roms/PS/shared.chd");
-    put("B/Roms/Other/Hidden.m3u", reference);
-    jw_delete_plan plan = preview("PS/Game.m3u", "PS");
-    assert(plan.files[slot(&plan, "PS/shared.chd")].keep == JW_DELETE_SHARED);
-    assert(plan.kept_count == 1 && plan.remove_count == 2);
-    jw_delete_plan_free(&plan);
-    sources.sources[1].available = false;
-    plan = preview("PS/Game.m3u", "PS");
-    /* MLP1 always registers a second slot; an unused one is not a missing card. */
-    assert(!plan.missing_sources[0] && !plan.kept_count);
-    jw_delete_plan_free(&plan);
-    owner("secondary_sd", "Other/Hidden.m3u", "Card B playlist");
-    plan = preview("PS/Game.m3u", "PS");
-    assert(strstr(plan.missing_sources, "secondary_sd") && !plan.kept_count);
-    sources.sources[1].available = true;
-    jw_delete_plan fresh = preview("PS/Game.m3u", "PS"); assert(!jw_delete_plan_equal(&plan, &fresh));
-    jw_delete_plan_free(&plan);
-    jw_delete_result result = execute(&fresh);
-    assert(result.removed_count == 2 && exists("A/Roms/PS/shared.chd"));
-    jw_delete_result_free(&result); jw_delete_plan_free(&fresh); owner_count = 0;
-    remove_file("B/Roms/Other/Hidden.m3u"); remove_file("A/Roms/PS/shared.chd");
-}
-static void test_preserved(void) {
-    put("A/Roms/PS/art.bin", "artwork"); put("A/Roms/PS/progress.srm", "saved");
-    put("A/Roms/PS/states/state.bin", "state"); put("A/Roms/PS/track.bin", "payload");
-    put("A/Roms/PS/Game.m3u", "track.bin\nart.bin\nprogress.srm\nstates/state.bin\n");
-    char art[JW_STORAGE_PATH_MAX]; path(art, "A/Roms/PS/art.bin"); const char *protected[] = {art};
-    jw_delete_plan plan; char error[512];
-    assert(!jw_delete_plan_build(&sources, &catalog, "primary", "PS/Game.m3u", "PS",
-        NULL, 0, protected, 1, NULL, NULL, &plan, error, sizeof(error)));
-    assert(plan.kept_count == 3 && plan.remove_count == 2);
-    jw_delete_result result = execute(&plan);
-    assert(result.removed_count == 2 && exists("A/Roms/PS/art.bin") && exists("A/Roms/PS/progress.srm") && exists("A/Roms/PS/states/state.bin"));
+    assert(result.removed_count == 5 && !result.absent_count);
+    const char *gone[] = {"A/Roms/PS/Game.m3u", "A/Roms/PS/Game (Disc 1).cue", "A/Roms/PS/Game (Disc 1).bin",
+                          "A/Roms/PS/sub/Game (Disc 2).cue", "A/Roms/PS/sub/Game (Disc 2).bin"};
+    for (size_t i = 0; i < sizeof(gone) / sizeof(gone[0]); i++) assert(!exists(gone[i]));
     jw_delete_result_free(&result); jw_delete_plan_free(&plan);
-    remove_file("A/Roms/PS/art.bin"); remove_file("A/Roms/PS/progress.srm"); remove_file("A/Roms/PS/states/state.bin");
 }
+
 typedef struct { int calls; int fail_at; char last[512]; } fault;
 static int fail_guard(void *context, const jw_delete_file *file, char *error, size_t size) {
     fault *f = context; f->calls++; snprintf(f->last, sizeof(f->last), "%s", file->rom_relpath);
     if (f->calls == f->fail_at) { snprintf(error, size, "Injected I/O error"); return -1; }
     return 0;
 }
-static bool cancelled(void *context) { (void)context; return true; }
-static void test_retry_and_order(void) {
+
+static void test_partial_failure_and_retry(void) {
     put("A/Roms/PS/Track.bin", "payload"); put("A/Roms/PS/Disc.cue", "FILE Track.bin BINARY\r\n");
     put("A/Roms/PS/Game.m3u", "Disc.cue\r\nAbsent.cue\r\n");
-    jw_delete_plan plan = preview("PS/Game.m3u", "PS");
-    assert(plan.missing_count == 1 && plan.missing_descriptor && plan.disc_count == 2);
+    jw_delete_plan plan = preview("PS/Game.m3u", &ps);
+    assert(plan.file_count == 4 && plan.files[slot(&plan, "PS/Absent.cue")].missing);
+    assert(plan.bytes == strlen("payload") + strlen("FILE Track.bin BINARY\r\n") + strlen("Disc.cue\r\nAbsent.cue\r\n"));
     fault injection = {.fail_at = 2}; jw_delete_result result; char error[512];
     assert(jw_delete_execute(&plan, fail_guard, &injection, &result, error, sizeof(error)) == -1);
-    assert(result.removed_count == 1 && !exists("A/Roms/PS/Track.bin"));
-    assert(!strcmp(injection.last, "PS/Disc.cue") && exists("A/Roms/PS/Disc.cue") && exists("A/Roms/PS/Game.m3u"));
+    assert(result.removed_count == 1 && result.failed_index == 1 && strstr(error, "Injected"));
+    assert(!exists("A/Roms/PS/Track.bin") && exists("A/Roms/PS/Disc.cue") && exists("A/Roms/PS/Game.m3u"));
     jw_delete_result_free(&result); jw_delete_plan_free(&plan);
-    plan = preview("PS/Game.m3u", "PS"); assert(plan.missing_count == 2);
-    result = execute(&plan); assert(result.removed_count == 2 && result.absent_count == 2);
-    assert(result.completed[plan.launch_file] && !exists("A/Roms/PS/Game.m3u"));
+    /* The launch file survived, so a fresh preview lists what is left. */
+    plan = preview("PS/Game.m3u", &ps);
+    assert(plan.files[slot(&plan, "PS/Track.bin")].missing);
+    result = execute(&plan);
+    assert(result.removed_count == 2 && result.absent_count == 2 && !exists("A/Roms/PS/Game.m3u"));
+    assert(result.outcomes[slot(&plan, "PS/Track.bin")] == JW_DELETE_ABSENT);
     jw_delete_result_free(&result); jw_delete_plan_free(&plan);
-    plan = preview("PS/Game.m3u", "PS"); assert(plan.file_count == 1 && plan.missing_descriptor);
-    put("A/Roms/PS/Game.m3u", "Replacement.chd\n");
-    assert(jw_delete_execute(&plan, NULL, NULL, &result, error, sizeof(error)) == -1);
-    assert(!result.completed[plan.launch_file] && exists("A/Roms/PS/Game.m3u"));
-    jw_delete_result_free(&result); jw_delete_plan_free(&plan); remove_file("A/Roms/PS/Game.m3u");
-    assert(jw_delete_plan_build(&sources, &catalog, "primary", "PS/Game.m3u", "PS", NULL, 0,
-        NULL, 0, cancelled, NULL, &plan, error, sizeof(error)) == -1);
-    assert(strstr(error, "cancelled"));
 }
-static void test_sync_failure(void) {
-#ifdef JW_ENABLE_FAULT_INJECTION
-    put("A/Roms/PS/Track.bin", "payload"); put("A/Roms/PS/Disc.cue", "FILE Track.bin BINARY\n");
-    jw_delete_plan plan = preview("PS/Disc.cue", "PS");
-    setenv("JAWAKA_TEST_DELETE_SYNC_FAIL", "PS/Track.bin", 1);
-    jw_delete_result result; char error[512];
-    assert(jw_delete_execute(&plan, NULL, NULL, &result, error, sizeof(error)) == -1);
-    assert(strstr(error, "sync changes") && result.removed_count == 1);
-    assert(!exists("A/Roms/PS/Track.bin") && exists("A/Roms/PS/Disc.cue"));
-    assert(result.completed[slot(&plan, "PS/Track.bin")] && !result.completed[plan.launch_file]);
-    unsetenv("JAWAKA_TEST_DELETE_SYNC_FAIL");
-    jw_delete_result_free(&result); jw_delete_plan_free(&plan);
-    plan = preview("PS/Disc.cue", "PS"); result = execute(&plan);
+
+static void test_vanished_and_missing(void) {
+    /* A file gone between preview and removal counts as absent, not removed. */
+    put("A/Roms/PS/Solo.chd", "solo"); put("A/Roms/PS/Solo.m3u", "Solo.chd\n");
+    jw_delete_plan plan = preview("PS/Solo.m3u", &ps);
+    remove_file("A/Roms/PS/Solo.chd");
+    jw_delete_result result = execute(&plan);
     assert(result.removed_count == 1 && result.absent_count == 1);
+    assert(result.outcomes[slot(&plan, "PS/Solo.chd")] == JW_DELETE_ABSENT);
     jw_delete_result_free(&result); jw_delete_plan_free(&plan);
-#endif
+    /* A launch file that is already gone still lets the library row be reconciled. */
+    plan = preview("PS/Gone.cue", &ps);
+    assert(plan.file_count == 1 && plan.files[0].missing && !plan.bytes);
+    result = execute(&plan); assert(result.absent_count == 1 && !result.removed_count);
+    jw_delete_result_free(&result); jw_delete_plan_free(&plan);
 }
-static void test_missing_card_reference(void) {
-    put("A/Roms/GBA/Game.gba", "game");
-    char reference[JW_STORAGE_PATH_MAX]; path(reference, "B/Roms/Other/missing.chd");
-    put("A/Roms/PS/Other.m3u", reference);
-    sources.sources[1].available = false;
-    jw_delete_plan unrelated = preview("GBA/Game.gba", "GBA");
-    assert(strstr(unrelated.missing_sources, "secondary_sd"));
-    jw_delete_plan selected = preview("PS/Other.m3u", "PS");
-    assert(selected.kept_count == 1 && selected.remove_count == 1);
-    assert(selected.files[slot(&selected, "Other/missing.chd")].keep == JW_DELETE_PRESERVED);
-    jw_delete_result result = execute(&selected); assert(result.removed_count == 1);
-    jw_delete_result_free(&result); jw_delete_plan_free(&selected); jw_delete_plan_free(&unrelated);
-    sources.sources[1].available = true; remove_file("A/Roms/GBA/Game.gba");
-}
-static void test_cross_system_cmd(void) {
-    put("A/Roms/PC98/disk.hdi", "image");
-    put("A/Roms/PC98/game.cmd", "np2kai disk.hdi\n");
-    put("A/Roms/GBA/owner.m3u", "../PC98/game.cmd\n");
-    owner("primary", "GBA/owner.m3u", "Cross-system owner");
-    blocked("PC98/disk.hdi", "PC98", "Cross-system owner");
-    remove_file("A/Roms/GBA/owner.m3u"); remove_file("A/Roms/PC98/game.cmd");
-    remove_file("A/Roms/PC98/disk.hdi"); owner_count = 0;
-}
-static void test_symlinks_and_absent_root(void) {
+
+static void test_symlinks(void) {
     put("A/Roms/GBA/Game.gba", "game");
     char target[JW_STORAGE_PATH_MAX], link[JW_STORAGE_PATH_MAX];
     path(target, "A/Roms/GBA/Game.gba"); path(link, "A/Roms/GBA/Alias.gba");
     assert(!symlink(target, link));
-    blocked("GBA/Alias.gba", "GBA", "symlink launch");
-    char lower[JW_STORAGE_PATH_MAX]; path(lower, "A/Roms/GBA/game.gba");
-    if (!access(lower, F_OK)) blocked("GBA/game.gba", "GBA", "identity changed");
-    owner("primary", "GBA/Alias.gba", "Alias");
-    blocked("GBA/Game.gba", "GBA", "Alias");
-    owner_count = 0; remove_file("A/Roms/GBA/Alias.gba"); remove_file("A/Roms/GBA/Game.gba");
-    put("A/Roms/PS/Parent.m3u", "Absent.cue\n");
-    jw_delete_plan plan = preview("PS/Absent.cue", "PS");
-    assert(plan.remove_count == 1 && !plan.kept_count);
-    jw_delete_result result = execute(&plan); assert(result.absent_count == 1 && !result.removed_count);
-    jw_delete_result_free(&result); jw_delete_plan_free(&plan); remove_file("A/Roms/PS/Parent.m3u");
+    refused("GBA/Alias.gba", &gba, "symlinked");
+    assert(exists("A/Roms/GBA/Game.gba"));
+    remove_file("A/Roms/GBA/Alias.gba"); remove_file("A/Roms/GBA/Game.gba");
 }
-static void test_descriptor_errors_and_snapshots(void) {
-    put("A/Roms/GBA/Game.gba", "game"); put("B/Roms/Other/Bad.cue", "FILE\n");
-    blocked("GBA/Game.gba", "GBA", "FILE filename");
-    blocked("GBA/Game.gba", "GBA", "(in "); /* names the descriptor on whichever card holds it */
-    blocked("GBA/Game.gba", "GBA", "B/Roms/Other/Bad.cue)"); remove_file("B/Roms/Other/Bad.cue");
-    /* Roots are sorted, so the playlist reaches the malformed CUE first. */
-    put("B/Roms/Other/A Outer.m3u", "Z Inner.cue\n"); put("B/Roms/Other/Z Inner.cue", "REM no FILE records\n");
-    jw_delete_plan located; char where[512];
-    assert(jw_delete_plan_build(&sources, &catalog, "primary", "GBA/Game.gba", "GBA", owners, owner_count,
-        NULL, 0, NULL, NULL, &located, where, sizeof(where)) == -1);
-    /* The innermost descriptor is named once, not every playlist above it. */
-    assert(strstr(where, "track records (in ") && strstr(where, "B/Roms/Other/Z Inner.cue)") && !strstr(where, "Outer"));
-    remove_file("B/Roms/Other/A Outer.m3u"); remove_file("B/Roms/Other/Z Inner.cue");
-    /* macOS AppleDouble sidecars are binary metadata the scanner ignores, never descriptors. */
-    static const char apple_double[] = "\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x00\x02";
-    put_bytes("B/Roms/Other/._Game.cue", apple_double, sizeof(apple_double) - 1);
-    put_bytes("A/Roms/GBA/._Game.gba", apple_double, sizeof(apple_double) - 1);
-    jw_delete_plan sidecars = preview("GBA/Game.gba", "GBA");
-    assert(sidecars.file_count == 1 && exists("A/Roms/GBA/._Game.gba"));
-    jw_delete_plan_free(&sidecars);
-    remove_file("B/Roms/Other/._Game.cue"); remove_file("A/Roms/GBA/._Game.gba");
-    /* Only the AppleDouble header is skipped: a text playlist with that name still owns files. */
-    put("B/Roms/Other/._Empty.cue", "");
-    put("A/Roms/PS/Solo.chd", "solo"); put("A/Roms/PS/Solo.m3u", "Solo.chd\n");
-    put("A/Roms/PS/._Owner.m3u", "Solo.chd\n");
-    sidecars = preview("PS/Solo.m3u", "PS");
-    assert(sidecars.remove_count == 1 && sidecars.files[slot(&sidecars, "PS/Solo.chd")].keep == JW_DELETE_SHARED);
-    jw_delete_plan_free(&sidecars);
-    remove_file("A/Roms/PS/._Owner.m3u");
-    sidecars = preview("PS/Solo.m3u", "PS"); assert(sidecars.remove_count == 2); jw_delete_plan_free(&sidecars);
-    remove_file("B/Roms/Other/._Empty.cue"); remove_file("A/Roms/PS/Solo.chd"); remove_file("A/Roms/PS/Solo.m3u");
-    put("B/Roms/Other/Other.m3u", "other.chd|First\n");
-    jw_delete_plan a = preview("GBA/Game.gba", "GBA");
-    put("B/Roms/Other/Other.m3u", "other.chd|Later\n");
-    jw_delete_plan b = preview("GBA/Game.gba", "GBA"); assert(!jw_delete_plan_equal(&a, &b));
-    jw_delete_plan_free(&a); jw_delete_plan_free(&b);
-    remove_file("B/Roms/Other/Other.m3u"); remove_file("A/Roms/GBA/Game.gba");
+
+static void test_writable_image_and_cross_card(void) {
     put("A/Roms/PC98/Game.cmd", "np2kai disk.hdi --speed 2\n"); put("A/Roms/PC98/disk.hdi", "progress inside image");
-    a = preview("PC98/Game.cmd", "PC98"); assert(a.writable_image && a.file_count == 2);
-    jw_delete_result result = execute(&a); assert(result.removed_count == 2);
-    jw_delete_result_free(&result); jw_delete_plan_free(&a);
+    jw_delete_plan plan = preview("PC98/Game.cmd", &pc98);
+    assert(plan.writable_image && plan.file_count == 2);
+    jw_delete_result result = execute(&plan); assert(result.removed_count == 2);
+    jw_delete_result_free(&result); jw_delete_plan_free(&plan);
+    /* An absolute reference to the other mounted card is part of the game, and
+       the plan names the card each file is on. */
+    put("B/Roms/Other/Far.chd", "far");
+    char reference[JW_STORAGE_PATH_MAX]; path(reference, "B/Roms/Other/Far.chd");
+    put("A/Roms/PS/Far.m3u", reference);
+    plan = preview("PS/Far.m3u", &ps);
+    assert(plan.file_count == 2 && !strcmp(plan.files[slot(&plan, "Other/Far.chd")].source_id, "secondary_sd"));
+    result = execute(&plan); assert(result.removed_count == 2 && !exists("B/Roms/Other/Far.chd"));
+    jw_delete_result_free(&result); jw_delete_plan_free(&plan);
+    put("A/Roms/PS/Bad.cue", "FILE\n");
+    refused("PS/Bad.cue", &ps, "FILE filename");
+    remove_file("A/Roms/PS/Bad.cue");
 }
+
 static void test_hash_filenames(void) {
     /* RetroArch only splits archive.zip#member; this '#' is part of the filename. */
     put("A/Roms/PS/Game #1 (Disc 1).cue", "FILE \"Game #1 (Disc 1).bin\" BINARY\n");
     put("A/Roms/PS/Game #1 (Disc 1).bin", "payload");
     put("A/Roms/PS/Game #1.m3u", "Game #1 (Disc 1).cue\n");
-    owner("primary", "PS/Game #1.m3u", "Hash Playlist"); owner("primary", "PS/Game #1 (Disc 1).cue", "Hash Disc");
-    blocked("PS/Game #1 (Disc 1).cue", "PS", "Hash Playlist uses this game's launch file");
-    jw_delete_plan plan = preview("PS/Game #1.m3u", "PS");
-    assert(plan.remove_count == 1 && plan.kept_count == 2 && !plan.missing_count);
-    assert(plan.files[slot(&plan, "PS/Game #1 (Disc 1).cue")].keep == JW_DELETE_SHARED);
-    jw_delete_plan_free(&plan); owner_count = 0;
-    plan = preview("PS/Game #1.m3u", "PS");
-    assert(plan.remove_count == 3 && !plan.missing_count && plan.bytes == strlen("payload") +
+    jw_delete_plan plan = preview("PS/Game #1.m3u", &ps);
+    assert(plan.file_count == 3 && plan.bytes == strlen("payload") +
            strlen("FILE \"Game #1 (Disc 1).bin\" BINARY\n") + strlen("Game #1 (Disc 1).cue\n"));
     jw_delete_result result = execute(&plan);
     assert(result.removed_count == 3 && !exists("A/Roms/PS/Game #1 (Disc 1).bin"));
     jw_delete_result_free(&result); jw_delete_plan_free(&plan);
 }
-static void *test_bounded_depth_worker(void *unused) {
-    (void)unused;
-    /* Match jawakad's worker stack, including the walker and reader bounds. */
-    char relative[512] = "A/Roms/PS";
-    for (int level = 2; level <= 64; level++) {
-        strcat(relative, "/d");
-        directory(relative);
-    }
-    put("A/Roms/GBA/Deep.gba", "game");
-    jw_delete_plan plan = preview("GBA/Deep.gba", "GBA");
-    jw_delete_plan_free(&plan);
-    strcat(relative, "/d"); directory(relative);
-    blocked("GBA/Deep.gba", "GBA", "nested too deeply");
-    char absolute[JW_STORAGE_PATH_MAX]; path(absolute, relative); assert(!rmdir(absolute));
-    remove_file("A/Roms/GBA/Deep.gba");
 
+static void *test_deep_chain_worker(void *unused) {
+    (void)unused;
+    /* Match jawakad's worker stack at the reader's nesting bound. */
     char name[128], descriptor[512];
     for (int level = 0; level < 32; level++) {
         snprintf(name, sizeof(name), "A/Roms/PC98/deep%02d.cmd", level);
@@ -339,104 +223,20 @@ static void *test_bounded_depth_worker(void *unused) {
         }
         put(name, descriptor);
     }
-    plan = preview("PC98/deep00.cmd", "PC98");
-    assert(plan.file_count == 33 && plan.missing_count == 1);
-    jw_delete_plan_free(&plan);
-    for (int level = 0; level < 32; level++) {
-        snprintf(name, sizeof(name), "A/Roms/PC98/deep%02d.cmd", level);
-        remove_file(name);
-    }
-    return NULL;
-}
-
-static void test_bounded_depth(void) {
-    pthread_attr_t attributes;
-    pthread_t worker;
-    assert(!pthread_attr_init(&attributes));
-    assert(!pthread_attr_setstacksize(&attributes, 2 * 1024 * 1024));
-    assert(!pthread_create(&worker, &attributes, test_bounded_depth_worker, NULL));
-    assert(!pthread_attr_destroy(&attributes));
-    assert(!pthread_join(worker, NULL));
-}
-
-static double seconds(void) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
-}
-
-static void *test_scale_worker(void *unused) {
-    (void)unused;
-    /* A full disc library on card B: more graph files and folders than the old fixed caps. */
-    enum { GAMES = 2600, TRACKS = 8 };
-    char relative[512], descriptor[1024], line[64];
-    directory("B/Roms/PS");
-    for (int game = 0; game < GAMES; game++) {
-        snprintf(relative, sizeof(relative), "B/Roms/PS/Game%04d", game);
-        directory(relative);
-        descriptor[0] = '\0';
-        for (int track = 0; track < TRACKS; track++) {
-            snprintf(relative, sizeof(relative), "B/Roms/PS/Game%04d/Track%02d.bin", game, track);
-            put(relative, "track");
-            snprintf(line, sizeof(line), "FILE \"Track%02d.bin\" BINARY\n", track);
-            strcat(descriptor, line);
-        }
-        snprintf(relative, sizeof(relative), "B/Roms/PS/Game%04d/Game.cue", game);
-        put(relative, descriptor);
-    }
-    /* Game0009 shares a track with Game0008, Game0007 has a hidden playlist, and an alias
-       hard-links a track so an indexed owner can reach it only by inode. */
-    put("B/Roms/PS/Game0009/Game.cue", "FILE \"Track00.bin\" BINARY\nFILE \"../Game0008/Track00.bin\" BINARY\n");
-    put("B/Roms/PS/Game0007/Disc.m3u", "Game.cue\n");
-    char target[JW_STORAGE_PATH_MAX], alias[JW_STORAGE_PATH_MAX];
-    path(target, "B/Roms/PS/Game0008/Track03.bin"); path(alias, "B/Roms/PS/Game0008/Alias03.bin");
-    assert(!link(target, alias));
-    put("A/Roms/GBA/Scale.gba", "game");
-
-    double started = seconds();
-    jw_delete_plan plan = preview("GBA/Scale.gba", "GBA");
-    assert(plan.file_count == 1 && plan.remove_count == 1 && !plan.kept_count);
-    jw_delete_plan_free(&plan);
-    double unrelated = seconds() - started;
-
-    jw_delete_plan hidden; char error[512];
-    assert(jw_delete_plan_build(&sources, &catalog, "secondary_sd", "PS/Game0007/Game.cue", "PS",
-        NULL, 0, NULL, 0, NULL, NULL, &hidden, error, sizeof(error)) == -1);
-    assert(strstr(error, "Disc.m3u") && !hidden.snapshot);
-
-    owner("secondary_sd", "PS/Game0008/Track02.bin", "Indexed track");
-    owner("secondary_sd", "PS/Game0008/Alias03.bin", "Linked track");
-    started = seconds();
-    assert(!jw_delete_plan_build(&sources, &catalog, "secondary_sd", "PS/Game0008/Game.cue", "PS",
-        owners, owner_count, NULL, 0, NULL, NULL, &plan, error, sizeof(error)));
-    double cue = seconds() - started;
-    assert(plan.file_count == TRACKS + 1 && plan.remove_count == 6 && plan.kept_count == 3);
-    assert(plan.files[slot(&plan, "PS/Game0008/Track00.bin")].keep == JW_DELETE_SHARED);
-    assert(plan.files[slot(&plan, "PS/Game0008/Track02.bin")].keep == JW_DELETE_SHARED);
-    assert(plan.files[slot(&plan, "PS/Game0008/Track03.bin")].keep == JW_DELETE_SHARED);
+    jw_delete_plan plan = preview("PC98/deep00.cmd", &pc98);
+    assert(plan.file_count == 33 && !strcmp(plan.files[32].rom_relpath, "PC98/deep00.cmd"));
     jw_delete_result result = execute(&plan);
-    assert(result.removed_count == 6 && !exists("B/Roms/PS/Game0008/Game.cue"));
-    assert(!exists("B/Roms/PS/Game0008/Track01.bin") && exists("B/Roms/PS/Game0008/Track00.bin"));
-    assert(exists("B/Roms/PS/Game0008/Track02.bin") && exists("B/Roms/PS/Game0008/Alias03.bin"));
-    assert(exists("B/Roms/PS/Game0009/Game.cue") && exists("B/Roms/PS/Game0010/Track07.bin"));
-    jw_delete_result_free(&result); jw_delete_plan_free(&plan); owner_count = 0;
-    printf("delete scale: %d games x %d tracks: unrelated preview %.2fs, cue game preview %.2fs\n",
-           GAMES, TRACKS, unrelated, cue);
-
-    char command[JW_STORAGE_PATH_MAX + 32];
-    path(target, "B/Roms/PS");
-    snprintf(command, sizeof(command), "rm -rf '%s'", target);
-    assert(system(command) == 0);
-    remove_file("A/Roms/GBA/Scale.gba");
+    assert(result.removed_count == 32 && result.absent_count == 1);
+    jw_delete_result_free(&result); jw_delete_plan_free(&plan);
     return NULL;
 }
 
-static void test_scale(void) {
+static void test_deep_chain(void) {
     pthread_attr_t attributes;
     pthread_t worker;
     assert(!pthread_attr_init(&attributes));
     assert(!pthread_attr_setstacksize(&attributes, 2 * 1024 * 1024));
-    assert(!pthread_create(&worker, &attributes, test_scale_worker, NULL));
+    assert(!pthread_create(&worker, &attributes, test_deep_chain_worker, NULL));
     assert(!pthread_attr_destroy(&attributes));
     assert(!pthread_join(worker, NULL));
 }
@@ -444,7 +244,7 @@ static void test_scale(void) {
 int main(void) {
     char temporary[] = "/tmp/jw-delete-XXXXXX"; assert(mkdtemp(temporary)); assert(realpath(temporary, fixture));
     directory("A"); directory("B"); directory("A/Roms"); directory("B/Roms");
-    directory("A/Roms/PS"); directory("A/Roms/PS/sub"); directory("A/Roms/PS/states");
+    directory("A/Roms/PS"); directory("A/Roms/PS/sub");
     directory("A/Roms/GBA"); directory("A/Roms/PC98"); directory("B/Roms/Other");
     sources.count = 2;
     for (int i = 0; i < 2; i++) {
@@ -452,11 +252,9 @@ int main(void) {
         path(s->root, i ? "B" : "A"); strcpy(s->root_abs, s->root);
         path(s->roms_path, i ? "B/Roms" : "A/Roms"); s->available = true;
     }
-    path(sources.sources[0].states_path, "A/Roms/PS/states");
-    test_eligibility(); test_single_and_stale(); test_owners(); test_cross_card_and_missing();
-    test_preserved(); test_retry_and_order(); test_sync_failure(); test_missing_card_reference(); test_cross_system_cmd(); test_symlinks_and_absent_root();
-    test_descriptor_errors_and_snapshots();
-    test_hash_filenames(); test_bounded_depth(); test_scale();
+    test_eligibility(); test_single_and_digest(); test_multi_disc_order();
+    test_partial_failure_and_retry(); test_vanished_and_missing(); test_symlinks();
+    test_writable_image_and_cross_card(); test_hash_filenames(); test_deep_chain();
     char command[JW_STORAGE_PATH_MAX + 32]; snprintf(command, sizeof(command), "rm -rf '%s'", fixture);
     assert(system(command) == 0); puts("delete engine tests passed"); return 0;
 }

@@ -226,7 +226,7 @@ int  jw_db_list_hidden_roms(const char *db_path, jw_hidden_rom_entry *out,
                              int max_count, int *out_count);
 
 /* Complete indexed identities, including hidden and unavailable sources.
-   Used by deletion previews for owner names and exact artwork paths.
+   Deletion uses it to stop artwork scrapes for the files it removes.
    Caller frees *out; failure leaves *out NULL and *out_count zero. */
 int  jw_db_list_indexed_games(const char *db_path, jw_game_entry **out,
                                 size_t *out_count);

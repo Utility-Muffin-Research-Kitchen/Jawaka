@@ -392,6 +392,7 @@ typedef struct {
     bool               delete_commit_requested;
     bool               delete_reconciled;
     bool               delete_result_known;
+    jw_game_entry      delete_game;
     jw_ipc_delete_session *delete_session;
     jw_ipc_delete_status delete_status;
     cat_scroll_state   delete_scroll;
@@ -1051,10 +1052,6 @@ static bool jw__system_settings_input(jw_launcher_state *state, jw_settings_ui *
     char feedback[256] = "";
     bool open = jw_settings_ui_handle_button(ui, button, feedback, sizeof(feedback),
                                               theme_changed);
-    if (ui->delete_game_requested) {
-        ui->delete_game_requested = false;
-        jw__delete_begin(state, &ui->delete_game);
-    }
     if (ui->visibility_changed) {
         ui->visibility_changed = false;
         if (jw__refresh_after_visibility_write(state->db_path, state) != 0)
@@ -1236,10 +1233,8 @@ static void jw__draw_settings_footer(const jw_launcher_state *state) {
         };
         jw__draw_footer(state, footer, 3);
     } else if (scr == JW_SETTINGS_HIDDEN_GAMES) {
-        cat_footer_item footer[3];
+        cat_footer_item footer[2];
         int count = 0;
-        if (jw_settings_hidden_game_can_delete(&state->settings))
-            footer[count++] = (cat_footer_item){ CAT_BTN_X, "Delete Game", false, JW_HINT("X") };
         footer[count++] = (cat_footer_item){ CAT_BTN_B, "Back", true, JW_HINT("B") };
         if (state->settings.hidden_games_count > 0)
             footer[count++] = (cat_footer_item){ CAT_BTN_A, "Unhide", true, JW_HINT("A") };
@@ -6816,79 +6811,64 @@ static int jw__delete_line(const char *text, int x, int y, int w, bool draw) {
     return cat_measure_wrapped_text_height(font, text, w) + CAT_S(10);
 }
 
-static void jw__delete_summary(const jw_ipc_delete_status *status, char *out, size_t size) {
-    char bytes[64];
-    jw__pakrat_format_size(status->bytes, bytes, sizeof(bytes));
-    /* Discs are counted from playlist entries; a lone CUE or cartridge omits the count. */
-    if (status->disc_count)
-        snprintf(out, size, T("Discs: %zu. Files: %zu. Estimated space freed: %s."),
-                 status->disc_count, status->file_count, bytes);
-    else
-        snprintf(out, size, T("Files: %zu. Estimated space freed: %s."), status->file_count, bytes);
-}
-
 static int jw__delete_body(jw_launcher_state *state, int x, int y, int w, bool draw) {
     const jw_ipc_delete_status *status = &state->delete_status;
     int top = y;
     char line[2048], size[64];
     y += jw__delete_line(status->name, x, y, w, draw);
-    snprintf(line, sizeof(line), T("Storage: %s"), jw__delete_source_name(status->source_id));
-    y += jw__delete_line(line, x, y, w, draw);
     if (status->phase == JW_IPC_DELETE_PREPARING || status->phase == JW_IPC_DELETE_COMMITTING) {
         y += jw__delete_line(status->phase == JW_IPC_DELETE_PREPARING
-            ? T("Checking files and shared references on your mounted cards...")
+            ? T("Checking your game's files...")
             : T("Deleting your game. Keep your cards inserted."), x, y, w, draw);
         return y - top;
     }
-    if (status->error[0]) y += jw__delete_line(status->error, x, y, w, draw);
     if (state->delete_files_open) {
         for (size_t i = 0; i < status->files_count; ++i) {
             const jw_ipc_delete_file *file = &status->files[i];
             jw__pakrat_format_size(file->size, size, sizeof(size));
-            const char *action = file->removed ? T("Removed") : file->keep == 1
-                ? T("Keep: shared") : file->keep == 2 ? T("Keep: user data")
-                : file->missing ? T("Already missing") : T("Delete");
-            snprintf(line, sizeof(line), "%s: %s\n%s (%s)",
-                     jw__delete_source_name(file->source_id), file->rom_relpath, action, size);
+            const char *outcome = file->removed ? T("Removed") : file->missing ? T("Already missing")
+                : state->delete_commit_requested ? T("Not deleted") : NULL;
+            if (outcome)
+                snprintf(line, sizeof(line), "%s: %s\n%s (%s)",
+                         jw__delete_source_name(file->source_id), file->rom_relpath, outcome, size);
+            else
+                snprintf(line, sizeof(line), "%s: %s\n%s",
+                         jw__delete_source_name(file->source_id), file->rom_relpath, size);
             y += jw__delete_line(line, x, y, w, draw);
         }
         return y - top;
     }
     if (status->phase == JW_IPC_DELETE_READY) {
-        y += jw__delete_line(T("Deletion is permanent. There is no Trash."), x, y, w, draw);
-        jw__delete_summary(status, line, sizeof(line));
+        jw__pakrat_format_size(status->bytes, size, sizeof(size));
+        if (status->files_count == 1)
+            snprintf(line, sizeof(line), T("1 file, %s, on your %s."), size,
+                     jw__delete_source_name(status->source_id));
+        else
+            snprintf(line, sizeof(line), T("%zu files, %s, on your %s."), status->files_count, size,
+                     jw__delete_source_name(status->source_id));
         y += jw__delete_line(line, x, y, w, draw);
-    } else if (state->delete_commit_requested && state->delete_result_known) {
-        snprintf(line, sizeof(line), T("Files removed: %zu. Already absent: %zu."),
-                 status->removed_count, status->absent_count);
-        y += jw__delete_line(line, x, y, w, draw);
-    } else if (state->delete_commit_requested) {
-        y += jw__delete_line(T("Some files may have been removed before the connection was lost. Check your library before trying again."),
+        y += jw__delete_line(T("Deletion is permanent. This might not delete every file your game uses."),
                              x, y, w, draw);
-    }
-    if (status->phase == JW_IPC_DELETE_ERROR) {
-        y += jw__delete_line(T("Reopen Delete Game for a fresh preview before trying again."),
-                             x, y, w, draw);
-    }
-    if (status->phase == JW_IPC_DELETE_READY || state->delete_commit_requested) {
         y += jw__delete_line(T("Your save files, states and artwork are kept."), x, y, w, draw);
-        if (status->shared_count) {
-            snprintf(line, sizeof(line), T("Shared files kept: %zu. They may appear as games after your library is scanned again."),
-                     status->shared_count);
-            y += jw__delete_line(line, x, y, w, draw);
-        }
-        if (status->missing_sources[0]) {
-            snprintf(line, sizeof(line), T("Card not inserted: %s. Playlists on that card were not checked."),
-                     jw__delete_source_name(status->missing_sources));
-            y += jw__delete_line(line, x, y, w, draw);
-        }
-        if (status->missing_descriptors)
-            y += jw__delete_line(T("A disc descriptor is missing. Files it used that cannot be identified are kept."),
-                                 x, y, w, draw);
         if (status->writable_progress)
             y += jw__delete_line(T("Progress stored inside a writable game image is erased with that image."),
                                  x, y, w, draw);
+        return y - top;
     }
+    if (state->delete_commit_requested && !state->delete_result_known) {
+        y += jw__delete_line(T("Couldn't confirm the result. Check your library."), x, y, w, draw);
+        return y - top;
+    }
+    size_t deleted = status->removed_count + status->absent_count;
+    if (status->phase == JW_IPC_DELETE_DONE) {
+        if (deleted == 1) snprintf(line, sizeof(line), "%s", T("Deleted 1 file."));
+        else snprintf(line, sizeof(line), T("Deleted %zu files."), deleted);
+        y += jw__delete_line(line, x, y, w, draw);
+    } else if (deleted) {
+        snprintf(line, sizeof(line), T("Deleted %zu of %zu files."), deleted, status->files_count);
+        y += jw__delete_line(line, x, y, w, draw);
+    }
+    if (status->error[0]) y += jw__delete_line(status->error, x, y, w, draw);
     return y - top;
 }
 
@@ -6934,8 +6914,7 @@ static void jw__render_delete(jw_launcher_state *state) {
         footer[count++] = (cat_footer_item){ CAT_BTN_LEFT, "Choose", false, JW_HINT_DEVICE("Left/Right", "D-Pad") };
     if (state->delete_status.phase != JW_IPC_DELETE_COMMITTING)
         footer[count++] = (cat_footer_item){ CAT_BTN_B,
-            !state->delete_files_open && (state->delete_status.phase == JW_IPC_DELETE_READY ||
-                state->delete_status.phase == JW_IPC_DELETE_PREPARING)
+            !state->delete_files_open && state->delete_status.phase == JW_IPC_DELETE_READY
                 ? T("Cancel") : T("Back"), true, JW_HINT("B") };
     if (ready) footer[count++] = (cat_footer_item){ CAT_BTN_A, "Select", true, JW_HINT("A") };
     jw__draw_footer(state, footer, count);
@@ -10460,16 +10439,12 @@ static void jw__delete_reconcile(jw_launcher_state *state) {
     if (jw__refresh_after_visibility_write(state->db_path, state) != 0)
         jw_system_notice_set(&state->system_activity.feedback,
             T("Deletion finished. Library refresh failed."), SDL_GetTicks());
-    jw_settings_hidden_games_refresh(&state->settings);
 }
 
 static void jw__delete_close(jw_launcher_state *state) {
     /* A quick commit can finish before the next tick; Back must still refresh. */
     if (state->delete_open) jw__delete_reconcile(state);
     if (state->delete_session) {
-        if (state->delete_status.phase == JW_IPC_DELETE_PREPARING ||
-            state->delete_status.phase == JW_IPC_DELETE_READY)
-            jw_ipc_delete_cancel(state->delete_session);
         jw_ipc_delete_close(state->delete_session);
         state->delete_session = NULL;
     }
@@ -10479,23 +10454,23 @@ static void jw__delete_close(jw_launcher_state *state) {
     state->delete_files_open = false;
 }
 
+/* The screen opens on "Checking your game's files..."; the next tick asks
+   jawakad for the preview, so that message is drawn while it waits. */
 static void jw__delete_begin(jw_launcher_state *state, const jw_game_entry *game) {
     const jw_ra_system *system = state->system_catalog
         ? jw_ra_catalog_find_system(state->system_catalog, game->system) : NULL;
     if (!jw_delete_supported(system)) return;
     jw__delete_close(state);
     state->delete_open = true;
+    state->delete_game = *game;
     state->delete_commit_requested = false;
     state->delete_reconciled = false;
     state->delete_result_known = true;
-    state->delete_next_poll = SDL_GetTicks() + 200;
+    state->delete_next_poll = SDL_GetTicks() + 50;
     cat_scroll_state_init(&state->delete_scroll);
-    (void)jw_ipc_delete_begin(state->socket_path, game->source_id, game->rom_relpath,
-                              &state->delete_session, &state->delete_status);
-    if (!state->delete_status.name[0])
-        snprintf(state->delete_status.name, sizeof(state->delete_status.name), "%s", game->name);
-    if (!state->delete_status.source_id[0])
-        snprintf(state->delete_status.source_id, sizeof(state->delete_status.source_id), "%s", game->source_id);
+    state->delete_status.phase = JW_IPC_DELETE_PREPARING;
+    snprintf(state->delete_status.name, sizeof(state->delete_status.name), "%s", game->name);
+    snprintf(state->delete_status.source_id, sizeof(state->delete_status.source_id), "%s", game->source_id);
     cat_request_frame();
 }
 
@@ -10507,7 +10482,10 @@ static void jw__delete_tick(jw_launcher_state *state, bool *running) {
         char name[sizeof(status->name)], source[sizeof(status->source_id)];
         snprintf(name, sizeof(name), "%s", status->name);
         snprintf(source, sizeof(source), "%s", status->source_id);
-        if (jw_ipc_delete_poll(state->delete_session, status) != 0)
+        if (status->phase == JW_IPC_DELETE_PREPARING)
+            (void)jw_ipc_delete_preview(state->socket_path, state->delete_game.source_id,
+                                        state->delete_game.rom_relpath, status);
+        else if (jw_ipc_delete_poll(state->delete_session, status) != 0)
             state->delete_result_known = false;
         if (!status->name[0]) snprintf(status->name, sizeof(status->name), "%s", name);
         if (!status->source_id[0]) snprintf(status->source_id, sizeof(status->source_id), "%s", source);
@@ -10562,14 +10540,16 @@ static void jw__handle_delete_input(jw_launcher_state *state, cat_button button)
             if (status->phase != JW_IPC_DELETE_READY || state->delete_files_open ||
                 state->delete_commit_requested) break;
             if (!state->delete_confirm) { jw__delete_close(state); break; }
-            char token[sizeof(status->token)], name[sizeof(status->name)], source[sizeof(status->source_id)];
-            snprintf(token, sizeof(token), "%s", status->token);
+            char digest[sizeof(status->digest)], name[sizeof(status->name)], source[sizeof(status->source_id)];
+            snprintf(digest, sizeof(digest), "%s", status->digest);
             snprintf(name, sizeof(name), "%s", status->name);
             snprintf(source, sizeof(source), "%s", status->source_id);
             state->delete_confirm = false;
             state->delete_commit_requested = true;
             cat_scroll_state_init(&state->delete_scroll);
-            if (jw_ipc_delete_commit(state->delete_session, token, status) != 0)
+            if (jw_ipc_delete_begin(state->socket_path, state->delete_game.source_id,
+                                    state->delete_game.rom_relpath, digest,
+                                    &state->delete_session, status) != 0)
                 state->delete_result_known = false;
             if (!status->name[0]) snprintf(status->name, sizeof(status->name), "%s", name);
             if (!status->source_id[0]) snprintf(status->source_id, sizeof(status->source_id), "%s", source);
@@ -13995,7 +13975,6 @@ int main(void) {
     /* Init settings UI with the currently-active theme */
     long long settings_start_ms = jw__monotonic_ms();
     jw_settings_ui_init(&state.settings, db_path, theme_name, socket_path);
-    state.settings.allow_delete_game = true;
     jw_settings_ui_set_themes_root(&state.settings, state.sdcard_root);
     long long settings_done_ms = jw__monotonic_ms();
 
