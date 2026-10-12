@@ -906,7 +906,9 @@ static int hidden_row(const jw_settings_ui *ui, const char *source,
     return -1;
 }
 
-static int check_hidden_discs(void) {
+/* Disc and archive-member keys written by Manage Discs in the v0.13.0 betas
+   still list by path and clear independently from Hidden Games. */
+static int check_leftover_disc_keys(void) {
     char root[] = "/tmp/settings-hidden-discs.XXXXXX";
     if (!mkdtemp(root)) return fail("could not create hidden-disc fixtures");
     const char *dirs[] = { "first", "first/Roms", "first/Roms/PS",
@@ -974,22 +976,15 @@ static int check_hidden_discs(void) {
     snprintf(ui.db_path, sizeof(ui.db_path), "%s", db_path);
     char status[128] = "";
     jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
-    if (!ui.hidden_games_loaded || ui.hidden_games_count != 8 || ui.hidden_games_names_incomplete)
-        return fail("hidden discs did not load with their parent names");
-    for (int i = 1; i <= 5; ++i) {
-        int row = hidden_row(&ui, keys[i].source, keys[i].path, keys[i].member);
-        if (row < 0 || strcmp(ui.hidden_games[row].parent_name, "Adventure"))
-            return fail("a hidden parent or unindexed disc lost its association");
-    }
-    int row = hidden_row(&ui, "primary", "PS/disc.chd", "");
-    if (strcmp(ui.hidden_games[row].disc_label, "Opening"))
-        return fail("hidden disc did not use its playlist label");
-    row = hidden_row(&ui, "secondary_sd", "PS/disc.chd", "");
-    if (strcmp(ui.hidden_games[row].disc_label, "Other card"))
-        return fail("hidden disc association crossed source cards");
-    row = hidden_row(&ui, "primary", "PS/missing.chd", "");
-    if (!strstr(ui.hidden_games[row].disc_label, "missing"))
-        return fail("missing disc did not retain its filename label");
+    if (!ui.hidden_games_loaded || ui.hidden_games_count != 8)
+        return fail("leftover disc keys did not load");
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i)
+        if (hidden_row(&ui, keys[i].source, keys[i].path, keys[i].member) < 0)
+            return fail("a leftover disc key is missing from Hidden Games");
+    int row = hidden_row(&ui, "primary", "PS/missing.chd", "");
+    if (ui.hidden_games[row].rom.game.id != 0 ||
+        strcmp(ui.hidden_games[row].rom.game.rom_relpath, "PS/missing.chd"))
+        return fail("an unindexed disc key did not fall back to its path");
 
     ui.hidden_games_list.cursor = hidden_row(&ui, "primary", "PS/archive.zip", "First");
     snprintf(ui.db_path, sizeof(ui.db_path), "file:%s?mode=ro", db_path);
@@ -1000,7 +995,7 @@ static int check_hidden_discs(void) {
     ui.hidden_games_list.cursor = hidden_row(&ui, "primary", "PS/archive.zip", "First");
     jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
     int hidden = 0;
-    if (!ui.visibility_changed || ui.hidden_games_count != 7 || strcmp(status, "Disc unhidden") ||
+    if (!ui.visibility_changed || ui.hidden_games_count != 7 || strcmp(status, "Game unhidden") ||
         jw_db_is_rom_hidden(db_path, "primary", "PS/archive.zip", "First", &hidden) || hidden ||
         jw_db_is_rom_hidden(db_path, "primary", "PS/archive.zip", "Second", &hidden) || !hidden ||
         jw_db_is_rom_hidden(db_path, "primary", "PS/Adventure.m3u", "", &hidden) || !hidden)
@@ -1037,9 +1032,8 @@ static int check_hidden_discs(void) {
     jw_settings_ui_handle_button(&ui, CAT_BTN_B, status, sizeof(status), NULL);
     jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
     row = hidden_row(&ui, "primary", "PS/archive.zip", "Second");
-    if (!ui.hidden_games_loaded || !ui.hidden_games_names_incomplete || row < 0 ||
-        ui.hidden_games[row].parent_name[0])
-        return fail("unavailable parent hid a preference or looked like an empty playlist");
+    if (!ui.hidden_games_loaded || row < 0)
+        return fail("a removed playlist hid a leftover disc key");
     ui.hidden_games_list.cursor = row;
     jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
     if (jw_db_is_rom_hidden(db_path, "primary", "PS/archive.zip", "Second", &hidden) || hidden)
@@ -1071,7 +1065,7 @@ int main(int argc, char **argv) {
 
     if (check_back_targets()) return 1;
     if (check_hidden_games()) return 1;
-    if (check_hidden_discs()) return 1;
+    if (check_leftover_disc_keys()) return 1;
     if (check_language_order()) return 1;
     if (check_language_capacity()) return 1;
     if (check_force_off_hold()) return 1;

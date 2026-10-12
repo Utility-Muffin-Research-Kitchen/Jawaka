@@ -3639,7 +3639,8 @@ msgstr "无法继续游戏。请打开游戏并尝试读取存档。"
 msgid "Resuming your game"
 msgstr "正在继续游戏"
 
-# Added 2026: strings for disc visibility, hidden games and delete flows.
+# Hidden games, Delete Game, Force Off Hold and Battery Level lighting,
+# translated by AlexL (2026-10-12).
 
 #: internal/settings/settings.c
 msgid "%s: Not in your library"
@@ -3662,16 +3663,8 @@ msgid "8 sec"
 msgstr "8 秒"
 
 #: cmd/jawaka-launcher/main.c
-msgid "A disc descriptor is missing. Files it used that cannot be identified are kept."
-msgstr "缺少光盘描述文件。无法识别的相关文件将被保留。"
-
-#: cmd/jawaka-launcher/main.c
 msgid "Affected Files"
 msgstr "受影响的文件"
-
-#: cmd/jawaka-launcher/main.c
-msgid "All discs are hidden. Choose Show Hidden to restore them."
-msgstr "所有光盘都已隐藏。选择“显示隐藏项”即可恢复。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Already missing"
@@ -3682,32 +3675,8 @@ msgid "Battery Level"
 msgstr "电池电量"
 
 #: cmd/jawaka-launcher/main.c
-msgid "Card not inserted: %s. Playlists on that card were not checked."
-msgstr "未插入存储卡：%s。未检查该卡上的播放列表。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Checking files and shared references on your mounted cards..."
-msgstr "正在检查已挂载存储卡上的文件和共享引用……"
-
-#: cmd/jawaka-launcher/main.c
 msgid "Could not hide this game"
 msgstr "无法隐藏此游戏"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Could not load discs."
-msgstr "无法加载光盘。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Could not read disc visibility. Reopen Manage Discs to try again."
-msgstr "无法读取光盘显示状态。请重新打开“管理光盘”再试。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Could not read storage sources."
-msgstr "无法读取存储来源。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Could not update disc visibility. Reopen Manage Discs to try again."
-msgstr "无法更新光盘显示状态。请重新打开“管理光盘”再试。"
 
 #: internal/settings/settings.c
 msgid "Couldn't load hidden games."
@@ -3716,14 +3685,6 @@ msgstr "无法加载隐藏的游戏。"
 #: internal/settings/settings.c
 msgid "Couldn't unhide your selection."
 msgstr "无法取消隐藏所选项目。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Delete"
-msgstr "删除"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Delete Disc"
-msgstr "删除光盘"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Delete Game"
@@ -3738,36 +3699,8 @@ msgid "Deletion finished. Library refresh failed."
 msgstr "删除完成，但游戏库刷新失败。"
 
 #: cmd/jawaka-launcher/main.c
-msgid "Deletion is permanent. There is no Trash."
-msgstr "删除后无法恢复，没有回收站。"
-
-#: internal/settings/settings.c
-msgid "Disc unhidden"
-msgstr "光盘已取消隐藏"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Disc visibility saved. Library refresh failed."
-msgstr "光盘显示状态已保存，但游戏库刷新失败。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Disc: %s"
-msgstr "光盘：%s"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Discs: %zu. Files: %zu. Estimated space freed: %s."
-msgstr "光盘：%zu。文件：%zu。预计释放空间：%s。"
-
-#: cmd/jawaka-launcher/main.c
 msgid "Files"
 msgstr "文件"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Files removed: %zu. Already absent: %zu."
-msgstr "已删除文件：%zu。原本就不存在：%zu。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Files: %zu. Estimated space freed: %s."
-msgstr "文件：%zu。预计释放空间：%s。"
 
 #: internal/settings/settings.c
 msgid "Fixed"
@@ -3798,10 +3731,6 @@ msgid "Hidden Games"
 msgstr "隐藏的游戏"
 
 #: cmd/jawaka-launcher/main.c
-msgid "Hide"
-msgstr "隐藏"
-
-#: cmd/jawaka-launcher/main.c
 msgid "Hide Game"
 msgstr "隐藏游戏"
 
@@ -3809,105 +3738,25 @@ msgstr "隐藏游戏"
 msgid "Hold the power button %d seconds to force off"
 msgstr "长按电源键 %d 秒强制关机"
 
-#: cmd/jawaka-launcher/main.c
-msgid "Keep: shared"
-msgstr "保留：共享文件"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Keep: user data"
-msgstr "保留：用户数据"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Manage Discs"
-msgstr "管理光盘"
-
 #: internal/settings/settings.c
 msgid "No hidden games."
 msgstr "没有隐藏的游戏。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Playlist updated"
-msgstr "播放列表已更新"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Playlist: %s (%s)"
-msgstr "播放列表：%s（%s）"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Progress stored inside a writable game image is erased with that image."
 msgstr "保存在可写游戏镜像内的进度会随该镜像一同删除。"
 
 #: cmd/jawaka-launcher/main.c
-msgid "Remove this disc from the selected playlist. Discs remaining, including hidden discs: %zu."
-msgstr "从所选播放列表中移除此光盘。剩余光盘（含隐藏光盘）：%zu。"
-
-#: cmd/jawaka-launcher/main.c
 msgid "Removed"
 msgstr "已删除"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Reopen Delete Disc for a fresh preview before trying again."
-msgstr "请重新打开“删除光盘”以获取最新预览后再试。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Reopen Delete Game for a fresh preview before trying again."
-msgstr "请重新打开“删除游戏”以获取最新预览后再试。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Shared files kept: %zu. They may appear as games after your library is scanned again."
-msgstr "保留的共享文件：%zu。重新扫描游戏库后，它们可能会以游戏的形式出现。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Show Hidden"
-msgstr "显示隐藏项"
-
-#: internal/settings/settings.c
-msgid "Some disc names couldn't be loaded."
-msgstr "部分光盘名称无法加载。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Some files may have been removed before the connection was lost. Check your library before trying again."
-msgstr "连接中断前，部分文件可能已被删除。请先检查游戏库再重试。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Storage: %s"
-msgstr "存储：%s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Summary"
 msgstr "摘要"
 
 #: cmd/jawaka-launcher/main.c
-msgid "The playlist entry is removed, but no disc payload space is freed."
-msgstr "播放列表条目已移除，但未释放任何光盘数据空间。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "This is the final disc, including hidden discs. Confirm to delete the whole game and its playlist."
-msgstr "这是最后一张光盘（含隐藏光盘）。确认后将删除整个游戏及其播放列表。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "This playlist has no discs."
-msgstr "此播放列表没有光盘。"
-
-#: cmd/jawaka-launcher/main.c
 msgid "Unhide"
 msgstr "取消隐藏"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Update playlist"
-msgstr "更新播放列表"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Updating your playlist and removing exclusive disc files. Keep your cards inserted."
-msgstr "正在更新播放列表并删除专属光盘文件。请保持存储卡插入。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Visible Only"
-msgstr "仅显示可见项"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Your existing playlist and launch path stay in place with one disc."
-msgstr "现有播放列表和启动路径保持不变，仅保留一张光盘。"
 
 #: internal/settings/storage_ui.c
 msgid "Your library is read-only. You can't save changes. Open Settings > System > SD Cards to check your card."
@@ -3916,22 +3765,6 @@ msgstr "游戏库为只读状态，无法保存更改。请打开“设置 > 系
 #: internal/settings/settings.c
 msgid "Your library is read-only. Your selection is still hidden."
 msgstr "游戏库为只读状态。所选项目仍保持隐藏。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Your playlist file is missing."
-msgstr "播放列表文件缺失。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Your playlist may have changed and some files may have been removed before the connection was lost. Check your library before trying again."
-msgstr "连接中断前，播放列表可能已变更，部分文件可能已被删除。请先检查游戏库再重试。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Your playlist was not updated. A fresh preview can retry the remaining work."
-msgstr "播放列表未更新。获取最新预览后可重试剩余操作。"
-
-#: cmd/jawaka-launcher/main.c
-msgid "Your playlist was updated. Your remaining discs and launch path are kept."
-msgstr "播放列表已更新。剩余光盘和启动路径已保留。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your save files, states and artwork are kept."

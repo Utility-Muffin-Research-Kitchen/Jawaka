@@ -165,11 +165,19 @@ msgid "%s: Not in your library"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "%zu files, %s, on your %s."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid ", %d not found"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "-"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "1 file, %s, on your %s."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -316,10 +324,6 @@ msgstr ""
 msgid "A broader preset may apply after you reload the game."
 msgstr ""
 
-#: cmd/jawaka-launcher/main.c
-msgid "A disc descriptor is missing. Files it used that cannot be identified are kept."
-msgstr ""
-
 #: internal/retroarch/shader_strings.c
 msgid "A lighter handheld LCD grid with softer cell edges."
 msgstr ""
@@ -454,10 +458,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "All Systems"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "All discs are hidden. Choose Show Hidden to restore them."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -756,10 +756,6 @@ msgstr ""
 msgid "Cape Verde"
 msgstr ""
 
-#: cmd/jawaka-launcher/main.c
-msgid "Card not inserted: %s. Playlists on that card were not checked."
-msgstr ""
-
 #: internal/settings/storage_ui.c
 msgid "Card:"
 msgstr ""
@@ -785,7 +781,7 @@ msgid "Check SD card"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "Checking files and shared references on your mounted cards..."
+msgid "Checking your game's files..."
 msgstr ""
 
 #: internal/settings/timezones.c
@@ -896,24 +892,12 @@ msgstr ""
 msgid "Could not hide this game"
 msgstr ""
 
-#: cmd/jawaka-launcher/main.c
-msgid "Could not load discs."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Could not read disc visibility. Reopen Manage Discs to try again."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Could not read storage sources."
-msgstr ""
-
 #: internal/settings/settings.c
 msgid "Could not save"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "Could not update disc visibility. Reopen Manage Discs to try again."
+msgid "Couldn't confirm the result. Check your library."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -973,15 +957,19 @@ msgid "Defaults"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "Delete"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Delete Disc"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
 msgid "Delete Game"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted %zu files."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted %zu of %zu files."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted 1 file."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -993,7 +981,7 @@ msgid "Deletion finished. Library refresh failed."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "Deletion is permanent. There is no Trash."
+msgid "Deletion is permanent. This might not delete every file your game uses."
 msgstr ""
 
 #: internal/retroarch/shader_strings.c
@@ -1029,23 +1017,7 @@ msgid "Disabled"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "Disc unhidden"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Disc visibility saved. Library refresh failed."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Disc: %s"
-msgstr ""
-
-#: internal/settings/settings.c
 msgid "Disconnected"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Discs: %zu. Files: %zu. Estimated space freed: %s."
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1154,14 +1126,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Files"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Files removed: %zu. Already absent: %zu."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Files: %zu. Estimated space freed: %s."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1344,16 +1308,12 @@ msgstr ""
 msgid "Hiccup"
 msgstr ""
 
-#: cmd/jawaka-launcher/main.c
+#: internal/settings/settings.c
 msgid "Hidden"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Hidden Games"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Hide"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1478,14 +1438,6 @@ msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "Keep mGBA BFI off: the no-shader core path already falls below full speed at 120Hz with BFI."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Keep: shared"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Keep: user data"
 msgstr ""
 
 #: internal/retroarch/shader_strings.c
@@ -1646,10 +1598,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Main SD Card"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Manage Discs"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1881,6 +1829,10 @@ msgid "Not connected"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Not deleted"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Not enough memory to open the BIOS picker"
 msgstr ""
 
@@ -2026,14 +1978,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Playing test sound…"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Playlist updated"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Playlist: %s (%s)"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2205,23 +2149,11 @@ msgid "Remove the saved preset at the selected scope and turn shaders off."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "Remove this disc from the selected playlist. Discs remaining, including hidden discs: %zu."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
 msgid "Removed"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Removing retained Pak Rat data"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Reopen Delete Disc for a fresh preview before trying again."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Reopen Delete Game for a fresh preview before trying again."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2644,20 +2576,12 @@ msgstr ""
 msgid "Shader scope"
 msgstr ""
 
-#: cmd/jawaka-launcher/main.c
-msgid "Shared files kept: %zu. They may appear as games after your library is scanned again."
-msgstr ""
-
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Pixels"
 msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Shimmerless"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Show Hidden"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2722,14 +2646,6 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Solomon Islands"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "Some disc names couldn't be loaded."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Some files may have been removed before the connection was lost. Check your library before trying again."
 msgstr ""
 
 #: internal/platform/platform_common.c
@@ -2802,10 +2718,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Storage free"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Storage: %s"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2960,10 +2872,6 @@ msgstr ""
 msgid "The last check took too long and stopped. Restart your device to check the card again before saving is enabled."
 msgstr ""
 
-#: cmd/jawaka-launcher/main.c
-msgid "The playlist entry is removed, but no disc payload space is freed."
-msgstr ""
-
 #: internal/settings/storage_ui.c
 msgid "The repair couldn't be started. Check the card on a computer instead."
 msgstr ""
@@ -3101,15 +3009,7 @@ msgid "This is a stronger display simulation than the simpler GBC Color preset."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "This is the final disc, including hidden discs. Confirm to delete the whole game and its playlist."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
 msgid "This is your current theme."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "This playlist has no discs."
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -3280,10 +3180,6 @@ msgstr ""
 msgid "Update Channel"
 msgstr ""
 
-#: cmd/jawaka-launcher/main.c
-msgid "Update playlist"
-msgstr ""
-
 #: internal/settings/settings.c
 msgid "Update status unavailable"
 msgstr ""
@@ -3294,10 +3190,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Updating theme"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Updating your playlist and removing exclusive disc files. Keep your cards inserted."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -3346,10 +3238,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Visible"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Visible Only"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -3464,10 +3352,6 @@ msgstr ""
 msgid "Your device's internal storage can't record the repair. Check the card on a computer instead."
 msgstr ""
 
-#: cmd/jawaka-launcher/main.c
-msgid "Your existing playlist and launch path stay in place with one disc."
-msgstr ""
-
 #: internal/settings/settings.c
 msgid "Your game will not resume at startup"
 msgstr ""
@@ -3486,22 +3370,6 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Your other SD card is still read-only, so your library can't update yet."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Your playlist file is missing."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Your playlist may have changed and some files may have been removed before the connection was lost. Check your library before trying again."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Your playlist was not updated. A fresh preview can retry the remaining work."
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "Your playlist was updated. Your remaining discs and launch path are kept."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

@@ -211,10 +211,10 @@ typedef struct {
     char member[512];
 } jw_hidden_rom_entry;
 
-/* Disc keys use filesystem-normalized source/path spelling from content
-   inspection; member is empty except for an explicit archive selector.
-   No games row is required. An absent preference reads as visible, and writes
-   return the same statuses as game visibility. No path case folding is done. */
+/* Any stored key, including disc keys written before Manage Discs was removed;
+   member is empty except for an explicit archive selector. No games row is
+   required. An absent preference reads as visible, and writes return the same
+   statuses as game visibility. No path case folding is done. */
 int  jw_db_set_rom_hidden(const char *db_path, const char *source_id,
                            const char *rom_relpath, const char *member, int hidden);
 int  jw_db_is_rom_hidden(const char *db_path, const char *source_id,
@@ -224,14 +224,9 @@ int  jw_db_is_rom_hidden(const char *db_path, const char *source_id,
 int  jw_db_count_hidden_roms(const char *db_path, int *out_count);
 int  jw_db_list_hidden_roms(const char *db_path, jw_hidden_rom_entry *out,
                              int max_count, int *out_count);
-/* Indexed playlist candidates across all sources, including hidden games.
-   The caller inspects members on demand to associate hidden discs with games. */
-int  jw_db_count_playlists(const char *db_path, int *out_count);
-int  jw_db_list_playlists(const char *db_path, jw_game_entry *out,
-                           int max_count, int *out_count);
 
 /* Complete indexed identities, including hidden and unavailable sources.
-   Used by deletion previews for owner names and exact artwork paths.
+   Deletion uses it to stop artwork scrapes for the files it removes.
    Caller frees *out; failure leaves *out NULL and *out_count zero. */
 int  jw_db_list_indexed_games(const char *db_path, jw_game_entry **out,
                                 size_t *out_count);
