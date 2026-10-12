@@ -54,134 +54,113 @@ lists, cursors, counts and navigation breadcrumb without changing the daemon's
 library generation or requesting a scan. A read-only library returns the
 existing storage result and opens the SD card warning with its repair action.
 
-## Content inspection
-
-`internal/discovery/content.c` inspects content on demand for Delete Game. It
-reads M3U, CUE, GDI, TOC and quoted CMD references without executing commands.
-It retains raw descriptor bytes, labels and directives, including `#SAVEDISK`,
-and resolves references using actual filesystem lookup rules. Existing paths
-use their on-disk spelling; missing referenced files keep their normalized
-identity. As in RetroArch, only a `#` directly after `.zip`, `.7z` or `.apk`
-starts an archive member; any other `#` is part of the filename, as in
-`Game #1 (Disc 1).cue`. Archive selectors stay separate from host filename
-case. Unreadable or malformed descriptors, unsafe paths and bounded inspection
-limits report an error. A parse error names the innermost descriptor that
-failed, so a bad file on either card can be found and fixed. Inspection
-doesn't change descriptors, ROMs or scanner grouping.
-
 ## Delete Game
 
-**Options > Delete Game** previews permanent removal of your selected game
-and its exclusively owned ROM files. It stays last in the menu, after
-**Hide Game**. **Hidden Games** offers the same action for eligible indexed
-game rows. Unassociated hidden paths and archive members remain available to
-unhide.
+**Options > Delete Game** deletes the files behind the selected game entry:
+its launch file and every file that file names. For a multi-disc game that is
+the `.m3u`, each disc it lists and each disc's tracks. Deleting only the
+playlist wouldn't work: the next scan would list the discs again or, for
+`Name (Disc N)` files, generate a new playlist. The row stays last in the
+menu, after **Hide Game**. **Hidden Games** only unhides; to delete a hidden
+game, unhide it first.
 
-You see the game, source card, file count (and disc count for a playlist),
-expected freed space, shared files kept, and a reminder that deletion is
-permanent. **Files** opens the exact file list; **Back** returns to the
-summary. **Cancel** is selected initially. Choose **Delete Game** explicitly
-to confirm. Preparing the preview is cancellable, and every disc the playlist
-lists is included.
+The confirmation shows the game, how many files and how much space, which
+card, that deletion is permanent and might not delete every file the game
+uses, and that saves, states and artwork are kept. **Files** lists each file
+with its card and size. **Cancel** is selected first. Afterwards the screen
+says how many files were deleted; if one fails it says how many of the total
+were deleted and which file failed.
 
-Delete is offered only for the following release system IDs, provided their
-current catalog formats remain supported:
+### What counts as the game's files
 
-| Group | System IDs and content |
-| --- | --- |
-| Single-file games | `32X`, `ATARI2600`, `COLECO`, `FC`, `FDS`, `GB`, `GBA`, `GBC`, `GG`, `GW`, `LYNX`, `MD`, `MS`, `N64`, `NDS`, `NGP`, `NGPC`, `PICO8`, `PSP`, `SEVENTYEIGHTHUNDRED`, `SFC`, `VB`, `VECTREX`, `WS`, `WSC`. Their accepted ZIP/7Z files are treated as whole containers. |
-| Disc games | `PS` and `SEGACD`, including supported CUE, TOC and M3U layouts and their referenced tracks. |
-| Command descriptors | `PC98`, with quoted CMD file arguments resolved without executing the command. |
+`internal/discovery/content.c` reads the launch file's M3U, CUE, GDI, TOC or
+quoted CMD references, without executing commands, and follows nested
+descriptors. Nothing else is read: not other playlists, not other cards'
+ROM trees. It resolves references with the filesystem's own lookup rules, so
+existing paths use their on-disk spelling and missing ones keep their
+normalized identity. As in RetroArch, only a `#` directly after `.zip`, `.7z`
+or `.apk` starts an archive member; any other `#` is part of the filename, as
+in `Game #1 (Disc 1).cue`. Directives, comments and `|label` suffixes name no
+files. References may not leave the mounted ROM roots or escape through a
+symlink; an explicit absolute path to the other mounted card is followed. An
+unreadable or malformed descriptor stops the preview, and the error names the
+innermost descriptor.
 
-The menu checks `jw_delete_supported()` and the catalog without inspecting
-files. A content-pak provider, filename-based launch contract, unsupported
-system ID or newly accepted format outside that system's supported set omits
-**Delete Game**. **Hide Game** stays available. Arcade sets, AMIGA, DOS,
-EasyRPG, PORTS, DC, NAOMI, ATOMISWAVE, PCE/PCECD, SATURN and MD32X are excluded.
+Deletion never expands a title stem, unpacks a container or removes a folder.
+Formats without a reader, such as `.uae`, `.ccd`, `.mds`, `.conf`, `.bat` or
+`.sh`, delete only themselves, which is what "might not delete every file"
+covers. PCSX ReARMed also reads same-name `.toc`, `.ccd`, `.mds`, `.cue`,
+`.sub` and `.sbi` files beside an image; those aren't named by the image, so
+they stay.
 
-### Shared files and preserved data
+Files are not checked against other games. If two playlists list the same
+disc, deleting one deletes the disc. If the scanner lists a subfolder disc on
+its own as well as inside its parent playlist, deleting the playlist deletes
+that disc and its row; deleting the disc's own row breaks the playlist. The
+file list shows exactly what goes.
 
-Preview preparation reads M3U/M3U8, CUE, GDI, TOC and CMD descriptors across
-every mounted source's ROM tree, including hidden and scan-suppressed files.
-macOS AppleDouble metadata files (`._Name` with Apple's binary header, or
-empty) are skipped; a text playlist with such a name is still read.
-It also includes indexed game identities as owners. Exact normalized paths,
-current absolute cross-card references and filesystem identity determine
-sharing. A separate game using the selected launch file blocks deletion and
-is named in the error. Other shared files remain on disk. Those leftovers can
-appear as standalone games or be regrouped by the existing scanner later.
-The scanner still treats any `#` in a playlist entry as a member separator, so
-a disc such as `Game #1 (Disc 1).cue` can be listed beside its playlist;
-Delete Game on that entry is blocked because the playlist uses it.
+### Which games offer it
 
-The search scales roughly linearly with your library. It stops with an error
-only past 1,000,000 ROM-tree entries, 65,536 descriptors, 131,072 referenced
-files, 65,536 directories, 262,144 cached directory names or 32 MB of
-descriptor text (4 MB per descriptor). These bound memory on the MLP1, where a
-commit briefly holds two copies of the search.
+`jw_delete_supported()` decides from the catalog alone, so the menu stays
+cheap. Every system offers Delete except:
 
-If a known card isn't inserted, the preview names it and says its playlists
-weren't checked. A card is known when your library has games on it or a
-playlist on a mounted card refers to it; an empty second card slot doesn't
-warn. You can
-continue after the usual confirmation. A mounted card with unreadable or
-malformed descriptors instead stops the operation.
-There are no readers for `.uae`, `.ccd`, `.mds`, `.conf`, `.bat`, `.exe`, `.sh`
-or `.dat`. Incoming references from those formats cannot be detected, such as
-a PORTS script that launches a ROM in another system. This is an ownership
-search limitation even though those systems can't themselves be deleted.
+- `ARCADE`, `MAME`, `MAME2003`, `MAME2010`, `NEOGEO`, `NAOMI` and
+  `ATOMISWAVE`: deleting a parent ROM set breaks its clones, which the
+  warning doesn't describe.
+- `PORTS`: PortMaster manages ports, and deleting the script leaves the port.
+- Content-pak systems (a non-empty catalog `provider`): the pak owns its
+  content.
+- Systems with a filename launch contract, such as EasyRPG: the game is a
+  folder.
 
-Your save files, memory cards, states, thumbnails and artwork are kept.
-Protection includes configured data roots and indexed artwork inside ROM
-directories. Deletion never expands a title stem or removes a folder
-recursively. A PC98 preview warns that progress stored inside a writable
-game image is erased with that image. Containers aren't unpacked or rewritten.
+`AMIGA`, `DOS` and `PC98` previews add that progress stored inside a writable
+game image is erased with that image.
 
-PlayStation's default core, PCSX ReARMed, also reads same-name `.toc`, `.ccd`,
-`.mds` or `.cue` files beside a loaded `.img`, `.mdf` or `.iso`, plus `.sub`
-subchannel and `.sbi` LibCrypt data. Deletion never matches title stems, so
-deleting such an image leaves those sidecars in place and the preview doesn't
-list them. The core also falls back to a CUE `FILE` entry's bare filename when
-its path doesn't exist; deletion follows the exact path, so a track found only
-that way is kept.
+### Daemon protocol
 
-### Daemon mutation and retry
+The launcher sends a source/path identity, never a list of paths.
 
-The launcher sends a source/path identity to jawakad, never an unlink list.
-The daemon retains the reviewed plan under a one-use token on that connection.
-Closing the preview or connection, restarting the daemon, or losing a response
-requires a fresh preview and confirmation. Destructive requests are never
-automatically replayed.
+1. `rom-delete-preview {source_id, rom_relpath}` runs on jawakad's main
+   thread. It checks the read-only and busy gates, resolves the files and
+   answers with them, their total size and a 16-hex-digit digest of their
+   cards, paths, sizes and missing flags. jawakad keeps nothing afterwards,
+   so closing the preview needs no request and a restart in between changes
+   nothing.
+2. `rom-delete {source_id, rom_relpath, digest}` starts a worker and answers
+   `COMMITTING`. The worker resolves the files again and refuses a different
+   digest ("Your game's files changed"). It then stops affected artwork
+   scrapes, checks relocation reservations, removes the files and reconciles
+   the library in one transaction. The connection polls `rom-delete-status`
+   until `DONE` or `ERROR`.
 
-Both the ROM source and library card must be writable before preview and
-commit. Read-only results open the existing SD card warning and repair flow.
-Commit rebuilds and compares the mounted-source identity, normalized paths,
-file existence, sizes and timestamps, descriptor bytes and references before
-any removal. It coordinates with scanning, launches, relocation reservations,
-unmounting and affected scrape work. A changed plan stops without applying it.
+Once removal starts it finishes even if the connection closes; jawakad still
+publishes the library generation. The launcher then says it couldn't confirm
+the result and refreshes. Nothing is retried automatically. Only one deletion
+runs at a time, and while it runs scans, launches, relocation and unmounting
+wait or refuse, as before.
 
-Exclusive payloads are removed before their descriptors, with directory
-changes synced before removing the descriptor that records them. The selected
-launch file is removed last. An error stops further removal and reports the
-files removed and the failure. Deletion isn't atomic: a crash or I/O error can
-leave a game with missing tracks. Reopen **Delete Game** for a fresh preview.
-Already missing paths can be reconciled, but a missing descriptor can't reveal
-its former tracks; unknown files stay in place. A lost commit response reports
-that some files may already have been removed.
+Both the ROM card and the library card must be writable for the preview and
+again for every removal. Read-only results open the existing SD card warning
+and repair flow.
 
-DB reconciliation removes exact deleted-file rows and their settings,
-favorites, recents and Focus selections, including independently indexed disc
-rows. Visibility keys are cleared only for removed identities; shared-file
-choices remain. The same orphan/Focus cleanup is used by scan pruning. The
-daemon publishes the library generation after reconciliation, including
-partial removal, and the launcher refreshes its browse and Hidden Games caches.
-Re-adding a deleted ROM doesn't recover that removed metadata.
+Files are removed payload first: tracks before the CUE that names them, every
+disc before the playlist, the launch file last. Each removal's directory is
+synced before the next, so an interruption leaves the launch file to retry
+from. A file already gone at removal time counts as absent, not as an error,
+and its row is reconciled too. An error stops removal and reports how far it
+got. Deletion isn't atomic.
+
+Reconciliation removes the rows for every removed or absent file, including
+separately listed discs, along with their settings, favorites, recents and
+Focus selections. Visibility keys are cleared for removed identities. The
+same orphan/Focus cleanup is used by scan pruning. Re-adding a deleted ROM
+doesn't recover that metadata.
 
 ## Checks
 
 - `make content-test` covers descriptors, filesystem case behavior, path
-  aliases, selectors, missing references and unsafe or malformed input. Run
-  it on both case-sensitive and case-insensitive storage.
+  aliases, `#` in filenames, missing references and unsafe or malformed input.
+  Run it on both case-sensitive and case-insensitive storage.
 - `make schema-v6-test visibility-test relocation-test` covers migration, the
   unchanged v6 version (including a development v7 library), read-only
   libraries from earlier releases, visibility queries, metadata retention,
@@ -190,24 +169,26 @@ Re-adding a deleted ROM doesn't recover that removed metadata.
   the real launcher/settings/menu handlers with disposable databases and SDL's
   dummy renderer, including empty lists, leftover beta disc keys, independent
   B Resume and the longest Options menu at a larger font size.
-- `make delete-test` covers eligibility, shared ownership across cards,
-  missing-card warnings, protected data, changed previews, dependency ordering
-  and partial-failure retry with disposable content. It also checks a
-  2,600-game disc library beyond the original search limits, AppleDouble
-  sidecars, `#` in filenames and descriptor-named errors.
+- `make delete-test` covers eligibility, digest stability, removal order for
+  multi-disc games (including a disc in a subfolder), partial failure and
+  retry, files that vanish before removal, symlinked launch files, CMD disk
+  images, cross-card references and the deepest descriptor chain on
+  jawakad's worker stack.
 - `make deletion-db-test focus-test` covers exact-file reconciliation and
   transactional metadata/Focus cleanup, including later scan pruning.
 - `make delete-ui-test delete-client-test` covers the real deletion screen,
-  initial Cancel selection, inspectable files, Hidden Games, read-only warnings,
-  retained IPC sessions, malformed previews, lost-response replay prevention
-  and a quick result followed by Back.
-- `make rom-delete-ipc-smoke` exercises the daemon with synthetic ROMs and its
-  preview/commit protocol, storage changes, coordination and fault injection.
+  the preview on the next tick, initial Cancel selection, the file list, no
+  replay after a refused or lost delete, read-only warnings, Hidden Games
+  without Delete, malformed replies and a quick result followed by Back.
+- `make rom-delete-ipc-smoke` exercises the daemon with synthetic ROMs: the
+  two requests, the digest refusal, coordination, read-only cards, partial
+  failure, a lost result, a restart between preview and delete, a separately
+  listed disc, and a generated `(Disc N)` playlist that a rescan doesn't bring
+  back.
 - `WORKSPACE_ROOT=/path/to/UMRK make phase3-fixture-scan-smoke` checks that
   existing nested-folder grouping remains unchanged. Continue running
   `make storage-sources-test relocation-test` for source and reservation changes.
 
-Deferred format readers and system groups are tracked in
-`umrk-workspace/plans/Jawaka/rom-visibility-and-deletion.md`. The planned
-simplification of Delete Game is in
+The design history is in
+`umrk-workspace/plans/Jawaka/rom-visibility-and-deletion.md` and
 `umrk-workspace/plans/Jawaka/rom-deletion-simplification.md`.

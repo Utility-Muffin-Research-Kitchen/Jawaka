@@ -14,7 +14,7 @@ import tempfile
 import time
 
 
-PREPARING, READY, COMMITTING, DONE, ERROR, CANCELLED = range(6)
+PREPARING, READY, COMMITTING, DONE, ERROR = range(5)
 
 
 class Client:
@@ -47,18 +47,18 @@ class Client:
 
     def settle(self, reply):
         deadline = time.monotonic() + 15
-        while reply.get("phase") in (PREPARING, COMMITTING):
+        while reply.get("phase") == COMMITTING:
             assert time.monotonic() < deadline, reply
             time.sleep(0.02)
             reply = self.request("rom-delete-status")
         return reply
 
     def preview(self, path, source="primary"):
-        return self.settle(self.request("rom-delete-preview", source_id=source,
-                                        rom_relpath=path))
+        return self.request("rom-delete-preview", source_id=source, rom_relpath=path)
 
-    def commit(self, token):
-        return self.settle(self.request("rom-delete-commit", token=token))
+    def delete(self, path, digest, source="primary"):
+        return self.settle(self.request("rom-delete", source_id=source, rom_relpath=path,
+                                        digest=digest))
 
 
 def rejected(reply):
@@ -66,8 +66,12 @@ def rejected(reply):
 
 
 def ready(reply):
-    assert reply.get("phase") == READY and reply.get("token"), reply
-    return reply["token"]
+    assert reply.get("phase") == READY and len(reply.get("digest", "")) == 16, reply
+    return reply["digest"]
+
+
+def files(reply):
+    return {item["rom_relpath"] for item in reply["files"]}
 
 
 def write(path, contents):
@@ -87,7 +91,7 @@ class Fixture:
         for directory in (self.runtime, self.state, self.platform / "defaults",
                           self.primary / "Apps/shared", self.secondary / "Roms/GBA"):
             directory.mkdir(parents=True)
-        for name in ("Delete", "Keep", "Cancel", "Stale", "ReadOnly", "LostResponse", "Serialize"):
+        for name in ("Delete", "Keep", "Cancel", "Stale", "ReadOnly", "LostResponse", "Serialize", "Restart"):
             write(self.primary / f"Roms/GBA/{name}.gba", f"{name} disposable payload\n")
         write(self.secondary / "Roms/GBA/Delete.gba", "Other card must survive\n")
         write(self.secondary / "Roms/GBA/ReadOnly.gba", "Readonly card must survive\n")
@@ -97,8 +101,10 @@ class Fixture:
         write(self.primary / "Roms/PS/Partial.m3u", "PartialDisc.cue\n")
         write(self.primary / "Roms/PS/PartialDisc.cue", 'FILE "PartialTrack.bin" BINARY\n  TRACK 01 MODE2/2352\n')
         write(self.primary / "Roms/PS/PartialTrack.bin", b"partial payload\n")
-        # Finder's AppleDouble sidecar must never block an unrelated preview.
-        write(self.primary / "Roms/PS/._Disc.cue", b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        ")
+        # Two "(Disc N)" images the scanner groups into a generated playlist.
+        for disc in (1, 2):
+            write(self.primary / f"Roms/PS/Twin (Disc {disc}).cue", f'FILE "Twin (Disc {disc}).bin" BINARY\n  TRACK 01 MODE2/2352\n')
+            write(self.primary / f"Roms/PS/Twin (Disc {disc}).bin", f"twin disc {disc}\n")
         systems = []
         for code, extensions, playlists in (("GBA", ["gba", "zip", "7z"], []),
                                             ("PS", ["cue", "img", "pbp", "chd", "toc"], ["m3u"])):
@@ -106,7 +112,7 @@ class Fixture:
                 "id": code, "name": code, "patterns": [code], "extensions": extensions,
                 "archive_extensions": [], "archive_inner_extensions": extensions,
                 "archive_mode": "pass_through", "file_names": [], "ignore_file_names": [],
-                "playlist_extensions": playlists, "m3u_generation": "none",
+                "playlist_extensions": playlists, "m3u_generation": "manual" if playlists else "none",
                 "default_core": "fixture", "alternate_cores": [],
                 "rom_root": f"Roms/{code}", "image_root": f"Images/{code}",
             })
@@ -129,7 +135,6 @@ class Fixture:
                    JAWAKA_OSD="0", JAWAKA_SDCARD_ROOT=str(self.primary),
                    JAWAKA_TEST_DELETE_READONLY_FILE=str(self.readonly_marker),
                    JAWAKA_TEST_DELETE_FAIL_AFTER_FILE=str(self.failure_marker),
-                   JAWAKA_TEST_DELETE_PREPARE_DELAY_MS="500",
                    JAWAKA_TEST_DELETE_COMMIT_DELAY_MS="500")
         self.log_file = self.log.open("ab")
         self.proc = subprocess.Popen([str(self.daemon), "--daemon-only"], env=env,
@@ -198,17 +203,13 @@ def assert_serialized(fixture, owner, phase):
 
 def test_serialization(fixture):
     with Client(fixture.socket) as client:
-        preparing = client.request("rom-delete-preview", source_id="primary", rom_relpath="GBA/Cancel.gba")
-        assert preparing.get("phase") == PREPARING, preparing
-        generation = assert_serialized(fixture, client, PREPARING)
-        ready(client.settle(preparing))
-        client.request("rom-delete-cancel")
-    wait_idle(fixture, generation + 1)
-    with Client(fixture.socket) as client:
-        token = ready(client.preview("GBA/Serialize.gba"))
-        committing = client.request("rom-delete-commit", token=token)
+        digest = ready(client.preview("GBA/Serialize.gba"))
+        committing = client.request("rom-delete", source_id="primary", rom_relpath="GBA/Serialize.gba",
+                                    digest=digest)
         assert committing.get("phase") == COMMITTING, committing
         generation = assert_serialized(fixture, client, COMMITTING)
+        with Client(fixture.socket) as other:
+            rejected(other.preview("GBA/Cancel.gba"))  # one deletion at a time
         result = client.settle(committing)
         assert result.get("phase") == DONE, result
     wait_idle(fixture, generation + 2)  # One deletion publication, then the queued scan.
@@ -231,8 +232,8 @@ def test_partial_failure(fixture):
             db.execute("INSERT INTO hidden_roms VALUES('primary',?,?)", (path, member))
     write(fixture.failure_marker, "1")
     with Client(fixture.socket) as client:
-        token = ready(client.preview("PS/Partial.m3u"))
-        result = client.commit(token)
+        digest = ready(client.preview("PS/Partial.m3u"))
+        result = client.delete("PS/Partial.m3u", digest)
         rejected(result)
         assert result.get("removed_count") == 1, result
     assert not (primary / "Roms/PS/PartialTrack.bin").exists()
@@ -247,9 +248,9 @@ def test_partial_failure(fixture):
     fixture.failure_marker.unlink()
     with Client(fixture.socket) as client:
         preview = client.preview("PS/Partial.m3u")
-        token = ready(preview)
+        digest = ready(preview)
         assert any(item.get("missing") and item["rom_relpath"] == "PS/PartialTrack.bin" for item in preview["files"]), preview
-        result = client.commit(token)
+        result = client.delete("PS/Partial.m3u", digest)
         assert result.get("phase") == DONE and result.get("removed_count") == 2, result
         assert result.get("absent_count") == 1, result
     assert not parent_path.exists() and not (primary / "Roms/PS/PartialDisc.cue").exists()
@@ -264,32 +265,49 @@ def library_generation(fixture):
         return client.request("library-status")["generation"]
 
 
-def test_hash_filenames(fixture):
-    """A '#' outside archive.zip#member is a filename, so ownership still blocks."""
-    ps = fixture.primary / "Roms/PS"
-    write(ps / "Hash #1 (Disc 1).cue", 'FILE "Hash #1 (Disc 1).bin" BINARY\n  TRACK 01 MODE2/2352\n')
-    write(ps / "Hash #1 (Disc 1).bin", b"hash payload\n")
-    write(ps / "Hash #1.m3u", "Hash #1 (Disc 1).cue\n")
+def scan(fixture):
     before = library_generation(fixture)
     with Client(fixture.socket) as client:
         client.request("scan-library")
     wait_idle(fixture, before + 1)
-    db = sqlite3.connect(fixture.db_path)
-    rows = {row[0] for row in db.execute("SELECT rom_relpath FROM games WHERE rom_relpath LIKE 'PS/Hash%'")}
-    db.close()
+
+
+def rows(fixture, pattern):
+    with sqlite3.connect(fixture.db_path) as db:
+        return {row[0] for row in db.execute("SELECT rom_relpath FROM games WHERE rom_relpath LIKE ?", (pattern,))}
+
+
+def test_hash_filenames(fixture):
+    """A '#' outside archive.zip#member is a filename, and the playlist owns its disc."""
+    ps = fixture.primary / "Roms/PS"
+    write(ps / "Hash #1 (Disc 1).cue", 'FILE "Hash #1 (Disc 1).bin" BINARY\n  TRACK 01 MODE2/2352\n')
+    write(ps / "Hash #1 (Disc 1).bin", b"hash payload\n")
+    write(ps / "Hash #1.m3u", "Hash #1 (Disc 1).cue\n")
+    scan(fixture)
     # Scanner grouping is unchanged, so the CUE is listed beside its playlist.
-    assert rows == {"PS/Hash #1.m3u", "PS/Hash #1 (Disc 1).cue"}, rows
-    with Client(fixture.socket) as client:
-        blocked = client.preview("PS/Hash #1 (Disc 1).cue")
-        rejected(blocked)
-        assert "uses this game's launch file" in blocked.get("error", ""), blocked
+    assert rows(fixture, "PS/Hash%") == {"PS/Hash #1.m3u", "PS/Hash #1 (Disc 1).cue"}
     with Client(fixture.socket) as client:
         preview = client.preview("PS/Hash #1.m3u")
-        ready(preview)
-        kept = {item["rom_relpath"]: item["keep"] for item in preview["files"]}
-        assert kept == {"PS/Hash #1.m3u": 0, "PS/Hash #1 (Disc 1).cue": 1, "PS/Hash #1 (Disc 1).bin": 1}, kept
-        client.request("rom-delete-cancel")
-    assert (ps / "Hash #1 (Disc 1).bin").exists()
+        digest = ready(preview)
+        assert files(preview) == {"PS/Hash #1.m3u", "PS/Hash #1 (Disc 1).cue", "PS/Hash #1 (Disc 1).bin"}, preview
+        result = client.delete("PS/Hash #1.m3u", digest)
+        assert result.get("phase") == DONE and result.get("removed_count") == 3, result
+    # Deleting the playlist removed the separately listed disc's row too.
+    assert not rows(fixture, "PS/Hash%")
+
+
+def test_generated_playlist(fixture):
+    """Deleting a "(Disc N)" game leaves nothing a rescan can turn back into it."""
+    ps = fixture.primary / "Roms/PS"
+    assert (ps / "Twin.m3u").exists() and rows(fixture, "PS/Twin%") == {"PS/Twin.m3u"}
+    with Client(fixture.socket) as client:
+        preview = client.preview("PS/Twin.m3u")
+        digest = ready(preview)
+        assert len(preview["files"]) == 5 and preview["files"][-1]["rom_relpath"] == "PS/Twin.m3u", preview
+        result = client.delete("PS/Twin.m3u", digest)
+        assert result.get("phase") == DONE and result.get("removed_count") == 5, result
+    scan(fixture)
+    assert not rows(fixture, "PS/Twin%") and not list(ps.glob("Twin*"))
 
 
 def run(fixture):
@@ -298,35 +316,24 @@ def run(fixture):
     test_serialization(fixture)
     test_partial_failure(fixture)
 
+    # The preview keeps nothing: closing it is all Cancel needs.
     with Client(fixture.socket) as client:
-        token = ready(client.preview("GBA/Cancel.gba"))
-        assert client.request("rom-delete-cancel").get("phase") == CANCELLED
-        rejected(client.commit(token))
+        ready(client.preview("GBA/Cancel.gba"))
+        rejected(client.request("rom-delete-status"))
+    with Client(fixture.socket) as client:
+        rejected(client.request("rom-delete", source_id="primary", rom_relpath="GBA/Cancel.gba", digest="short"))
+        rejected(client.request("rom-delete", source_id="primary", rom_relpath="GBA/Cancel.gba"))
     assert (primary / "Roms/GBA/Cancel.gba").exists()
 
+    # A different file set (here a different size) refuses the reviewed digest.
     with Client(fixture.socket) as client:
-        disconnected_token = ready(client.preview("GBA/Cancel.gba"))
-    with Client(fixture.socket) as client:
-        rejected(client.commit(disconnected_token))
-    assert (primary / "Roms/GBA/Cancel.gba").exists()
-
-    # Switching an owning socket to a legacy one-shot request must not leave
-    # its token attached to a connection slot that another socket can reuse.
-    with Client(fixture.socket) as client:
-        detached_token = ready(client.preview("GBA/Cancel.gba"))
-        try:
-            client.request("library-status")
-        except (RuntimeError, ConnectionError):
-            pass  # The daemon deliberately closes an owner using another protocol.
-    with Client(fixture.socket) as client:
-        rejected(client.commit(detached_token))
-    assert (primary / "Roms/GBA/Cancel.gba").exists()
-
-    with Client(fixture.socket) as client:
-        token = ready(client.preview("GBA/Stale.gba"))
+        digest = ready(client.preview("GBA/Stale.gba"))
         write(primary / "Roms/GBA/Stale.gba", "changed after review, must survive\n")
-        rejected(client.commit(token))
-        rejected(client.commit(token))
+        result = client.delete("GBA/Stale.gba", digest)
+        rejected(result)
+        assert "changed" in result.get("error", ""), result
+    with Client(fixture.socket) as client:
+        rejected(client.delete("GBA/Stale.gba", digest))
     assert (primary / "Roms/GBA/Stale.gba").read_text() == "changed after review, must survive\n"
 
     # The test daemon consults this marker through its storage guard only.
@@ -336,45 +343,40 @@ def run(fixture):
             result = client.preview("GBA/ReadOnly.gba", source)
             rejected(result)
             assert result.get("readonly_source") == ("launcher_sd" if source == "primary" else source), result
-            assert not result.get("token"), result
+            assert not result.get("digest"), result
         fixture.readonly_marker.unlink()
     with Client(fixture.socket) as client:
-        token = ready(client.preview("GBA/ReadOnly.gba"))
+        digest = ready(client.preview("GBA/ReadOnly.gba"))
         write(fixture.readonly_marker, "primary")
-        result = client.commit(token)
+        result = client.delete("GBA/ReadOnly.gba", digest)
         rejected(result)
         assert result.get("readonly_source") == "launcher_sd", result
         fixture.readonly_marker.unlink()
-        rejected(client.commit(token))
     assert (primary / "Roms/GBA/ReadOnly.gba").exists()
     assert (fixture.secondary / "Roms/GBA/ReadOnly.gba").exists()
 
+    # A card that isn't inserted is not checked or mentioned.
     missing_card = fixture.secondary.with_name("secondary-away")
     fixture.secondary.rename(missing_card)
     try:
         with Client(fixture.socket) as client:
             preview = client.preview("GBA/Cancel.gba")
             ready(preview)
-            assert "secondary_sd" in preview.get("missing_sources", ""), preview
-            client.request("rom-delete-cancel")
+            assert files(preview) == {"GBA/Cancel.gba"}, preview
     finally:
         missing_card.rename(fixture.secondary)
 
-    # The descriptor bytes themselves participate in the commit comparison.
-    with Client(fixture.socket) as client:
-        token = ready(client.preview("PS/Owner.m3u"))
-        write(primary / "Roms/PS/Owner.m3u", "# changed label\nDisc.cue\n")
-        rejected(client.commit(token))
-    assert (primary / "Roms/PS/Track.bin").exists()
-
-    # A separate launch row cannot remove a descriptor needed by a playlist.
+    # Deleting a playlist also deletes a disc that is listed on its own.
     with sqlite3.connect(fixture.db_path) as db:
         db.execute("INSERT OR IGNORE INTO games(system,name,source_id,rom_relpath,rom_path) "
                    "VALUES('PS','Standalone disc','primary','PS/Disc.cue','Roms/PS/Disc.cue')")
     with Client(fixture.socket) as client:
-        blocked = client.preview("PS/Disc.cue")
-        rejected(blocked)
-        assert "Owner" in blocked.get("error", ""), blocked
+        preview = client.preview("PS/Owner.m3u")
+        digest = ready(preview)
+        assert files(preview) == {"PS/Owner.m3u", "PS/Disc.cue", "PS/Track.bin"}, preview
+        result = client.delete("PS/Owner.m3u", digest)
+        assert result.get("phase") == DONE and result.get("removed_count") == 3, result
+    assert not rows(fixture, "PS/Owner%") and not rows(fixture, "PS/Disc.cue")
 
     protected = {
         primary / "Roms/GBA/Delete.png": b"ROM-directory artwork",
@@ -404,16 +406,17 @@ def run(fixture):
 
     with Client(fixture.socket) as client:
         preview = client.preview("GBA/Delete.gba")
-        token = ready(preview)
+        digest = ready(preview)
         assert preview["bytes"] == (primary / "Roms/GBA/Delete.gba").stat().st_size, preview
-        assert preview["file_count"] == 1, preview
-        result = client.commit(token)
+        assert files(preview) == {"GBA/Delete.gba"}, preview
+        result = client.delete("GBA/Delete.gba", digest)
         assert result.get("phase") == DONE and result.get("removed_count") == 1, result
         assert not (primary / "Roms/GBA/Delete.gba").exists()
-        # An old token never authorizes deleting a replacement at the same path.
-        write(primary / "Roms/GBA/Delete.gba", b"replacement must survive")
-        rejected(client.commit(token))
-        assert (primary / "Roms/GBA/Delete.gba").read_bytes() == b"replacement must survive"
+    # The old digest names a file that is gone, so it can't match a replacement of another size.
+    write(primary / "Roms/GBA/Delete.gba", b"replacement must survive")
+    with Client(fixture.socket) as client:
+        rejected(client.delete("GBA/Delete.gba", digest))
+    assert (primary / "Roms/GBA/Delete.gba").read_bytes() == b"replacement must survive"
     for path, contents in protected.items():
         assert path.read_bytes() == contents, path
     with sqlite3.connect(fixture.db_path) as db:
@@ -430,14 +433,14 @@ def run(fixture):
         status = client.request("library-status")
         assert status["generation"] > initial_generation, status
 
-    # Lose the terminal result after commit acceptance. A reconnect cannot
-    # replay the old authorization, even if a new file takes the same path.
+    # Lose the result after removal starts: the job still finishes and publishes.
     lost_file = primary / "Roms/GBA/LostResponse.gba"
     before_lost = library_generation(fixture)
     with Client(fixture.socket) as client:
-        token = ready(client.preview("GBA/LostResponse.gba"))
-        accepted = client.request("rom-delete-commit", token=token)
-        assert accepted.get("phase") in (COMMITTING, DONE), accepted
+        digest = ready(client.preview("GBA/LostResponse.gba"))
+        accepted = client.request("rom-delete", source_id="primary", rom_relpath="GBA/LostResponse.gba",
+                                  digest=digest)
+        assert accepted.get("phase") == COMMITTING, accepted
     deadline = time.monotonic() + 10
     while lost_file.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -448,19 +451,21 @@ def run(fixture):
     assert library_generation(fixture) > before_lost, "disconnected deletion did not publish its generation"
     write(lost_file, b"replacement after lost response")
     with Client(fixture.socket) as client:
-        rejected(client.commit(token))
+        rejected(client.delete("GBA/LostResponse.gba", digest))
     assert lost_file.read_bytes() == b"replacement after lost response"
 
-    # A restart loses every in-memory review token as well.
+    # jawakad keeps nothing between preview and delete, so a restart in between
+    # changes nothing.
     with Client(fixture.socket) as client:
-        token = ready(client.preview("GBA/Cancel.gba"))
+        digest = ready(client.preview("GBA/Restart.gba"))
     fixture.stop()
     fixture.start()
     with Client(fixture.socket) as client:
-        rejected(client.commit(token))
-    assert (primary / "Roms/GBA/Cancel.gba").exists()
+        result = client.delete("GBA/Restart.gba", digest)
+        assert result.get("phase") == DONE and result.get("removed_count") == 1, result
 
     test_hash_filenames(fixture)
+    test_generated_playlist(fixture)
 
 
 def main():

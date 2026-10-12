@@ -3,6 +3,7 @@
 #include "cJSON.h"
 
 #include <assert.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,12 +11,10 @@
 #include <unistd.h>
 
 static const char *ready_json =
-    "{\"type\":\"rom-delete-status\",\"phase\":1,\"token\":\"reviewed-once\","
+    "{\"type\":\"rom-delete-status\",\"phase\":1,\"digest\":\"0123456789abcdef\","
     "\"name\":\"Synthetic Game\",\"source_id\":\"primary\",\"bytes\":10,"
-    "\"disc_count\":0,\"file_count\":1,\"keep_count\":0,\"shared_count\":0,"
-    "\"removed_count\":0,\"absent_count\":0,\"missing_descriptors\":false,"
-    "\"writable_progress\":false,\"files\":[{\"source_id\":\"primary\","
-    "\"rom_relpath\":\"GBA/Game.gba\",\"size\":10,\"keep\":0,"
+    "\"removed_count\":0,\"absent_count\":0,\"writable_progress\":false,"
+    "\"files\":[{\"source_id\":\"primary\",\"rom_relpath\":\"GBA/Game.gba\",\"size\":10,"
     "\"missing\":false,\"removed\":false}]}";
 
 static void reply(jw_ipc_client *peer, const cJSON *object) {
@@ -35,12 +34,22 @@ static cJSON *receive(jw_ipc_client *peer, const char *type) {
     return object;
 }
 
-static void receive_preview(jw_ipc_client *peer) {
-    cJSON *request = receive(peer, "rom-delete-preview");
+/* Only the selected identity, and for a delete the reviewed digest, crosses IPC. */
+static void receive_identity(jw_ipc_client *peer, const char *type, const char *digest) {
+    cJSON *request = receive(peer, type);
     assert(!strcmp(cJSON_GetObjectItemCaseSensitive(request, "source_id")->valuestring, "primary"));
     assert(!strcmp(cJSON_GetObjectItemCaseSensitive(request, "rom_relpath")->valuestring, "GBA/Game.gba"));
-    assert(cJSON_GetArraySize(request) == 3); /* only the selected identity crosses IPC */
+    if (digest)
+        assert(!strcmp(cJSON_GetObjectItemCaseSensitive(request, "digest")->valuestring, digest));
+    assert(cJSON_GetArraySize(request) == (digest ? 4 : 3));
     cJSON_Delete(request);
+}
+
+static void expect_closed(jw_ipc_client *peer) {
+    char *unexpected = NULL;
+    size_t length;
+    assert(jw_ipc_client_recv(peer, &unexpected, &length) != 0);
+    free(unexpected);
 }
 
 static void wait_child(pid_t child) {
@@ -49,7 +58,7 @@ static void wait_child(pid_t child) {
     assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
-static void check_reply(const char *socket, const cJSON *message, bool accepted) {
+static void check_preview(const char *socket, const cJSON *message, bool accepted) {
     jw_ipc_server *server = NULL;
     assert(jw_ipc_server_listen(socket, &server) == 0);
     pid_t child = fork();
@@ -57,31 +66,23 @@ static void check_reply(const char *socket, const cJSON *message, bool accepted)
     if (!child) {
         jw_ipc_client *peer = NULL;
         assert(jw_ipc_server_accept(server, &peer, 1000) == 0);
-        receive_preview(peer);
+        receive_identity(peer, "rom-delete-preview", NULL);
         reply(peer, message);
-        char *unexpected = NULL;
-        size_t length;
-        assert(jw_ipc_client_recv(peer, &unexpected, &length) != 0);
-        free(unexpected);
+        expect_closed(peer); /* the preview keeps no connection */
         jw_ipc_client_close(peer);
         _exit(0);
     }
-    jw_ipc_delete_session *session = NULL;
     jw_ipc_delete_status status = {0};
-    int rc = jw_ipc_delete_begin(socket, "primary", "GBA/Game.gba", &session, &status);
+    int rc = jw_ipc_delete_preview(socket, "primary", "GBA/Game.gba", &status);
     assert((rc == 0) == accepted);
-    if (!accepted) {
-        assert(status.phase == JW_IPC_DELETE_ERROR && status.error[0] && !status.token[0] && !status.files);
-        assert(jw_ipc_delete_poll(session, &status) == -1); /* no frame sent on failed session */
-        assert(jw_ipc_delete_commit(session, "reviewed-once", &status) == -1);
-    }
+    if (!accepted) assert(status.phase == JW_IPC_DELETE_ERROR && status.error[0] && !status.digest[0] && !status.files);
     jw_ipc_delete_status_free(&status);
-    jw_ipc_delete_close(session);
     wait_child(child);
     jw_ipc_server_close(server);
 }
 
-static void lifecycle(const char *socket, bool lose_commit_response) {
+/* outcome: 0 finishes, 1 loses the result after removal starts, 2 is refused. */
+static void lifecycle(const char *socket, int outcome) {
     jw_ipc_server *server = NULL;
     assert(jw_ipc_server_listen(socket, &server) == 0);
     pid_t child = fork();
@@ -89,48 +90,42 @@ static void lifecycle(const char *socket, bool lose_commit_response) {
     if (!child) {
         jw_ipc_client *peer = NULL;
         assert(jw_ipc_server_accept(server, &peer, 1000) == 0);
-        receive_preview(peer);
-        cJSON *message = cJSON_Parse("{\"type\":\"rom-delete-status\",\"phase\":0,\"source_id\":\"primary\"}");
+        receive_identity(peer, "rom-delete", "0123456789abcdef");
+        cJSON *message = cJSON_Parse(outcome == 2
+            ? "{\"type\":\"rom-delete-status\",\"phase\":4,\"source_id\":\"primary\","
+              "\"error\":\"Your game's files changed. Open Delete Game again.\"}"
+            : "{\"type\":\"rom-delete-status\",\"phase\":2,\"source_id\":\"primary\"}");
         reply(peer, message);
         cJSON_Delete(message);
-        cJSON_Delete(receive(peer, "rom-delete-status"));
-        message = cJSON_Parse(ready_json);
-        reply(peer, message);
-        cJSON *request = receive(peer, "rom-delete-commit");
-        assert(cJSON_GetArraySize(request) == 2);
-        assert(!strcmp(cJSON_GetObjectItemCaseSensitive(request, "token")->valuestring, "reviewed-once"));
-        cJSON_Delete(request);
-        if (!lose_commit_response) {
-            cJSON *busy = cJSON_Parse("{\"type\":\"rom-delete-status\",\"phase\":2,\"source_id\":\"primary\"}");
-            reply(peer, busy);
-            cJSON_Delete(busy);
+        if (outcome == 0) {
             cJSON_Delete(receive(peer, "rom-delete-status"));
+            message = cJSON_Parse(ready_json);
             cJSON_ReplaceItemInObjectCaseSensitive(message, "phase", cJSON_CreateNumber(3));
-            cJSON_ReplaceItemInObjectCaseSensitive(message, "token", cJSON_CreateString(""));
+            cJSON_DeleteItemFromObjectCaseSensitive(message, "digest");
             cJSON_ReplaceItemInObjectCaseSensitive(message, "removed_count", cJSON_CreateNumber(1));
             cJSON *file = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(message, "files"), 0);
             cJSON_ReplaceItemInObjectCaseSensitive(file, "removed", cJSON_CreateBool(true));
             reply(peer, message);
+            cJSON_Delete(message);
         }
-        cJSON_Delete(message);
         jw_ipc_client_close(peer);
         _exit(0);
     }
     jw_ipc_delete_session *session = NULL;
     jw_ipc_delete_status status = {0};
-    assert(jw_ipc_delete_begin(socket, "primary", "GBA/Game.gba", &session, &status) == 0);
-    assert(status.phase == JW_IPC_DELETE_PREPARING && !status.files);
-    assert(jw_ipc_delete_poll(session, &status) == 0 && status.phase == JW_IPC_DELETE_READY);
-    assert(status.files_count == 1 && status.bytes == 10);
-    int rc = jw_ipc_delete_commit(session, status.token, &status);
-    assert((rc == -1) == lose_commit_response);
-    if (lose_commit_response) {
-        assert(status.phase == JW_IPC_DELETE_ERROR && !status.token[0]);
-        assert(jw_ipc_delete_commit(session, "reviewed-once", &status) == -1);
+    assert(jw_ipc_delete_begin(socket, "primary", "GBA/Game.gba", "0123456789abcdef", &session, &status) == 0);
+    if (outcome == 2) {
+        assert(status.phase == JW_IPC_DELETE_ERROR && strstr(status.error, "changed"));
     } else {
-        assert(status.phase == JW_IPC_DELETE_COMMITTING);
-        assert(jw_ipc_delete_poll(session, &status) == 0);
-        assert(status.phase == JW_IPC_DELETE_DONE && status.removed_count == 1 && status.files[0].removed);
+        assert(status.phase == JW_IPC_DELETE_COMMITTING && !status.files);
+        int rc = jw_ipc_delete_poll(session, &status);
+        if (outcome == 1) {
+            assert(rc == -1 && status.phase == JW_IPC_DELETE_ERROR && strstr(status.error, "Couldn't confirm"));
+            assert(jw_ipc_delete_poll(session, &status) == -1); /* a failed session sends nothing more */
+        } else {
+            assert(rc == 0 && status.phase == JW_IPC_DELETE_DONE);
+            assert(status.removed_count == 1 && status.files_count == 1 && status.files[0].removed);
+        }
     }
     jw_ipc_delete_status_free(&status);
     jw_ipc_delete_close(session);
@@ -139,20 +134,22 @@ static void lifecycle(const char *socket, bool lose_commit_response) {
 }
 
 int main(void) {
+    /* The launcher inherits jawakad's ignored SIGPIPE; a poll after the
+       daemon closed must fail with EPIPE, not kill the process. */
+    signal(SIGPIPE, SIG_IGN);
     char root[] = "/tmp/jw-delete-client-XXXXXX";
     assert(mkdtemp(root));
     char socket[128];
     snprintf(socket, sizeof(socket), "%s/ipc", root);
     cJSON *message = cJSON_Parse(ready_json);
     assert(message);
-    check_reply(socket, message, true);
+    check_preview(socket, message, true);
     cJSON_Delete(message);
     const struct { const char *field; const char *value; bool file; } invalid[] = {
         {"bytes", "-1", false}, {"bytes", "1.5", false},
-        {"bytes", "9007199254740992", false}, {"file_count", "\"1\"", false},
-        {"file_count", "0", false}, {"token", "\"\"", false},
-        {"missing_descriptors", "\"false\"", false}, {"files", "[false]", false},
-        {"keep", "2147483648", true}, {"keep", "-1", true}, {"keep", "0.5", true},
+        {"bytes", "9007199254740992", false}, {"digest", "\"\"", false},
+        {"removed_count", "1", false}, {"writable_progress", "\"false\"", false},
+        {"files", "[false]", false}, {"files", "[]", false}, {"phase", "2", false},
         {"rom_relpath", "\"\"", true}, {"missing", "0", true}, {"removed", "true", true},
     };
     for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
@@ -160,19 +157,20 @@ int main(void) {
         cJSON *object = invalid[i].file
             ? cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(message, "files"), 0) : message;
         cJSON_ReplaceItemInObjectCaseSensitive(object, invalid[i].field, cJSON_Parse(invalid[i].value));
-        check_reply(socket, message, false);
+        check_preview(socket, message, false);
         cJSON_Delete(message);
     }
     message = cJSON_Parse(ready_json);
-    cJSON_DeleteItemFromObjectCaseSensitive(message, "file_count");
-    check_reply(socket, message, false);
+    cJSON_DeleteItemFromObjectCaseSensitive(message, "files");
+    check_preview(socket, message, false);
     cJSON_Delete(message);
     message = cJSON_Parse("{\"type\":\"rom-delete-status\",\"phase\":4,\"error\":\"Card is read-only.\",\"readonly_source\":\"secondary_sd\"}");
-    check_reply(socket, message, true);
+    check_preview(socket, message, true);
     cJSON_Delete(message);
-    lifecycle(socket, false);
-    lifecycle(socket, true);
+    lifecycle(socket, 0);
+    lifecycle(socket, 1);
+    lifecycle(socket, 2);
     rmdir(root);
-    puts("delete-client-test: retained session, identity-only requests, lost-response invalidation and malformed preview rejection passed");
+    puts("delete-client-test: one-shot preview, digest-carrying delete, lost-result and malformed reply handling passed");
     return 0;
 }
