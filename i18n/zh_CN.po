@@ -3638,3 +3638,134 @@ msgstr "无法继续游戏。请打开游戏并尝试读取存档。"
 
 msgid "Resuming your game"
 msgstr "正在继续游戏"
+
+# Hidden games, Delete Game, Force Off Hold and Battery Level lighting,
+# translated by AlexL (2026-10-12).
+
+#: internal/settings/settings.c
+msgid "%s: Not in your library"
+msgstr "%s：不在你的游戏库中"
+
+#: internal/settings/settings.c
+msgid "10 sec"
+msgstr "10 秒"
+
+#: internal/settings/settings.c
+msgid "12 sec"
+msgstr "12 秒"
+
+#: internal/settings/settings.c
+msgid "6 sec"
+msgstr "6 秒"
+
+#: internal/settings/settings.c
+msgid "8 sec"
+msgstr "8 秒"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Affected Files"
+msgstr "受影响的文件"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Already missing"
+msgstr "已缺失"
+
+#: internal/settings/settings.c
+msgid "Battery Level"
+msgstr "电池电量"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Could not hide this game"
+msgstr "无法隐藏此游戏"
+
+#: internal/settings/settings.c
+msgid "Couldn't load hidden games."
+msgstr "无法加载隐藏的游戏。"
+
+#: internal/settings/settings.c
+msgid "Couldn't unhide your selection."
+msgstr "无法取消隐藏所选项目。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Delete Game"
+msgstr "删除游戏"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleting your game. Keep your cards inserted."
+msgstr "正在删除游戏。请保持存储卡插入。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deletion finished. Library refresh failed."
+msgstr "删除完成，但游戏库刷新失败。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Files"
+msgstr "文件"
+
+#: internal/settings/settings.c
+msgid "Fixed"
+msgstr "固定"
+
+#: internal/settings/settings.c
+msgid "Force Off Hold"
+msgstr "强制关机长按时长"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Game hidden. Library refresh failed."
+msgstr "游戏已隐藏，但游戏库刷新失败。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Game hidden. Unhide it in Settings > Games > Hidden Games."
+msgstr "游戏已隐藏。可在“设置 > 游戏 > 隐藏的游戏”中取消隐藏。"
+
+#: internal/settings/settings.c
+msgid "Game unhidden"
+msgstr "游戏已取消隐藏"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Game unhidden. Library refresh failed."
+msgstr "游戏已取消隐藏，但游戏库刷新失败。"
+
+#: internal/settings/settings.c
+msgid "Hidden Games"
+msgstr "隐藏的游戏"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Hide Game"
+msgstr "隐藏游戏"
+
+#: internal/settings/settings.c
+msgid "Hold the power button %d seconds to force off"
+msgstr "长按电源键 %d 秒强制关机"
+
+#: internal/settings/settings.c
+msgid "No hidden games."
+msgstr "没有隐藏的游戏。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Progress stored inside a writable game image is erased with that image."
+msgstr "保存在可写游戏镜像内的进度会随该镜像一同删除。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Removed"
+msgstr "已删除"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Summary"
+msgstr "摘要"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Unhide"
+msgstr "取消隐藏"
+
+#: internal/settings/storage_ui.c
+msgid "Your library is read-only. You can't save changes. Open Settings > System > SD Cards to check your card."
+msgstr "游戏库为只读状态，无法保存更改。请打开“设置 > 系统 > SD 卡”检查存储卡。"
+
+#: internal/settings/settings.c
+msgid "Your library is read-only. Your selection is still hidden."
+msgstr "游戏库为只读状态。所选项目仍保持隐藏。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Your save files, states and artwork are kept."
+msgstr "你的存档、即时存档和封面均会保留。"
