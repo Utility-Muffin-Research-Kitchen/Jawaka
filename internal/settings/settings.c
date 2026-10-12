@@ -2,7 +2,6 @@
 #include "internal/settings/storage_ui.h"
 
 #include "internal/db/db.h"
-#include "internal/discovery/content.h"
 #include "internal/discovery/delete.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/system_names.h"
@@ -1545,12 +1544,10 @@ static void jw__clear_hidden_games(jw_settings_ui *ui) {
     ui->hidden_games = NULL;
     ui->hidden_games_count = 0;
     ui->hidden_games_loaded = false;
-    ui->hidden_games_names_incomplete = false;
     ui->delete_game_requested = false;
 }
 
 static const char *jw__hidden_game_title(const jw_settings_hidden_game *row) {
-    if (row->parent_name[0]) return row->parent_name;
     return row->rom.game.id > 0 && !row->rom.member[0] && row->rom.game.name[0]
         ? row->rom.game.name : row->rom.game.rom_relpath;
 }
@@ -1559,62 +1556,9 @@ static int jw__compare_hidden_games(const void *a, const void *b) {
     const jw_settings_hidden_game *left = a, *right = b;
     int order = strcasecmp(jw__hidden_game_title(left), jw__hidden_game_title(right));
     if (!order) order = strcmp(left->rom.game.source_id, right->rom.game.source_id);
-    /* A hidden parent precedes its independently hidden discs. */
-    if (!order) order = (left->parent_name[0] != 0) - (right->parent_name[0] != 0);
     if (!order) order = strcmp(left->rom.game.rom_relpath, right->rom.game.rom_relpath);
     if (!order) order = strcmp(left->rom.member, right->rom.member);
     return order;
-}
-
-static void jw__load_hidden_disc_names(jw_settings_ui *ui) {
-    int count = 0;
-    if (jw_db_count_playlists(ui->db_path, &count) != 0) {
-        ui->hidden_games_names_incomplete = true;
-        return;
-    }
-    if (!count) return;
-    jw_game_entry *playlists = calloc((size_t)count, sizeof(*playlists));
-    jw_storage_source_list sources;
-    char *root = jw_sdcard_root();
-    bool ready = playlists && jw_db_list_playlists(ui->db_path, playlists, count, &count) == 0
-        && root && jw_storage_sources_resolve(root, &sources) == 0;
-    char catalog_error[256];
-    const jw_ra_catalog *catalog = ready
-        ? jw_ra_catalog_get(root, catalog_error, sizeof(catalog_error)) : NULL;
-    free(root);
-    if (!ready) {
-        ui->hidden_games_names_incomplete = true;
-        free(playlists);
-        return;
-    }
-    /* Inspect each indexed playlist once, including parents that are hidden. */
-    for (int i = 0; i < count; ++i) {
-        jw_content content = {0};
-        char error[256];
-        const jw_ra_system *system = catalog
-            ? jw_ra_catalog_find_system(catalog, playlists[i].system) : NULL;
-        if (jw_content_inspect(&sources, playlists[i].source_id, playlists[i].rom_relpath,
-                               system, &content, error, sizeof(error)) != 0) {
-            ui->hidden_games_names_incomplete = true;
-            continue;
-        }
-        if (content.launch_file >= content.file_count || content.files[content.launch_file].missing)
-            ui->hidden_games_names_incomplete = true;
-        for (size_t d = 0; d < content.disc_count; ++d) {
-            const jw_content_disc *disc = &content.discs[d];
-            for (int r = 0; r < ui->hidden_games_count; ++r) {
-                jw_settings_hidden_game *row = &ui->hidden_games[r];
-                if (row->parent_name[0] || strcmp(row->rom.game.source_id, disc->source_id) ||
-                    strcmp(row->rom.game.rom_relpath, disc->rom_relpath) ||
-                    strcmp(row->rom.member, disc->member)) continue;
-                snprintf(row->parent_name, sizeof(row->parent_name), "%s",
-                         playlists[i].name[0] ? playlists[i].name : playlists[i].rom_relpath);
-                snprintf(row->disc_label, sizeof(row->disc_label), "%s", disc->label);
-            }
-        }
-        jw_content_free(&content);
-    }
-    free(playlists);
 }
 
 static bool jw__load_hidden_games(jw_settings_ui *ui) {
@@ -1633,7 +1577,6 @@ static bool jw__load_hidden_games(jw_settings_ui *ui) {
         }
         for (int i = 0; i < ui->hidden_games_count; ++i) ui->hidden_games[i].rom = roms[i];
         free(roms);
-        jw__load_hidden_disc_names(ui);
         char *root = jw_sdcard_root();
         char catalog_error[256];
         const jw_ra_catalog *catalog = root
@@ -4732,14 +4675,8 @@ static void jw__draw_hidden_game(int i, int x, int y, int w, int h,
         ? T("second SD card") : game->source_id;
     char context[1536], title[1025];
     snprintf(title, sizeof(title), "%s%s%s", jw__hidden_game_title(row),
-             !row->parent_name[0] && row->rom.member[0] ? "#" : "",
-             !row->parent_name[0] ? row->rom.member : "");
-    if (row->parent_name[0])
-        snprintf(context, sizeof(context), "%s: %s%s%s%s", source,
-                 row->disc_label[0] ? row->disc_label : game->rom_relpath,
-                 row->rom.member[0] ? " (" : "", row->rom.member,
-                 row->rom.member[0] ? ")" : "");
-    else if (game->id > 0 && !row->rom.member[0])
+             row->rom.member[0] ? "#" : "", row->rom.member);
+    if (game->id > 0 && !row->rom.member[0])
         snprintf(context, sizeof(context), "%s: %s", source, game->rom_relpath);
     else if (row->rom.member[0])
         snprintf(context, sizeof(context), "%s", source);
@@ -4757,15 +4694,6 @@ static void jw__render_hidden_games(const jw_settings_ui *ui,
     jw__draw_header(JW_UI("Hidden Games"), x, y, w);
     SDL_Rect content = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    if (ui->hidden_games_names_incomplete && ui->hidden_games_count) {
-        TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
-        int warning_h = TTF_FontHeight(small) + cat_scale(12);
-        cat_draw_text_ellipsized(small, T("Some disc names couldn't be loaded."),
-            content.x + cat_scale(12), content.y, cat_get_theme()->hint,
-            content.w - cat_scale(24));
-        content.y += warning_h;
-        content.h -= warning_h;
-    }
     if (!ui->hidden_games_count) {
         const char *message = ui->hidden_games_loaded
             ? T("No hidden games.") : T("Couldn't load hidden games.");
@@ -8524,7 +8452,6 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 if (row < 0 || row >= ui->hidden_games_count) break;
                 const jw_settings_hidden_game *entry = &ui->hidden_games[row];
                 const jw_game_entry *game = &entry->rom.game;
-                bool disc = entry->parent_name[0] || entry->rom.member[0];
                 int rc = jw_db_set_rom_hidden(ui->db_path, game->source_id,
                                                game->rom_relpath, entry->rom.member, 0);
                 if (rc != 0) {
@@ -8538,8 +8465,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 }
                 ui->visibility_changed = true;
                 if (status_buf && status_size > 0)
-                    snprintf(status_buf, status_size, "%s", disc
-                        ? T("Disc unhidden") : T("Game unhidden"));
+                    snprintf(status_buf, status_size, "%s", T("Game unhidden"));
                 --ui->hidden_games_count;
                 memmove(&ui->hidden_games[row], &ui->hidden_games[row + 1],
                     (size_t)(ui->hidden_games_count - row) * sizeof(*ui->hidden_games));

@@ -280,8 +280,6 @@ typedef struct {
 
 typedef struct {
     jw_hidden_rom_entry rom;
-    char parent_name[512];
-    char disc_label[256];
     bool delete_eligible;
 } jw_settings_hidden_game;
 
@@ -303,7 +301,6 @@ typedef struct {
     jw_settings_hidden_game *hidden_games;
     int                hidden_games_count;
     bool               hidden_games_loaded;
-    bool               hidden_games_names_incomplete;
     bool               visibility_changed; /* host refreshes browse caches, then clears */
     bool               allow_delete_game; /* launcher hosts the shared Delete Game flow */
     bool               delete_game_requested;

@@ -35,19 +35,11 @@ static cJSON *receive(jw_ipc_client *peer, const char *type) {
     return object;
 }
 
-static void receive_preview(jw_ipc_client *peer, bool disc) {
+static void receive_preview(jw_ipc_client *peer) {
     cJSON *request = receive(peer, "rom-delete-preview");
     assert(!strcmp(cJSON_GetObjectItemCaseSensitive(request, "source_id")->valuestring, "primary"));
-    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(request, "rom_relpath")->valuestring,
-                   disc ? "PS/Adventure.m3u" : "GBA/Game.gba"));
-    assert(cJSON_GetArraySize(request) == (disc ? 4 : 3));
-    if (disc) {
-        const cJSON *selection = cJSON_GetObjectItemCaseSensitive(request, "disc");
-        assert(cJSON_IsObject(selection) && cJSON_GetArraySize(selection) == 3);
-        assert(!strcmp(cJSON_GetObjectItemCaseSensitive(selection, "source_id")->valuestring, "secondary_sd"));
-        assert(!strcmp(cJSON_GetObjectItemCaseSensitive(selection, "rom_relpath")->valuestring, "PS/Archive.zip"));
-        assert(!strcmp(cJSON_GetObjectItemCaseSensitive(selection, "member")->valuestring, "Disc One"));
-    }
+    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(request, "rom_relpath")->valuestring, "GBA/Game.gba"));
+    assert(cJSON_GetArraySize(request) == 3); /* only the selected identity crosses IPC */
     cJSON_Delete(request);
 }
 
@@ -57,14 +49,7 @@ static void wait_child(pid_t child) {
     assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
-static int begin(const char *socket, bool disc, jw_ipc_delete_session **session,
-                  jw_ipc_delete_status *status) {
-    return disc ? jw_ipc_delete_disc_begin(socket, "primary", "PS/Adventure.m3u",
-        "secondary_sd", "PS/Archive.zip", "Disc One", session, status)
-        : jw_ipc_delete_begin(socket, "primary", "GBA/Game.gba", session, status);
-}
-
-static void check_reply_scope(const char *socket, const cJSON *message, bool accepted, bool disc) {
+static void check_reply(const char *socket, const cJSON *message, bool accepted) {
     jw_ipc_server *server = NULL;
     assert(jw_ipc_server_listen(socket, &server) == 0);
     pid_t child = fork();
@@ -72,7 +57,7 @@ static void check_reply_scope(const char *socket, const cJSON *message, bool acc
     if (!child) {
         jw_ipc_client *peer = NULL;
         assert(jw_ipc_server_accept(server, &peer, 1000) == 0);
-        receive_preview(peer, disc);
+        receive_preview(peer);
         reply(peer, message);
         char *unexpected = NULL;
         size_t length;
@@ -83,7 +68,7 @@ static void check_reply_scope(const char *socket, const cJSON *message, bool acc
     }
     jw_ipc_delete_session *session = NULL;
     jw_ipc_delete_status status = {0};
-    int rc = begin(socket, disc, &session, &status);
+    int rc = jw_ipc_delete_begin(socket, "primary", "GBA/Game.gba", &session, &status);
     assert((rc == 0) == accepted);
     if (!accepted) {
         assert(status.phase == JW_IPC_DELETE_ERROR && status.error[0] && !status.token[0] && !status.files);
@@ -96,19 +81,7 @@ static void check_reply_scope(const char *socket, const cJSON *message, bool acc
     jw_ipc_server_close(server);
 }
 
-static void check_reply(const char *socket, const cJSON *message, bool accepted) {
-    check_reply_scope(socket, message, accepted, false);
-}
-
-static void disc_scope(cJSON *message, bool final) {
-    cJSON_AddBoolToObject(message, "playlist_edit", !final);
-    cJSON_AddBoolToObject(message, "final_disc", final);
-    cJSON_AddBoolToObject(message, "playlist_replaced", false);
-    cJSON_AddStringToObject(message, "disc_name", "Opening");
-    cJSON_AddNumberToObject(message, "remaining_discs", final ? 0 : 1);
-}
-
-static void lifecycle(const char *socket, bool lose_commit_response, int scope) {
+static void lifecycle(const char *socket, bool lose_commit_response) {
     jw_ipc_server *server = NULL;
     assert(jw_ipc_server_listen(socket, &server) == 0);
     pid_t child = fork();
@@ -116,13 +89,12 @@ static void lifecycle(const char *socket, bool lose_commit_response, int scope) 
     if (!child) {
         jw_ipc_client *peer = NULL;
         assert(jw_ipc_server_accept(server, &peer, 1000) == 0);
-        receive_preview(peer, scope != 0);
+        receive_preview(peer);
         cJSON *message = cJSON_Parse("{\"type\":\"rom-delete-status\",\"phase\":0,\"source_id\":\"primary\"}");
         reply(peer, message);
         cJSON_Delete(message);
         cJSON_Delete(receive(peer, "rom-delete-status"));
         message = cJSON_Parse(ready_json);
-        if (scope) disc_scope(message, scope == 2);
         reply(peer, message);
         cJSON *request = receive(peer, "rom-delete-commit");
         assert(cJSON_GetArraySize(request) == 2);
@@ -136,8 +108,6 @@ static void lifecycle(const char *socket, bool lose_commit_response, int scope) 
             cJSON_ReplaceItemInObjectCaseSensitive(message, "phase", cJSON_CreateNumber(3));
             cJSON_ReplaceItemInObjectCaseSensitive(message, "token", cJSON_CreateString(""));
             cJSON_ReplaceItemInObjectCaseSensitive(message, "removed_count", cJSON_CreateNumber(1));
-            if (scope == 1)
-                cJSON_ReplaceItemInObjectCaseSensitive(message, "playlist_replaced", cJSON_CreateBool(true));
             cJSON *file = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(message, "files"), 0);
             cJSON_ReplaceItemInObjectCaseSensitive(file, "removed", cJSON_CreateBool(true));
             reply(peer, message);
@@ -148,7 +118,7 @@ static void lifecycle(const char *socket, bool lose_commit_response, int scope) 
     }
     jw_ipc_delete_session *session = NULL;
     jw_ipc_delete_status status = {0};
-    assert(begin(socket, scope != 0, &session, &status) == 0);
+    assert(jw_ipc_delete_begin(socket, "primary", "GBA/Game.gba", &session, &status) == 0);
     assert(status.phase == JW_IPC_DELETE_PREPARING && !status.files);
     assert(jw_ipc_delete_poll(session, &status) == 0 && status.phase == JW_IPC_DELETE_READY);
     assert(status.files_count == 1 && status.bytes == 10);
@@ -159,10 +129,8 @@ static void lifecycle(const char *socket, bool lose_commit_response, int scope) 
         assert(jw_ipc_delete_commit(session, "reviewed-once", &status) == -1);
     } else {
         assert(status.phase == JW_IPC_DELETE_COMMITTING);
-        assert(status.playlist_edit == (scope == 1) && status.final_disc == (scope == 2));
         assert(jw_ipc_delete_poll(session, &status) == 0);
         assert(status.phase == JW_IPC_DELETE_DONE && status.removed_count == 1 && status.files[0].removed);
-        assert(status.playlist_replaced == (scope == 1));
     }
     jw_ipc_delete_status_free(&status);
     jw_ipc_delete_close(session);
@@ -202,34 +170,8 @@ int main(void) {
     message = cJSON_Parse("{\"type\":\"rom-delete-status\",\"phase\":4,\"error\":\"Card is read-only.\",\"readonly_source\":\"secondary_sd\"}");
     check_reply(socket, message, true);
     cJSON_Delete(message);
-    message = cJSON_Parse(ready_json);
-    check_reply_scope(socket, message, false, true); /* old whole-game reply cannot authorize disc request */
-    disc_scope(message, false);
-    check_reply_scope(socket, message, true, true);
-    check_reply(socket, message, false); /* game request cannot quietly change scope */
-    cJSON_Delete(message);
-    const struct { const char *field; const char *value; } bad_scope[] = {
-        {"final_disc", "true"}, {"remaining_discs", "0"}, {"remaining_discs", "1.5"},
-        {"disc_name", "\"\""}, {"playlist_replaced", "true"}, {"playlist_edit", "\"true\""}
-    };
-    for (size_t i = 0; i < sizeof(bad_scope) / sizeof(bad_scope[0]); ++i) {
-        message = cJSON_Parse(ready_json);
-        disc_scope(message, false);
-        cJSON_ReplaceItemInObjectCaseSensitive(message, bad_scope[i].field, cJSON_Parse(bad_scope[i].value));
-        check_reply_scope(socket, message, false, true);
-        cJSON_Delete(message);
-    }
-    message = cJSON_Parse(ready_json);
-    disc_scope(message, true);
-    check_reply_scope(socket, message, true, true);
-    cJSON_ReplaceItemInObjectCaseSensitive(message, "remaining_discs", cJSON_CreateNumber(1));
-    check_reply_scope(socket, message, false, true);
-    cJSON_Delete(message);
-    lifecycle(socket, false, 0);
-    lifecycle(socket, true, 0);
-    lifecycle(socket, false, 1);
-    lifecycle(socket, true, 1);
-    lifecycle(socket, false, 2);
+    lifecycle(socket, false);
+    lifecycle(socket, true);
     rmdir(root);
     puts("delete-client-test: retained session, identity-only requests, lost-response invalidation and malformed preview rejection passed");
     return 0;
