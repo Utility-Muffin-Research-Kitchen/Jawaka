@@ -3084,45 +3084,6 @@ int jw_db_list_hidden_roms(const char *db_path, jw_hidden_rom_entry *out,
     return jw__list_hidden_roms(db_path, NULL, out, max_count, out_count);
 }
 
-#define JW_PLAYLIST_GAME \
-    "(g.rom_relpath LIKE '%.m3u' OR g.rom_relpath LIKE '%.m3u8') "
-
-int jw_db_count_playlists(const char *db_path, int *out_count) {
-    return jw__count_visibility_rows(db_path,
-        "SELECT COUNT(*) FROM games g WHERE " JW_PLAYLIST_GAME ";", out_count);
-}
-
-int jw_db_list_playlists(const char *db_path, jw_game_entry *out,
-                          int max_count, int *out_count) {
-    if (!db_path || !out || max_count <= 0 || !out_count) return -1;
-    *out_count = 0;
-    memset(out, 0, sizeof(out[0]) * (size_t)max_count);
-    sqlite3 *db = NULL;
-    sqlite3_stmt *stmt = NULL;
-    int rc = -1;
-    const char *sql =
-        "SELECT g.id,g.system,COALESCE(NULLIF(gs.value,''),NULLIF(ig.value,''),g.name),"
-        "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
-        "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''),"
-        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind='game' AND f.target_id=g.id),"
-        "COALESCE(g.last_played,0),g.playtime_s FROM games g "
-        "LEFT JOIN game_settings gs ON gs.game_id=g.id AND gs.key='display_name' "
-        "LEFT JOIN game_settings ig ON ig.game_id=g.id AND ig.key='imported_display_name' "
-        "WHERE " JW_PLAYLIST_GAME "ORDER BY 3 COLLATE NOCASE,g.source_id,g.rom_relpath LIMIT ?;";
-    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
-        sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) goto done;
-    sqlite3_bind_int(stmt, 1, max_count);
-    int step_rc;
-    while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW && *out_count < max_count) {
-        jw__fill_game_entry(stmt, &out[(*out_count)++]);
-    }
-    rc = step_rc == SQLITE_DONE ? 0 : -1;
-done:
-    sqlite3_finalize(stmt);
-    jw_db_close(db);
-    return rc;
-}
-
 int jw_db_list_indexed_games(const char *db_path, jw_game_entry **out,
                                 size_t *out_count) {
     if (!out || !out_count) return -1;

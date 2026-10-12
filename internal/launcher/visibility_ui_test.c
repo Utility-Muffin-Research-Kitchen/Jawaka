@@ -18,56 +18,25 @@ static void save_screenshot(const char *variable) {
     SDL_FreeSurface(pixels);
 }
 
-static void check_discs(jw_launcher_state *state, const char *root) {
-    char path[512];
-    snprintf(path, sizeof(path), "%s/Roms", root);
-    assert(mkdir(path, 0755) == 0);
-    snprintf(path, sizeof(path), "%s/Roms/PS", root);
-    assert(mkdir(path, 0755) == 0);
-    struct { const char *name, *text; } files[] = {
-        { "Adventure.m3u", "disc1.chd|Disc One\r\ndisc2.chd|Disc Two\r\n"
-          "disc1.chd|Encore\r\n#SAVEDISK:Save Disk\r\n" },
-        { "Single.m3u", "disc2.chd|Only Disc\n" },
-        { "disc1.chd", "synthetic disc one" },
-        { "disc2.chd", "synthetic disc two" },
-    };
-    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i) {
-        snprintf(path, sizeof(path), "%s/Roms/PS/%s", root, files[i].name);
-        FILE *fp = fopen(path, "wb");
-        assert(fp && fputs(files[i].text, fp) >= 0);
-        assert(fclose(fp) == 0);
-    }
-    sqlite3 *db = NULL;
-    assert(jw_db_open(state->db_path, &db) == 0);
-    assert(jw_db_scan_begin(db) == 0);
-    for (int i = 0; i < 3; ++i) {
-        snprintf(path, sizeof(path), "%s/Roms/PS/%s", root, files[i].name);
-        char relative[64];
-        snprintf(relative, sizeof(relative), "PS/%s", files[i].name);
-        assert(jw_db_insert_game_stable(db, "PS", files[i].name, "primary", relative,
-                                       path, "", "", "") == 0);
-    }
-    jw_db_close(db);
-    jw_game_entry parent, single, child, lookup;
-    assert(jw_db_get_game_by_source_relpath(state->db_path, "primary", "PS/Adventure.m3u", &parent) == 0);
-    assert(jw_db_get_game_by_source_relpath(state->db_path, "primary", "PS/Single.m3u", &single) == 0);
-    assert(jw_db_get_game_by_source_relpath(state->db_path, "primary", "PS/disc1.chd", &child) == 0);
-    assert(jw_db_set_favorite(state->db_path, "game", child.id, 1) == 0);
-    assert(jw_db_record_play_by_id(state->db_path, child.id, 30) == 0);
+/* The longest Options menu scrolls at a larger accessibility font size. */
+static void check_long_actions_menu(jw_launcher_state *state, const jw_game_entry *game) {
     state->menu_open = false;
     jw_settings_ui_close(&state->settings);
-    assert(jw__reload_library_from_db(state->db_path, state) == 0);
-    assert(jw__open_system_games(state->db_path, "PS", state) == 0 && state->game_count == 3);
-    jw__open_game_actions(state->db_path, state, &parent);
-    assert(state->action_content.disc_count == 3 && state->disc_visible_count == 3);
-    assert(state->action_rows[state->action_row_count - 2] == JW_ACTION_ROW_HIDE);
-    assert(state->action_rows[state->action_row_count - 1] == JW_ACTION_ROW_DISCS);
-
-    /* Exercise the longest Options menu at a larger accessibility font size. */
+    jw_ra_catalog_free(state->system_catalog);
+    state->system_catalog = calloc(1, sizeof(*state->system_catalog));
+    assert(state->system_catalog);
+    state->system_catalog->systems = calloc(1, sizeof(*state->system_catalog->systems));
+    assert(state->system_catalog->systems);
+    state->system_catalog->system_count = 1;
+    state->system_catalog->systems[0].id = strdup("GBA");
+    state->actions_open = true;
+    state->action_scope = JW_ACTION_GAME;
+    state->action_game = *game;
     state->action_core_count = 2;
     state->action_bios_supported = true;
     jw__action_refresh_rows(state);
     assert(state->action_row_count == 8);
+    assert(state->action_rows[6] == JW_ACTION_ROW_HIDE && state->action_rows[7] == JW_ACTION_ROW_DELETE);
     cat_list_state_jump(&state->action_list, state->action_row_count - 1, state->action_row_count);
     assert(cat_set_font_bump(5) == CAT_OK);
     jw__render_actions(state);
@@ -75,84 +44,10 @@ static void check_discs(jw_launcher_state *state, const char *root) {
     assert(state->action_list.cursor >= state->action_list.scroll_offset);
     assert(state->action_list.cursor < state->action_list.scroll_offset + state->action_list.visible_rows);
     assert(!SDL_RenderIsClipEnabled(cat_get_renderer()));
-    save_screenshot("JW_DISCS_ACTIONS_SCREENSHOT");
+    save_screenshot("JW_ACTIONS_SCREENSHOT");
     assert(cat_set_font_bump(0) == CAT_OK);
-    bool running = true;
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_A, &running);
-    assert(state->discs_open && state->disc_visible_count == 3);
-
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_A, &running);
-    assert(running && state->discs_open && state->action_content.disc_count == 3);
-    assert(state->disc_visible_count == 1 && state->disc_indices[0] == 1);
-    assert(state->disc_hidden[0] && state->disc_hidden[2]);
-    assert(state->game_count == 2 && state->favorites_count == 0 && state->recents_count == 0);
-    assert(jw_db_get_game_by_id(state->db_path, child.id, &lookup) == 0);
-    assert(lookup.favorite && lookup.playtime_s == 30);
-    assert(state->library_generation == 23);
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_Y, &running);
-    assert(state->discs_show_hidden && state->disc_visible_count == 3);
-    for (int i = 0; i < 3; ++i) assert(state->disc_indices[i] == i);
-    jw__render_actions(state);
-    save_screenshot("JW_DISCS_SCREENSHOT");
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_A, &running);
-    assert(!state->disc_hidden[0] && !state->disc_hidden[2] && state->game_count == 3);
-    assert(state->favorites_count == 1 && state->recents_count == 1);
-
-    /* Every disc can be hidden without hiding or rewriting either playlist. */
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_A, &running);
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_Y, &running);
-    assert(!state->discs_show_hidden && state->disc_visible_count == 1);
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_A, &running);
-    assert(state->disc_visible_count == 0 && state->game_count == 2);
-    int hidden = 1;
-    assert(jw_db_is_game_hidden(state->db_path, parent.id, &hidden) == 0 && !hidden);
-    assert(jw_db_get_game_by_id(state->db_path, parent.id, &lookup) == 0);
-    assert(access(lookup.rom_path, R_OK) == 0);
-    jw__render_actions(state);
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_Y, &running);
-    assert(state->disc_visible_count == 3);
-    for (int i = 0; i < 3; ++i) assert(state->disc_indices[i] == i && state->disc_hidden[i]);
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_B, &running);
-    assert(!state->discs_open && state->actions_open);
-
-    jw__open_game_actions(state->db_path, state, &single);
-    assert(state->action_content.disc_count == 1 && state->disc_visible_count == 0);
-    assert(state->action_rows[state->action_row_count - 1] == JW_ACTION_ROW_DISCS);
-    cat_list_state_jump(&state->action_list, state->action_row_count - 1, state->action_row_count);
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_A, &running);
-    assert(state->discs_open);
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_Y, &running);
-    assert(state->disc_visible_count == 1 && state->disc_hidden[0]);
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_A, &running);
-    assert(!state->disc_hidden[0]);
-    jw__refresh_discs(root, state); /* A directory is an unreadable visibility DB. */
-    assert(state->disc_error[0] && state->disc_visible_count == 0);
-    jw__render_actions(state);
-
-    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i) {
-        snprintf(path, sizeof(path), "%s/Roms/PS/%s", root, files[i].name);
-        FILE *fp = fopen(path, "rb");
-        char bytes[256];
-        assert(fp);
-        size_t size = fread(bytes, 1, sizeof(bytes), fp);
-        assert(fclose(fp) == 0 && size == strlen(files[i].text));
-        assert(memcmp(bytes, files[i].text, size) == 0);
-        assert(unlink(path) == 0);
-    }
-    jw__open_game_actions(state->db_path, state, &parent);
-    assert(state->disc_error[0] && state->action_content.disc_count == 0);
-    assert(state->action_rows[state->action_row_count - 1] == JW_ACTION_ROW_DISCS);
-    cat_list_state_jump(&state->action_list, state->action_row_count - 1, state->action_row_count);
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_A, &running);
-    assert(state->discs_open && state->disc_error[0] && state->disc_visible_count == 0);
-    jw__render_actions(state);
-    jw__handle_actions_input("", state->db_path, state, CAT_BTN_B, &running);
-    assert(state->actions_open && !state->discs_open);
-    jw__clear_action_content(state);
-    snprintf(path, sizeof(path), "%s/Roms/PS", root);
-    assert(rmdir(path) == 0);
-    snprintf(path, sizeof(path), "%s/Roms", root);
-    assert(rmdir(path) == 0);
+    state->actions_open = false;
+    state->action_scope = JW_ACTION_NONE;
 }
 
 int main(void) {
@@ -269,7 +164,7 @@ int main(void) {
     assert(!state->games_open && !state->search_open && state->search_count == 0);
     assert(state->system_count == 0 && state->recents_count == 0 && state->favorites_count == 0);
 
-    check_discs(state, root);
+    check_long_actions_menu(state, &alpha);
 
     jw_settings_ui_close(&state->settings);
     jw_ra_catalog_free(state->system_catalog);
@@ -280,6 +175,6 @@ int main(void) {
     free(state);
     cat_quit();
     rmdir(root);
-    puts("visibility-ui-test: game/disc visibility, refresh, Focus and Settings restore passed");
+    puts("visibility-ui-test: hide, last-game refresh, Focus, Settings restore and long Options menu passed");
     return 0;
 }

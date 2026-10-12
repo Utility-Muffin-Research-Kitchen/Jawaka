@@ -347,7 +347,6 @@ typedef struct {
     jw_daemon_ipc_connection ipc_connections[JW_DAEMON_IPC_CONNECTION_MAX];
     jw_delete_job *delete_job;
     int delete_connection;
-    char delete_source[32];
     bool delete_pending_scan;
     jw_platform_context platform;
     jw_input_proxy input_proxy;
@@ -15562,10 +15561,8 @@ static void jw__ipc_connection_drop(jw_daemon_state *state, int index,
                     connection->service_id,
                     reason && reason[0] ? reason : "connection-closed");
     }
-    if (state->delete_job && state->delete_connection == index) {
-        jw_delete_job_cancel(state->delete_job);
-        state->delete_connection = -1;
-    }
+    /* A started deletion runs to the end without its connection. */
+    if (state->delete_job && state->delete_connection == index) state->delete_connection = -1;
     jw_ipc_stream_destroy(connection->stream);
     memset(connection, 0, sizeof(*connection));
 }
@@ -15652,67 +15649,49 @@ static void jw__delete_error(jw_daemon_state *state, int index, const char *mess
     jw__delete_queue(state, index, reply);
 }
 
+/* rom-delete-preview answers with the game's files and their digest and keeps
+   nothing. rom-delete starts removal of the file set with that digest; its
+   connection then polls rom-delete-status until the job finishes. */
 static bool jw__delete_frame(jw_daemon_state *state, int index, const char *body, size_t len) {
     cJSON *request = cJSON_ParseWithLength(body, len);
     cJSON *type = cJSON_GetObjectItemCaseSensitive(request, "type");
-    if (!cJSON_IsString(type) || strncmp(type->valuestring, "rom-delete-", 11)) {
+    if (!cJSON_IsString(type) || strncmp(type->valuestring, "rom-delete", 10)) {
         cJSON_Delete(request); return false;
     }
     jw__tick_delete(state);
     const char *error = NULL;
     char readonly_source[32] = "";
+    cJSON *reply = NULL;
+    bool preview = !strcmp(type->valuestring, "rom-delete-preview");
+    bool start = !strcmp(type->valuestring, "rom-delete");
     if (state->ipc_connections[index].subscribed) error = "Use a separate connection for ROM deletion.";
-    else if (!strcmp(type->valuestring, "rom-delete-preview")) {
+    else if (preview || start) {
         cJSON *source = cJSON_GetObjectItemCaseSensitive(request, "source_id");
         cJSON *path = cJSON_GetObjectItemCaseSensitive(request, "rom_relpath");
-        cJSON *disc_json = cJSON_GetObjectItemCaseSensitive(request, "disc");
-        jw_content_disc disc = {0};
-        if (disc_json) {
-            cJSON *disc_source = cJSON_GetObjectItemCaseSensitive(disc_json, "source_id");
-            cJSON *disc_path = cJSON_GetObjectItemCaseSensitive(disc_json, "rom_relpath");
-            cJSON *member = cJSON_GetObjectItemCaseSensitive(disc_json, "member");
-            if (!cJSON_IsObject(disc_json) ||
-                !cJSON_IsString(disc_source) || !disc_source->valuestring[0] ||
-                strlen(disc_source->valuestring) >= sizeof(disc.source_id) ||
-                !cJSON_IsString(disc_path) || !jw_storage_relative_path_valid(disc_path->valuestring) ||
-                strlen(disc_path->valuestring) >= sizeof(disc.rom_relpath) ||
-                !cJSON_IsString(member) || strlen(member->valuestring) >= sizeof(disc.member)) {
-                error = "Invalid disc identity.";
-            } else {
-                snprintf(disc.source_id, sizeof(disc.source_id), "%s", disc_source->valuestring);
-                snprintf(disc.rom_relpath, sizeof(disc.rom_relpath), "%s", disc_path->valuestring);
-                snprintf(disc.member, sizeof(disc.member), "%s", member->valuestring);
-            }
-        }
+        cJSON *digest = cJSON_GetObjectItemCaseSensitive(request, "digest");
         if (!cJSON_IsString(source) || !source->valuestring[0] || strlen(source->valuestring) >= 32 ||
             !cJSON_IsString(path) || !jw_storage_relative_path_valid(path->valuestring) ||
             strlen(path->valuestring) >= 512) error = "Invalid game identity.";
-        else if (!error && state->delete_job) error = "Close the current deletion preview before starting another.";
-        else if (!error && !(error = jw__delete_gate(state, source->valuestring, readonly_source))) {
-            state->delete_job = jw_delete_job_start(state->db_path, state->sdcard_root,
-                                                    source->valuestring, path->valuestring,
-                                                    disc_json ? &disc : NULL);
-            if (!state->delete_job) error = "Could not start your deletion preview.";
-            else {
-                state->delete_connection = index;
-                snprintf(state->delete_source, sizeof(state->delete_source), "%s", source->valuestring);
+        else if (start && (!cJSON_IsString(digest) || strlen(digest->valuestring) != 16))
+            error = "Open Delete Game again.";
+        else if (state->delete_job) error = "A game is being deleted. Try again when it finishes.";
+        else if (!(error = jw__delete_gate(state, source->valuestring, readonly_source))) {
+            if (preview) {
+                reply = jw_delete_preview(state->db_path, state->sdcard_root,
+                                          source->valuestring, path->valuestring);
+                if (!reply) error = "Could not check your game's files.";
+            } else {
+                state->delete_job = jw_delete_job_start(state->db_path, state->sdcard_root,
+                    source->valuestring, path->valuestring, digest->valuestring);
+                if (!state->delete_job) error = "Could not start deleting your game.";
+                else state->delete_connection = index;
             }
         }
-    } else if (!state->delete_job || state->delete_connection != index) {
-        error = "This connection has no deletion preview. Request a fresh preview.";
-    } else if (!strcmp(type->valuestring, "rom-delete-cancel")) {
-        jw_delete_job_cancel(state->delete_job);
-    } else if (!strcmp(type->valuestring, "rom-delete-commit")) {
-        cJSON *token = cJSON_GetObjectItemCaseSensitive(request, "token");
-        if (jw_delete_job_busy(state->delete_job)) error = "This deletion request is already running.";
-        else if ((error = jw__delete_gate(state, state->delete_source, readonly_source))) {
-            jw_delete_job_reject(state->delete_job, error, readonly_source);
-            error = NULL;
-        } else if (!cJSON_IsString(token) || jw_delete_job_commit(state->delete_job, token->valuestring) != 0)
-            error = "This deletion preview is no longer valid. Request a fresh preview.";
     } else if (strcmp(type->valuestring, "rom-delete-status")) error = "Unknown ROM deletion request.";
+    else if (!state->delete_job || state->delete_connection != index) error = "This connection has no deletion running.";
+    if (!error && !reply) reply = jw_delete_job_status(state->delete_job);
     if (error) jw__delete_error(state, index, error, readonly_source);
-    else jw__delete_queue(state, index, jw_delete_job_status(state->delete_job));
+    else jw__delete_queue(state, index, reply);
     cJSON_Delete(request);
     return true;
 }
@@ -18342,7 +18321,7 @@ int main(int argc, char *argv[]) {
         /* Save before power-button shutdown: hold teardown back while the
            release wait or the save runs. Top-of-loop input, child reaping, and
            service supervision above keep running. */
-        if (state.shutdown_requested && jw_delete_job_committing(state.delete_job)) {
+        if (state.shutdown_requested && jw_delete_job_busy(state.delete_job)) {
             jw__usleep(10000);
             continue;
         }

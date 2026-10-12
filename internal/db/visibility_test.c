@@ -106,15 +106,7 @@ static void test_disc_visibility(sqlite3 *db, const char *path, const char *read
     expect_rom_hidden(readonly, "primary", "PS/Archive.zip", "Disc 1.cue", 1);
     expect_hidden(path, 21, 1);
 
-    /* Settings finds hidden parent playlists and playlists on another source. */
     assert(jw_db_set_game_hidden(path, 20, 1) == 0);
-    assert(jw_db_count_playlists(path, &count) == 0 && count == 2);
-    assert(jw_db_list_playlists(path, games, 16, &count) == 0 && count == 2);
-    assert(games[0].id == 20 && strcmp(games[0].name, "A parent title") == 0);
-    assert(strcmp(games[0].rom_relpath, "PS/Parent.M3U") == 0);
-    assert(games[1].id == 23 && strcmp(games[1].source_id, "secondary_sd") == 0);
-    assert(strcmp(games[1].name, "Z other card") == 0);
-    assert(jw_db_list_playlists(readonly, games, 1, &count) == 0 && count == 1);
     assert(jw_db_scan_begin(db) == 0);
     assert(jw_db_insert_game_stable(db, "PS", "Disc rescanned", "primary",
         "PS/sub/Disc.cue", "Roms/PS/sub/Disc.cue", NULL, NULL, NULL) == 0);
