@@ -3769,3 +3769,39 @@ msgstr "游戏库为只读状态。所选项目仍保持隐藏。"
 #: cmd/jawaka-launcher/main.c
 msgid "Your save files, states and artwork are kept."
 msgstr "你的存档、即时存档和封面均会保留。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Checking your game's files..."
+msgstr "正在检查游戏文件……"
+
+#: cmd/jawaka-launcher/main.c
+msgid "1 file, %s, on your %s."
+msgstr "1 个文件，%s，位于你的 %s 上。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%zu files, %s, on your %s."
+msgstr "%zu 个文件，%s，位于你的 %s 上。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deletion is permanent. This might not delete every file your game uses."
+msgstr "删除后无法恢复。此操作可能无法删除游戏使用的所有文件。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted 1 file."
+msgstr "已删除 1 个文件。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted %zu files."
+msgstr "已删除 %zu 个文件。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted %zu of %zu files."
+msgstr "已删除 %zu 个文件（共 %zu 个）。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Couldn't confirm the result. Check your library."
+msgstr "无法确认结果。请检查你的游戏库。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Not deleted"
+msgstr "未删除"
