@@ -219,6 +219,13 @@ _Static_assert(JW_INGAME_SHADER == JW_INGAME_PERF + 1 &&
                JW_INGAME_SETTINGS == JW_INGAME_SHADER + 1,
                "Shader must stay between Performance and RetroArch Settings");
 
+/* A frame that stalls RetroArch for over a second, such as a slow disc read or
+   a first start, can time out the session query the menu sends as it opens.
+   The menu would then show no save slots and "Command: timeout" until it was
+   reopened, so it asks again a few times while it stays open. */
+#define JW_INGAME_REFRESH_RETRIES  3
+#define JW_INGAME_REFRESH_RETRY_MS 400
+
 #define JW_INGAME_PERF_ROWS 5
 #define JW_INGAME_PERF_PROFILE 0
 #define JW_INGAME_PERF_CPU     1
@@ -2417,6 +2424,13 @@ static void jw__ingame_refresh(const char *socket_path, jw_ingame_state *state) 
     jw__ingame_shader_refresh(socket_path, state);
 }
 
+/* Only a timeout is worth retrying: the session is there, RetroArch was just
+   late. Any other failure would answer the same way again. */
+static bool jw__ingame_refresh_timed_out(const jw_ingame_state *state) {
+    return state->session.active && !state->session_details_ready &&
+           strcmp(state->session.command_result, "timeout") == 0;
+}
+
 static void jw__copy_env_string(const char *name, char *out, size_t out_size) {
     const char *value = getenv(name);
     if (!out || out_size == 0) {
@@ -2980,12 +2994,39 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
            first render repaints with the fresh values. */
         jw__ingame_load_status_bar(db_path, &state);
 
+        int refresh_retries =
+            jw__ingame_refresh_timed_out(&state) ? JW_INGAME_REFRESH_RETRIES : 0;
+        long long refresh_retry_ms = jw__monotonic_ms() + JW_INGAME_REFRESH_RETRY_MS;
+        if (refresh_retries > 0) {
+            /* An idle menu sleeps until input or the clock's next minute. */
+            cat_request_frame_in(JW_INGAME_REFRESH_RETRY_MS);
+        }
+
         bool running = true;
         while (running && !g_hide_requested) {
             cat_input_event ev;
             while (cat_poll_input(&ev)) {
                 if (!ev.pressed) continue;
                 jw__handle_ingame_input(socket_path, &state, ev.button, &running);
+            }
+            if (running && refresh_retries > 0 &&
+                jw__monotonic_ms() >= refresh_retry_ms) {
+                refresh_retries--;
+                long long retry_start_ms = jw__monotonic_ms();
+                jw__ingame_refresh(socket_path, &state);
+                jw__ingame_rebuild_slots(&state);
+                jw__ingame_init_save_slot(&state);
+                jw_log_info("in-game menu refresh retry: refresh_ms=%lld command=%s "
+                            "retries_left=%d",
+                            jw__monotonic_ms() - retry_start_ms,
+                            state.session.command_result, refresh_retries);
+                if (!jw__ingame_refresh_timed_out(&state)) {
+                    refresh_retries = 0;
+                } else if (refresh_retries > 0) {
+                    cat_request_frame_in(JW_INGAME_REFRESH_RETRY_MS);
+                }
+                refresh_retry_ms = jw__monotonic_ms() + JW_INGAME_REFRESH_RETRY_MS;
+                cat_request_frame();
             }
             jw__ingame_update_thumb(&state);
             jw__render_ingame_menu(&state);
