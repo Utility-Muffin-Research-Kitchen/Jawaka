@@ -677,6 +677,171 @@ static void test_content_scrape_policy(void) {
     cJSON_Delete(contributors);
 }
 
+/* LEAF-RA-1: the frontend a core declares is a declared file. Replacing it
+ * (same path, new bytes) moves the generation exactly as replacing the core
+ * does, and dropping the declaration stops fingerprinting it. */
+static void test_frontend_declared_file(void) {
+    rm_rf(sandbox);
+    mkdir_p(sandbox);
+    mkdir_p(defaults_dir);
+    seed_release("{\"platform\":\"mac\",\"systems\":[]}",
+                 "{\"platform\":\"mac\",\"cores\":[]}");
+    seed_release_id("2026-08-28-gtest001");
+
+    char pak_dir[PATH_MAX];
+    char path[PATH_MAX];
+    path_of(pak_dir, sizeof(pak_dir), "%s/Frontend.pak", sandbox);
+    path_of(path, sizeof(path), "%s/cores", pak_dir);
+    mkdir_p(path);
+    path_of(path, sizeof(path), "%s/info", pak_dir);
+    mkdir_p(path);
+    path_of(path, sizeof(path), "%s/scripts", pak_dir);
+    mkdir_p(path);
+    path_of(path, sizeof(path), "%s/cores/yaba_libretro.so", pak_dir);
+    write_text(path, "core");
+    path_of(path, sizeof(path), "%s/info/yaba_libretro.info", pak_dir);
+    write_text(path, "info");
+    char script[PATH_MAX];
+    path_of(script, sizeof(script), "%s/scripts/retroarch.sh", pak_dir);
+    write_text(script, "frontend-v1");
+
+    char contributor_json[8192];
+    snprintf(contributor_json, sizeof(contributor_json),
+             "[{\"provider\":\"mlp1/Frontend.pak\","
+             "\"source_id\":\"primary\",\"pak_version\":\"1.0.0\","
+             "\"pak_dir\":\"%s\","
+             "\"provides\":{\"schema\":1,\"systems\":[{"
+             "\"id\":\"SAT\",\"name\":\"Saturn\","
+             "\"patterns\":[\"SAT\"],\"extensions\":[\"cue\"],"
+             "\"rom_root\":\"Roms/SAT\",\"image_root\":\"Images/SAT\","
+             "\"default_core\":\"yaba\",\"alternate_cores\":[]}],"
+             "\"cores\":[{\"id\":\"yaba\","
+             "\"display_name\":\"Yaba\",\"type\":\"retroarch\","
+             "\"libretro_name\":\"yaba\","
+             "\"file_name\":\"cores/yaba_libretro.so\","
+             "\"info_name\":\"info/yaba_libretro.info\","
+             "\"config_folder\":\"Yaba\","
+             "\"frontend\":{\"path\":\"scripts/retroarch.sh\","
+             "\"protocol\":\"leaf-ra-1\"}}],"
+             "\"system_extensions\":[]}}]",
+             pak_dir);
+    cJSON *contributors = cJSON_Parse(contributor_json);
+    cJSON *diagnostics = cJSON_CreateArray();
+    check(contributors != NULL && diagnostics != NULL,
+          "frontend contributor fixture parses");
+
+    char generation[JW_CAT_GEN_NAME_MAX];
+    char first_generation[JW_CAT_GEN_NAME_MAX];
+    char reason[JW_CAT_REASON_MAX];
+    int rc = jw_catalog_refresh_with_contributors(
+        sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0, "pak core with a frontend publishes");
+
+    /* The effective core row keeps the declaration, with provenance, so the
+       daemon can launch it. */
+    path_of(path, sizeof(path), "%s/%s/cores.json", catalog_dir, generation);
+    const char *cores = read_text(path);
+    check(cores && strstr(cores, "\"frontend\":{") != NULL &&
+              strstr(cores, "\"path\":\"scripts/retroarch.sh\"") != NULL &&
+              strstr(cores, "\"protocol\":\"leaf-ra-1\"") != NULL &&
+              strstr(cores, "\"provider\":\"mlp1/Frontend.pak\"") != NULL,
+          "effective cores.json carries the frontend and the provider");
+    check(cores && !strstr(cores, sandbox), "no live mount path in cores output");
+
+    path_of(path, sizeof(path), "%s/%s/stamp.json", catalog_dir, generation);
+    const char *stamp = read_text(path);
+    check(stamp && strstr(stamp, "\"rel\":\"scripts/retroarch.sh\"") != NULL,
+          "the frontend script is fingerprinted");
+    check(stamp && strstr(stamp, "\"rel\":\"cores/yaba_libretro.so\"") != NULL,
+          "the core is still fingerprinted beside it");
+
+    /* Unchanged inputs reuse the generation. */
+    snprintf(first_generation, sizeof(first_generation), "%s", generation);
+    rc = jw_catalog_refresh_with_contributors(
+        sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && strcmp(first_generation, generation) == 0,
+          "unchanged frontend keeps the generation");
+    check_str(reason, "reused", "unchanged frontend reuses the generation");
+
+    /* Same path, new bytes: not the same catalog. */
+    write_text(script, "frontend-v2");
+    rc = jw_catalog_refresh_with_contributors(
+        sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0, "replaced frontend republishes");
+    check(strcmp(first_generation, generation) != 0,
+          "same-path frontend bytes move the generation");
+    check_str(reason, "published", "replaced frontend publishes a new generation");
+
+    /* The old generation is also what a reader would refuse: the stamp no
+       longer matches the live pak. Reverting the bytes goes back to it. */
+    char second_generation[JW_CAT_GEN_NAME_MAX];
+    snprintf(second_generation, sizeof(second_generation), "%s", generation);
+    write_text(script, "frontend-v1");
+    rc = jw_catalog_refresh_with_contributors(
+        sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && strcmp(generation, first_generation) == 0,
+          "reverting the frontend bytes returns to the first generation");
+    check(strcmp(generation, second_generation) != 0,
+          "the two frontend contents are two generations");
+
+    /* A different frontend path moves it too (the canonical provides differ),
+       and the old script stops being fingerprinted. */
+    char moved_script[PATH_MAX];
+    path_of(moved_script, sizeof(moved_script), "%s/scripts/other.sh", pak_dir);
+    write_text(moved_script, "frontend-v1");
+    cJSON *contributor = cJSON_GetArrayItem(contributors, 0);
+    cJSON *provides = cJSON_GetObjectItemCaseSensitive(contributor, "provides");
+    cJSON *core = cJSON_GetArrayItem(
+        cJSON_GetObjectItemCaseSensitive(provides, "cores"), 0);
+    cJSON *frontend = cJSON_GetObjectItemCaseSensitive(core, "frontend");
+    cJSON_ReplaceItemInObjectCaseSensitive(frontend, "path",
+                                           cJSON_CreateString("scripts/other.sh"));
+    rc = jw_catalog_refresh_with_contributors(
+        sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && strcmp(generation, first_generation) != 0,
+          "a different frontend path moves the generation");
+    path_of(path, sizeof(path), "%s/%s/stamp.json", catalog_dir, generation);
+    stamp = read_text(path);
+    check(stamp && strstr(stamp, "\"rel\":\"scripts/other.sh\"") != NULL &&
+              strstr(stamp, "\"rel\":\"scripts/retroarch.sh\"") == NULL,
+          "only the declared frontend path is fingerprinted");
+
+    /* Dropping the declaration leaves no frontend in the catalog and no
+       fingerprint of the script, which stays on disk. */
+    snprintf(second_generation, sizeof(second_generation), "%s", generation);
+    cJSON_DeleteItemFromObjectCaseSensitive(core, "frontend");
+    rc = jw_catalog_refresh_with_contributors(
+        sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && strcmp(generation, second_generation) != 0,
+          "dropping the frontend republishes");
+    path_of(path, sizeof(path), "%s/%s/cores.json", catalog_dir, generation);
+    cores = read_text(path);
+    check(cores && strstr(cores, "frontend") == NULL,
+          "a core without a frontend has none in the effective catalog");
+    path_of(path, sizeof(path), "%s/%s/stamp.json", catalog_dir, generation);
+    stamp = read_text(path);
+    check(stamp && strstr(stamp, "scripts/") == NULL,
+          "a core without a frontend fingerprints no script");
+    check(stamp && strstr(stamp, "\"rel\":\"cores/yaba_libretro.so\"") != NULL,
+          "the core file is still fingerprinted");
+    write_text(script, "frontend-v3");
+    snprintf(second_generation, sizeof(second_generation), "%s", generation);
+    rc = jw_catalog_refresh_with_contributors(
+        sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && strcmp(generation, second_generation) == 0,
+          "an undeclared script's bytes do not move the generation");
+
+    cJSON_Delete(diagnostics);
+    cJSON_Delete(contributors);
+}
+
 int main(void) {
     const char *base = getenv("TMPDIR");
     snprintf(sandbox, sizeof(sandbox), "%s/jw-effective-test-%ld",
@@ -702,6 +867,7 @@ int main(void) {
     test_missing_release_identity();
     test_compile_failure_diagnostics();
     test_content_scrape_policy();
+    test_frontend_declared_file();
 
     rm_rf(sandbox);
     if (failures) {

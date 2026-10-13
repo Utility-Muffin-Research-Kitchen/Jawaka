@@ -1959,8 +1959,14 @@ static void jw__retroarch_cfg_player_indices(
     }
 }
 
+const jw_retroarch_frontend_profile jw_retroarch_frontend_profile_leaf_ra_1 = {
+    .no_recording = true,
+    .pulse_audio = true,
+};
+
 #ifdef PLATFORM_MLP1
-static void jw__mlp1_retroarch_audio_cfg(FILE *fp) {
+static void jw__mlp1_retroarch_audio_cfg(FILE *fp,
+                                         const jw_retroarch_frontend_profile *frontend) {
     const char *output = jw__env_value("JAWAKA_AUDIO_OUTPUT");
     if (!output || !output[0]) {
         output = jw__env_value("UMRK_AUDIO_OUTPUT");
@@ -1970,10 +1976,12 @@ static void jw__mlp1_retroarch_audio_cfg(FILE *fp) {
         device = jw__env_value("UMRK_AUDIO_DEVICE");
     }
 
-    if (output && strcmp(output, "BLUETOOTH") == 0) {
+    if (output && strcmp(output, "BLUETOOTH") == 0 &&
+        !(frontend && frontend->pulse_audio)) {
         /* Bluetooth is served by BlueALSA (a2dp-source), which exposes a raw
            ALSA `bluealsa` pcm and is *not* a PulseAudio sink. Keep the ALSA
-           driver for this path so BT playback keeps working. */
+           driver for this path so BT playback keeps working. A frontend
+           without the BlueALSA plugin stays on PulseAudio below. */
         jw__retroarch_cfg_string(fp, "audio_driver", "alsa");
         jw__retroarch_cfg_string(fp, "audio_device", "bluealsa");
         return;
@@ -1992,7 +2000,8 @@ static void jw__mlp1_retroarch_audio_cfg(FILE *fp) {
        "default" sentinel (an ALSA pcm name that PA only tolerates by luck) and
        fall through to PA's real default sink — what the launcher's volume
        buttons (pactl set-sink-volume) operate on. */
-    if (device && device[0] && strcmp(device, "default") != 0) {
+    if (device && device[0] && strcmp(device, "default") != 0 &&
+        !(frontend && frontend->pulse_audio && strcmp(device, "bluealsa") == 0)) {
         jw__retroarch_cfg_string(fp, "audio_device", device);
     } else {
         jw__retroarch_cfg_string(fp, "audio_device", "");
@@ -2663,7 +2672,9 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
                                                  const char *screenshot_dir,
                                                  const int player_joypad_indices[4],
                                                  bool persist_changes,
+                                                 const jw_retroarch_frontend_profile *frontend,
                                                  char *error, size_t error_size) {
+    (void)frontend; /* read only by the MLP1 audio and recording blocks */
     if (!fp || !sdroot_abs || !sdroot_abs[0]) {
         jw__set_error(error, error_size, "missing RetroArch config inputs");
         return -1;
@@ -2755,7 +2766,7 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "network_cmd_port", command_port);
     jw__retroarch_cfg_string(fp, "pause_nonactive", "false");
 #ifdef PLATFORM_MLP1
-    jw__mlp1_retroarch_audio_cfg(fp);
+    jw__mlp1_retroarch_audio_cfg(fp, frontend);
     jw__retroarch_cfg_string(fp, "audio_latency", "128");
     jw__retroarch_cfg_string(fp, "audio_block_frames", "256");
     jw__retroarch_cfg_string(fp, "video_threaded", "false");
@@ -2882,7 +2893,7 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
         const char *rec_root =
             (config_sdroot_abs && config_sdroot_abs[0]) ? config_sdroot_abs : sdroot_abs;
 
-        if (record_preset &&
+        if (record_preset && !(frontend && frontend->no_recording) &&
             jw_primary_recordings_path(recordings_dir, sizeof(recordings_dir), rec_root)) {
             /* The same primary helper feeds the daemon child environment and
                conversion pass. A secondary-card game still records somewhere
@@ -2949,6 +2960,7 @@ char *jw_prepare_retroarch_config_with_info(
     const char *runtime_dir, const char *sdcard_root, const char *core_path,
     const char *explicit_info_dir, const int player_joypad_indices[4],
     bool persist_changes, bool proxied_cheevos,
+    const jw_retroarch_frontend_profile *frontend,
     char *error, size_t error_size) {
     jw__set_error(error, error_size, "");
     if (!runtime_dir || !runtime_dir[0] || !sdcard_root || !sdcard_root[0]) {
@@ -3152,6 +3164,7 @@ char *jw_prepare_retroarch_config_with_info(
                                                             shots_dir,
                                                             player_joypad_indices,
                                                             persist_changes,
+                                                            frontend,
                                                            error, error_size);
     /* The only occurrence of either key in this file, because both were
        skipped above. No scheme on the host: rcheevos prefixes "http://"
@@ -3193,7 +3206,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
                                   char *error, size_t error_size) {
     return jw_prepare_retroarch_config_with_info(
         runtime_dir, sdcard_root, core_path, NULL, player_joypad_indices,
-        persist_changes, proxied_cheevos, error, error_size);
+        persist_changes, proxied_cheevos, NULL, error, error_size);
 }
 
 /* Exact line (without the trailing newline or CR) carrying key, for the

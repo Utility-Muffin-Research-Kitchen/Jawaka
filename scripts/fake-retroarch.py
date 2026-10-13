@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Stand-in for RetroArch in the retroarch-runner-stop and power-hold-save
-smoke tests.
+"""Stand-in for RetroArch in the retroarch-runner-stop, power-hold-save and
+retroarch-frontend smoke tests.
 
 Speaks just enough of the pinned v1.22.2 contract the runner depends on: it
 binds the network command port, and on QUIT it writes its --config file the way
@@ -13,6 +13,16 @@ synchronous save (retroarch-builds, protocol 1): GET_STATE_SAVE_INFO answers
 FAKE_RA_STATES_DIR/<rom stem>.state<slot>.tmp-<id>, fsyncs it and replies
 TMP_READY with that path. Without the variable both commands go unanswered,
 like a RetroArch built without the patch.
+
+FAKE_RA_FRONTEND stands in for a content pak's own RetroArch (LEAF-RA-1) and
+decides how it answers jawakad's capability probe, GET_INFO then VERSION:
+"answer" speaks both, "no-version" answers GET_INFO and leaves VERSION
+unanswered, "unpatched" is upstream RetroArch built without Leaf's command
+patch (VERSION answered, GET_INFO silent), and "silent" answers neither. The
+VERSION reply is real RetroArch's: the bare version and a newline, no command
+name; FAKE_RA_VERSION sets it (default 1.22.2). Every other command keeps its
+usual behavior, and with the variable set GET_INFO and VERSION follow it
+instead of the other modes.
 
 FAKE_RA_LOAD_STATE adds the boot resume's side: GET_INFO answers "0 0 0" (a
 core with states), and LOAD_STATE_SYNC <id> <slot> answers "OK <size>" for
@@ -59,6 +69,23 @@ def save(path):
     with open(tmp, "w", encoding="utf-8") as fp:
         fp.write("\n".join(out) + "\n")
     os.replace(tmp, path)
+
+
+# Returned by frontend_reply() for a command it does not speak.
+NOT_SPOKEN = object()
+
+
+def frontend_reply(text):
+    """A LEAF-RA-1 frontend's GET_INFO and VERSION replies. NOT_SPOKEN when
+    FAKE_RA_FRONTEND is unset or the command is neither; None for silence."""
+    mode = os.environ.get("FAKE_RA_FRONTEND")
+    if not mode or text not in ("GET_INFO", "VERSION"):
+        return NOT_SPOKEN
+    if text == "GET_INFO":
+        return "GET_INFO 0 0 0\n" if mode in ("answer", "no-version") else None
+    if mode in ("answer", "unpatched"):
+        return os.environ.get("FAKE_RA_VERSION", "1.22.2") + "\n"
+    return None
 
 
 def sync_save_reply(text, argv):
@@ -167,9 +194,13 @@ def main():
         if quit_log and text:
             with open(quit_log, "a", encoding="utf-8") as fp:
                 fp.write(text + "\n")
-        reply = sync_save_reply(text, sys.argv)
+        reply = frontend_reply(text)
         if reply is None:
-            reply = load_state_reply(text, sys.argv)
+            continue
+        if reply is NOT_SPOKEN:
+            reply = sync_save_reply(text, sys.argv)
+            if reply is None:
+                reply = load_state_reply(text, sys.argv)
         if reply is not None:
             sock.sendto(reply.encode("utf-8"), sender)
             continue

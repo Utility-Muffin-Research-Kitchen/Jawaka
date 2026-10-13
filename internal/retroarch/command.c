@@ -86,6 +86,7 @@ static bool jw_ra__exact_supported(const char *command) {
         "STATE_SLOT_MINUS",
         "STATE_SLOT_PLUS",
         "UNPAUSE",
+        "VERSION",
         "VOLUME_DOWN",
         "VOLUME_UP",
     };

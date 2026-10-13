@@ -195,8 +195,8 @@ int main(void) {
     int scrape = check_scrape_fixtures();
     printf("content-manifest-test: %d valid + %d invalid fixtures checked\n",
            valid, invalid);
-    assert(valid == 8);
-    assert(invalid == 49);
+    assert(valid == 9);
+    assert(invalid == 53);
     assert(scrape == 14);
     puts("PASS content-manifest-test");
     return 0;

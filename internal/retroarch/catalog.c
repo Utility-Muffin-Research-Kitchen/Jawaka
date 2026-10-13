@@ -299,6 +299,7 @@ static void jw_ra_core_free(jw_ra_core *core) {
     free(core->core_root_rel);
     free(core->provider);
     free(core->source_id);
+    free(core->frontend_path);
     free(core->status);
 }
 
@@ -369,6 +370,18 @@ static int jw_ra_load_core(cJSON *row, jw_ra_core *out) {
         out->provider = NULL;
     }
     out->source_id = out->provider ? jw_ra_strdup("primary") : NULL;
+    {
+        /* Only a pak row can carry a frontend, and only one the contract
+           validator accepted; a release row with one is ignored. */
+        cJSON *frontend = cJSON_GetObjectItemCaseSensitive(row, "frontend");
+        cJSON *protocol = cJSON_GetObjectItemCaseSensitive(frontend, "protocol");
+        cJSON *path = cJSON_GetObjectItemCaseSensitive(frontend, "path");
+        if (out->provider && cJSON_IsString(protocol) && cJSON_IsString(path) &&
+            path->valuestring[0] &&
+            strcmp(protocol->valuestring, JW_RA_FRONTEND_PROTOCOL) == 0) {
+            out->frontend_path = jw_ra_strdup(path->valuestring);
+        }
+    }
     out->core_root_rel = jw_ra_dirname_rel(
         out->type && strcmp(out->type, "path") == 0 ? out->path : out->file_name);
     out->status = jw_ra_json_string(row, "status");
@@ -1070,6 +1083,44 @@ int jw_ra_catalog_resolve_core_path(const jw_ra_catalog *catalog,
     return 0;
 }
 
+int jw_ra_catalog_resolve_frontend_path(const jw_ra_catalog *catalog,
+                                        const jw_ra_core *core,
+                                        char *out,
+                                        size_t out_size) {
+    if (!catalog || !core || !out || out_size == 0) {
+        return -1;
+    }
+    out[0] = '\0';
+    if (!core->provider || !core->provider[0] ||
+        !core->frontend_path || !core->frontend_path[0] ||
+        !jw_ra_art_relative(core->frontend_path)) {
+        return -1;
+    }
+    /* Pak-relative, like an icon: the frontend need not sit beside the core.
+       The content validator already refused absolute and escaping paths. */
+    const char *apps = getenv("APPS_PATH");
+    int written;
+    if (apps && apps[0]) {
+        written = snprintf(out, out_size, "%s/%s/%s", apps, core->provider,
+                           core->frontend_path);
+    } else if (catalog->sdcard_root && catalog->sdcard_root[0]) {
+        written = snprintf(out, out_size, "%s/Apps/%s/%s", catalog->sdcard_root,
+                           core->provider, core->frontend_path);
+    } else {
+        return -1;
+    }
+    if (written < 0 || (size_t)written >= out_size) {
+        out[0] = '\0';
+        return -1;
+    }
+    struct stat st;
+    if (stat(out, &st) != 0 || !S_ISREG(st.st_mode) || access(out, X_OK) != 0) {
+        out[0] = '\0';
+        return -1;
+    }
+    return 0;
+}
+
 int jw_ra_catalog_resolve_system_icon_path(const jw_ra_catalog *catalog,
                                            const jw_ra_system *system,
                                            bool photographic,
@@ -1178,12 +1229,26 @@ static bool jw_ra_path_core_executable_exists(const jw_ra_catalog *catalog,
                                            true, path, sizeof(path)) == 0;
 }
 
+/* A core that names a LEAF-RA-1 frontend runs only in it, so the core is
+   offered only while the frontend is there; the daemon's launch target applies
+   the same rule. */
+static bool jw_ra_core_frontend_ready(const jw_ra_catalog *catalog,
+                                      const jw_ra_core *core) {
+    if (!core || !core->frontend_path || !core->frontend_path[0]) {
+        return true;
+    }
+    char frontend[PATH_MAX];
+    return jw_ra_catalog_resolve_frontend_path(catalog, core, frontend,
+                                               sizeof(frontend)) == 0;
+}
+
 bool jw_ra_catalog_core_available(const jw_ra_catalog *catalog,
                                   const jw_ra_core *core,
                                   const char *core_dir,
                                   const char *platform_dir) {
     return (jw_ra_core_is_packaged_retroarch(core) &&
-            jw_ra_core_file_exists(catalog, core, core_dir, platform_dir)) ||
+            jw_ra_core_file_exists(catalog, core, core_dir, platform_dir) &&
+            jw_ra_core_frontend_ready(catalog, core)) ||
            jw_ra_path_core_executable_exists(catalog, platform_dir, core);
 }
 
@@ -1327,7 +1392,8 @@ int jw_ra_catalog_resolve_core_file_for_choice(const jw_ra_catalog *catalog,
         } else {
             const jw_ra_core *preferred = jw_ra_catalog_find_core(catalog, preferred_core_id);
             if (jw_ra_core_is_packaged_retroarch(preferred) &&
-                jw_ra_core_file_exists(catalog, preferred, core_dir, NULL)) {
+                jw_ra_core_file_exists(catalog, preferred, core_dir, NULL) &&
+                jw_ra_core_frontend_ready(catalog, preferred)) {
                 char resolved[PATH_MAX];
                 const char *value = preferred->file_name;
                 if (preferred->provider &&

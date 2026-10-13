@@ -1250,6 +1250,14 @@ static int jw_cat__stamp_declared_files(jw_cat_contributor_stamp *stamp,
                 return -1;
             }
         }
+        /* A LEAF-RA-1 frontend is a declared file too: replacing it must
+           invalidate the generation like replacing the core would. */
+        const cJSON *frontend = cJSON_GetObjectItemCaseSensitive(core, "frontend");
+        const cJSON *frontend_path = cJSON_GetObjectItemCaseSensitive(frontend, "path");
+        if (cJSON_IsString(frontend_path) &&
+            jw_cat__stamp_add_file(stamp, pak_dir, frontend_path->valuestring) != 0) {
+            return -1;
+        }
     }
     return 0;
 }
