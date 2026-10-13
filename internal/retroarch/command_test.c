@@ -416,23 +416,71 @@ static void test_sync_load_loopback(void) {
     jw_ra_sync_save_close(&load);
 }
 
+/* LEAF-RA-1: jawakad asks a pak frontend for VERSION and compares it with
+   Leaf's own RetroArch version. Upstream v1.22.2 (command_version in
+   command.c) answers with the bare version and a newline and no command name,
+   so the caller gets exactly that datagram and has to trim it. */
+static void test_version_loopback(void) {
+    int server = socket(AF_INET, SOCK_DGRAM, 0);
+    check(server >= 0, "version: server socket");
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    check(bind(server, (struct sockaddr *)&addr, sizeof(addr)) == 0, "version: bind");
+    socklen_t len = sizeof(addr);
+    check(getsockname(server, (struct sockaddr *)&addr, &len) == 0, "version: name");
+    jw_ra_client client = { "127.0.0.1", ntohs(addr.sin_port), 500 };
+
+    char reply[JW_RA_REPLY_MAX];
+    int pid = fork();
+    check(pid >= 0, "version: fork");
+    if (pid == 0) {
+        alarm(5);   /* never outlive a failed parent waiting on this socket */
+        char buf[64];
+        struct sockaddr_in peer;
+        socklen_t peer_len = sizeof(peer);
+        ssize_t n = recvfrom(server, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&peer, &peer_len);
+        if (n == 7 && memcmp(buf, "VERSION", 7) == 0) {
+            const char *answer = "1.22.2\n";
+            sendto(server, answer, strlen(answer), 0, (struct sockaddr *)&peer, peer_len);
+        }
+        _exit(0);
+    }
+    check(jw_ra_request_raw(&client, "VERSION", reply, sizeof(reply)) == JW_RA_OK,
+          "version: request answered");
+    check(strcmp(reply, "1.22.2\n") == 0, "version: the bare reply, untrimmed");
+    waitpid(pid, NULL, 0);
+
+    /* A frontend built without the command (or not listening yet) is silent. */
+    client.timeout_ms = 100;
+    check(jw_ra_request_raw(&client, "VERSION", reply, sizeof(reply)) == JW_RA_TIMEOUT,
+          "version: silent frontend times out");
+    check(reply[0] == '\0', "version: no reply text after a timeout");
+    close(server);
+}
+
 int main(void) {
     test_state_save_info_parse();
     test_sync_save_parse();
     test_sync_save_loopback();
     test_sync_load_parse();
     test_sync_load_loopback();
+    test_version_loopback();
     expect_supported("SET_SHADER /tmp/example.glslp");
     expect_supported("SET_SHADER\t/tmp/example.glslp");
     expect_supported("GET_CONFIG_PARAM video_shader");
     expect_supported("GET_PERF_INFO");
     expect_supported("OPEN_MENU SHADERS");
     expect_supported("SCREENSHOT");
+    expect_supported("VERSION");
 
     expect_rejected(NULL);
     expect_rejected("");
     expect_rejected("SET_SHADER_PATH /tmp/example.glslp");
     expect_rejected("SET_SHADER\nQUIT");
+    expect_rejected("VERSION\nQUIT");
+    expect_rejected("VERSIONS");
 
     expect_supported("JAWAKA_GET_SHADER a1");
     expect_supported("JAWAKA_SET_SHADER a1 /tmp/example.glslp");

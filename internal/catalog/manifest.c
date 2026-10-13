@@ -583,12 +583,32 @@ static const char *jw_content__validate_system(const cJSON *system,
     return NULL;
 }
 
+/* LEAF-RA-1: a pak-supplied RetroArch that Leaf launches in place of its own
+   (leaf-contracts docs/leaf-retroarch-frontend.md). Checked in the contract's
+   order: shape, then protocol, then the executable itself. */
+static const char *jw_content__validate_frontend(const cJSON *frontend, const char *pak_root) {
+    static const char *const keys[] = {"path", "protocol"};
+    if (!jw_content__object_keys(frontend, keys, sizeof(keys) / sizeof(keys[0]))) {
+        return "malformed-frontend";
+    }
+    cJSON *path = jw_content__item(frontend, "path");
+    if (!cJSON_IsString(path) || !path->valuestring[0]) {
+        return "malformed-frontend";
+    }
+    cJSON *protocol = jw_content__item(frontend, "protocol");
+    if (!cJSON_IsString(protocol) || strcmp(protocol->valuestring, JW_RA_FRONTEND_PROTOCOL) != 0) {
+        return "unknown-frontend-protocol";
+    }
+    return jw_content__path_reason(path, pak_root, true);
+}
+
 static const char *jw_content__validate_core(const cJSON *core, const char *pak_root) {
     static const char *const keys[] = {
         "id", "display_name", "type", "libretro_name", "file_name",
         "info_name", "config_folder", "path", "supports_menu",
         "supports_savestate", "supports_disk_control", "needs_swap",
         "requires_direct_drm", "legacy_flat_core", "name_map", "status",
+        "frontend",
     };
     if (!jw_content__object_keys(core, keys, sizeof(keys) / sizeof(keys[0]))) {
         return "unknown-field";
@@ -645,9 +665,16 @@ static const char *jw_content__validate_core(const cJSON *core, const char *pak_
         if (!cJSON_IsString(item) || !jw_ra_core_folder_is_safe(item->valuestring)) {
             return "unsafe-config-folder";
         }
+        item = jw_content__item(core, "frontend");
+        if (item) {
+            reason = jw_content__validate_frontend(item, pak_root);
+            if (reason) {
+                return reason;
+            }
+        }
     } else {
         static const char *const retro_only[] = {
-            "libretro_name", "file_name", "info_name", "config_folder",
+            "libretro_name", "file_name", "info_name", "config_folder", "frontend",
         };
         for (size_t i = 0; i < sizeof(retro_only) / sizeof(retro_only[0]); i++) {
             if (jw_content__item(core, retro_only[i])) {

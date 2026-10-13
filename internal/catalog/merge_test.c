@@ -94,7 +94,7 @@ int main(void) {
         count++;
     }
     cJSON_Delete(fixture);
-    assert(count == 16);
+    assert(count == 17);
     puts("PASS catalog-merge-test");
     return 0;
 }

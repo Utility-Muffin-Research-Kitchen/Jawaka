@@ -89,6 +89,16 @@
 
 #define JW_SWITCHER_RESUME_RETRY_MS 100LL
 #define JW_SWITCHER_RESUME_MAX_ATTEMPTS 40
+/* LEAF-RA-1 probe: GET_INFO every 250 ms from one second after spawn, for up
+   to 20 s. A 32-bit frontend loading a disc image can take several seconds to
+   open its command port. */
+#define JW_FRONTEND_PROBE_FIRST_MS 1000LL
+#define JW_FRONTEND_PROBE_RETRY_MS 250LL
+#define JW_FRONTEND_PROBE_MAX_ATTEMPTS 76
+/* VERSION after the probe: RetroArch answers once per frame, and a frontend
+   still loading its content can miss a 100 ms window. */
+#define JW_FRONTEND_VERSION_TIMEOUT_MS 250u
+#define JW_FRONTEND_VERSION_MAX_ATTEMPTS 8
 /* The load-state command does real work (RA reads + applies the state) and can
    need longer than the readiness probe, especially in the first second of boot.
    Generous enough to catch a slow reply, short enough not to stall the daemon. */
@@ -200,6 +210,19 @@ typedef struct {
     /* A boot-resume session until LOAD_STATE_SYNC answers OK: no play is
        recorded for it, since the player never got their game back. */
     bool resume_unconfirmed;
+    /* LEAF-RA-1: a content pak's own RetroArch runs in place of Leaf's.
+       frontend_probe is 0 until known, 1 once it answered GET_INFO (it speaks
+       Leaf's command set, so the in-game menu may pause it), -1 when it never
+       did (Menu then opens its own menu). frontend_version_ok: its VERSION is
+       Leaf's RetroArch version, the only case its config is promoted into the
+       shared one. */
+    bool frontend;
+    int frontend_probe;
+    int frontend_probe_attempts;
+    long long frontend_probe_next_ms;
+    bool frontend_version_done;
+    int frontend_version_attempts;
+    bool frontend_version_ok;
 } jw_retroarch_session;
 
 /* Resume Game on Boot, from the startup request to the one LOAD_STATE_SYNC
@@ -245,6 +268,9 @@ typedef struct {
     /* RetroArch targets: the merged info directory of the catalog snapshot
        the core was selected from. */
     char info_dir[PATH_MAX];
+    /* RetroArch targets: the pak's LEAF-RA-1 frontend, launched in place of
+       Leaf's own RetroArch; "" for every other core. */
+    char frontend[PATH_MAX];
     /* Standalone targets only, resolved once from the catalog core by
        jw__try_path_core() before any eligibility check. */
     jw_standalone_policy standalone_policy;
@@ -5718,6 +5744,11 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
        their lines with RetroArch's defaults (Hardcore among them). */
     if (session->resume_unconfirmed && session->config_path[0]) {
         jw_log_info("boot resume: RetroArch config not kept from a session whose state never loaded");
+    } else if (session->frontend && !session->frontend_version_ok && session->config_path[0]) {
+        /* A different RetroArch version may write keys Leaf's does not know or
+           read differently; only a matching frontend shares the config back. */
+        jw_log_info("RetroArch shared config not kept from frontend session "
+                    "(version does not match Leaf's RetroArch, or never probed)");
     } else if (session->config_path[0] && session->persist_config && !switcher_transition) {
         char error[256];
         if (jw_backup_retroarch_config(session->config_path, state->sdcard_root,
@@ -5951,6 +5982,12 @@ static void jw__write_ingame_ui_mode(const char *mode) {
 static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode) {
     long long start_ms = jw__monotonic_ms();
     if (!jw__has_retroarch_session(state)) {
+        return -1;
+    }
+    /* A frontend not known to speak Leaf's commands may ignore PAUSE, which
+       would leave the menu over a running game. */
+    if (state->retroarch_session.frontend && state->retroarch_session.frontend_probe <= 0) {
+        jw_log_info("in-game %s: RetroArch frontend has not answered the probe", mode);
         return -1;
     }
 
@@ -6648,6 +6685,17 @@ static bool jw__try_retroarch_core(const jw_ra_catalog *catalog,
     }
     (void)jw_ra_catalog_info_dir(catalog, target->info_dir,
                                  sizeof(target->info_dir));
+    /* A core that names a frontend only runs in it: its library may not even
+       load in Leaf's RetroArch (Yabadabadoo is 32-bit), so a missing frontend
+       makes the core unavailable rather than falling back. */
+    if (core->frontend_path && core->frontend_path[0] &&
+        jw_ra_catalog_resolve_frontend_path(catalog, core, target->frontend,
+                                            sizeof(target->frontend)) != 0) {
+        jw_log_warn("core %s: frontend %s missing or not executable; core unavailable",
+                    core->id, core->frontend_path);
+        memset(target, 0, sizeof(*target));
+        return false;
+    }
     return true;
 }
 
@@ -7257,7 +7305,10 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
     }
 
     if (target.kind == JW_LAUNCH_TARGET_RETROARCH) {
-        char *retroarch = jw_retroarch_bin_path();
+        /* The binary this launch will exec: the pak's frontend when the core
+           names one, otherwise Leaf's own RetroArch. */
+        char *retroarch = target.frontend[0] ? strdup(target.frontend)
+                                             : jw_retroarch_bin_path();
         if (!retroarch || !jw__path_exists(retroarch)) {
             free(retroarch);
             if (out_error) *out_error = "RetroArch binary missing";
@@ -8741,6 +8792,18 @@ static bool jw__input_menu_tap(void *userdata) {
         return false;
     }
 
+    /* A frontend without Leaf's command set gets its own menu instead, through
+       the upstream MENU_TOGGLE; a second tap closes it the same way. Leaf's
+       config leaves RetroArch's menu button unbound, so the forwarded tap alone
+       would do nothing. */
+    if (state->retroarch_session.frontend && state->retroarch_session.frontend_probe <= 0) {
+        jw_ra_client client = jw_ra_client_default();
+        jw_ra_result result = jw_ra_menu_toggle(&client);
+        jw_log_info("menu tap: RetroArch frontend without Leaf commands, MENU_TOGGLE result=%s",
+                    jw_ra_result_string(result));
+        return true;
+    }
+
     if (state->advanced_shader_pending) {
         jw_ra_client client = jw_ra_client_default();
         jw_ra_status status;
@@ -9247,6 +9310,10 @@ static void *jw__screenshot_worker(void *arg) {
 static bool jw__on_record_hotkey(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
     if (!state || !jw__has_retroarch_session(state)) {
+        return false;
+    }
+    /* LEAF-RA-1 frontends are configured with recording off. */
+    if (state->retroarch_session.frontend) {
         return false;
     }
 
@@ -10659,7 +10726,10 @@ static int jw__spawn_retroarch(jw_daemon_state *state,
         snprintf(source_root, sizeof(source_root), "%s", state->sdcard_root);
     }
 
-    char *retroarch = jw_retroarch_bin_path();
+    /* A pak core with a LEAF-RA-1 frontend runs in the pak's own RetroArch;
+       everything else in this launch is the same as for Leaf's. */
+    bool frontend = target->frontend[0] != '\0';
+    char *retroarch = frontend ? strdup(target->frontend) : jw_retroarch_bin_path();
     /* The resolved target is this launch's only core selection. No second
        resolver runs here, so a core file that disappeared since selection
        fails the launch below instead of being replaced by another core. */
@@ -10707,6 +10777,13 @@ static int jw__spawn_retroarch(jw_daemon_state *state,
     if (!jw_sdcard_exec_available_for_path(core, exec_error, sizeof(exec_error))) {
         jw_log_error("cannot launch RetroArch core from SD: %s", exec_error);
         goto fail;
+    }
+    if (frontend) {
+        if (!jw_sdcard_exec_available_for_path(retroarch, exec_error, sizeof(exec_error))) {
+            jw_log_error("cannot launch RetroArch frontend from SD: %s", exec_error);
+            goto fail;
+        }
+        jw_log_info("RetroArch frontend for core %s: %s", core_id, retroarch);
     }
 
     /* A boot resume starts only the game, core and card the record named and
@@ -10807,6 +10884,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state,
     runtime_config = jw_prepare_retroarch_config_with_info(
         state->runtime_dir, source_root, core, info_dir,
         player_indices_arg, persist_config, rop_snapshot.proxied,
+        frontend ? &jw_retroarch_frontend_profile_leaf_ra_1 : NULL,
         config_error, sizeof(config_error));
     jw__cheevos_clear_env();
     jw__restore_env(storage_env, 3);
@@ -11007,8 +11085,15 @@ static int jw__spawn_retroarch(jw_daemon_state *state,
                                 state->pending_launch_rom_path, source_root,
                                 core, core_id, core_config_folder,
                                 runtime_config, persist_config,
-                                audio_bluetooth, launch_warning);
+                                audio_bluetooth && !frontend, launch_warning);
     state->retroarch_session.config_snapshot = rop_snapshot;
+    if (frontend) {
+        /* Until the probe hears GET_INFO, Leaf assumes nothing about the
+           frontend's command set (see jw__tick_retroarch_frontend_probe). */
+        state->retroarch_session.frontend = true;
+        state->retroarch_session.frontend_probe_next_ms =
+            jw__monotonic_ms() + JW_FRONTEND_PROBE_FIRST_MS;
+    }
     jw__retroarch_session_pin_resume(state, rom_source, launch_game.rom_relpath,
                                      target->provider);
     if (boot_resume) {
@@ -12874,6 +12959,103 @@ static void jw__boot_resume_at_startup(jw_daemon_state *state) {
     }
     /* Started, blocked, or waiting on service coordination. */
     jw__tick_boot_resume_launch(state);
+}
+
+/* Leaf's RetroArch version, from the release build manifest, without its
+   leading "v" (RetroArch's VERSION reply has none). Empty when unknown. */
+static void jw__leaf_retroarch_version(char *out, size_t out_size) {
+    out[0] = '\0';
+    const char *platform = getenv("UMRK_PLATFORM_PATH");
+    if (!platform || !platform[0]) {
+        return;
+    }
+    char path[PATH_MAX];
+    if (snprintf(path, sizeof(path), "%s/bin/retroarch.build-manifest.json", platform) >=
+        (int)sizeof(path)) {
+        return;
+    }
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        return;
+    }
+    static char text[64u * 1024u];
+    size_t n = fread(text, 1, sizeof(text) - 1, fp);
+    fclose(fp);
+    text[n] = '\0';
+    cJSON *root = cJSON_Parse(text);
+    cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "retroarch_version");
+    if (cJSON_IsString(version) && version->valuestring[0]) {
+        const char *v = version->valuestring;
+        snprintf(out, out_size, "%s", v[0] == 'v' ? v + 1 : v);
+    }
+    cJSON_Delete(root);
+}
+
+/* LEAF-RA-1 capability probe. A pak frontend is trusted with Leaf's command
+   set (and so with the in-game menu, which pauses it first) only once it has
+   answered GET_INFO. Short bounded attempts on the loop, like the launch
+   warning below, so a slow or silent frontend never delays gameplay. */
+static void jw__tick_retroarch_frontend_probe(jw_daemon_state *state) {
+    if (!state) return;
+    jw_retroarch_session *session = &state->retroarch_session;
+    if (!session->active || !session->frontend || session->frontend_probe < 0 ||
+        (session->frontend_probe > 0 && session->frontend_version_done) ||
+        state->child_kind != JW_CHILD_RETROARCH) {
+        return;
+    }
+    long long now = jw__monotonic_ms();
+    if (session->frontend_probe_next_ms > now) return;
+
+    jw_ra_client ra = jw_ra_client_default();
+    if (session->frontend_probe > 0) {
+        /* Second phase: does it share Leaf's RetroArch version, the only
+           case its settings are promoted into the shared config. */
+        session->frontend_version_attempts++;
+        ra.timeout_ms = JW_FRONTEND_VERSION_TIMEOUT_MS;
+        char reply[JW_RA_REPLY_MAX];
+        reply[0] = '\0';
+        jw_ra_result version_result =
+            jw_ra_request_raw(&ra, "VERSION", reply, sizeof(reply));
+        /* VERSION replies with the bare version, e.g. "1.22.2\n". */
+        reply[strcspn(reply, "\r\n")] = '\0';
+        if ((version_result != JW_RA_OK || !reply[0]) &&
+            session->frontend_version_attempts < JW_FRONTEND_VERSION_MAX_ATTEMPTS) {
+            session->frontend_probe_next_ms = now + JW_FRONTEND_PROBE_RETRY_MS;
+            return;
+        }
+        char leaf_version[64];
+        jw__leaf_retroarch_version(leaf_version, sizeof(leaf_version));
+        session->frontend_version_done = true;
+        session->frontend_version_ok = version_result == JW_RA_OK &&
+                                       leaf_version[0] && reply[0] &&
+                                       strcmp(reply, leaf_version) == 0;
+        jw_log_info("RetroArch frontend version=%s leaf=%s config_promotion=%s",
+                    reply[0] ? reply : "(no reply)",
+                    leaf_version[0] ? leaf_version : "(unknown)",
+                    session->frontend_version_ok ? "on" : "off");
+        return;
+    }
+
+    session->frontend_probe_attempts++;
+    ra.timeout_ms = 100u;
+    jw_ra_info info;
+    jw_ra_result result = jw_ra_get_info(&ra, &info);
+    if (result == JW_RA_OK) {
+        session->frontend_probe = 1;
+        session->frontend_probe_next_ms = now + JW_FRONTEND_PROBE_RETRY_MS;
+        jw_log_info("RetroArch frontend probe: Leaf commands available after %d attempt%s",
+                    session->frontend_probe_attempts,
+                    session->frontend_probe_attempts == 1 ? "" : "s");
+        return;
+    }
+    if (session->frontend_probe_attempts >= JW_FRONTEND_PROBE_MAX_ATTEMPTS) {
+        session->frontend_probe = -1;
+        jw_log_warn("RetroArch frontend probe: no GET_INFO reply after %d attempts "
+                    "result=%s; Menu opens the frontend's own menu",
+                    session->frontend_probe_attempts, jw_ra_result_string(result));
+        return;
+    }
+    session->frontend_probe_next_ms = now + JW_FRONTEND_PROBE_RETRY_MS;
 }
 
 /* Deliver launch/recovery warnings through RetroArch exactly once, after its
@@ -18215,6 +18397,7 @@ int main(int argc, char *argv[]) {
             jw__tick_post_launch_resume(&state);
             jw__tick_boot_resume(&state);
             jw__tick_retroarch_warning(&state);
+            jw__tick_retroarch_frontend_probe(&state);
             jw__tick_retroarch_stuck_quit(&state);
             jw__tick_in_game_menu_prewarm(&state);
         }

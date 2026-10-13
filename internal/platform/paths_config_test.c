@@ -224,6 +224,58 @@ static int verify_hotkeys(const char *path, const char *label,
 }
 #endif
 
+/* One named assertion: prints which one failed and yields 0/1 for &=. */
+static int expect_ok(int condition, const char *label) {
+    if (!condition) {
+        fprintf(stderr, "retroarch-config-test: FAILED: %s\n", label);
+    }
+    return condition ? 1 : 0;
+}
+
+/* The runtime config text for one launch with the given frontend profile
+   (NULL: Leaf's own RetroArch). The file is removed again. */
+static char *prepare_text(const char *runtime, const char *root,
+                          const char *core,
+                          const jw_retroarch_frontend_profile *profile,
+                          char *error, size_t error_size) {
+    char *cfg = jw_prepare_retroarch_config_with_info(
+        runtime, root, core, NULL, NULL, true, false, profile,
+        error, error_size);
+    if (!cfg) return NULL;
+    char *text = read_text(cfg);
+    unlink(cfg);
+    free(cfg);
+    return text;
+}
+
+/* `text` with every line of the listed keys dropped. */
+static char *without_keys(const char *text, const char *const *keys,
+                          size_t key_count_in) {
+    char *out = calloc(strlen(text) + 1u, 1u);
+    if (!out) return NULL;
+    for (const char *line = text; line && *line;) {
+        const char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) + 1u : strlen(line);
+        int drop = 0;
+        for (size_t i = 0; i < key_count_in; i++) {
+            size_t klen = strlen(keys[i]);
+            if (len > klen && strncmp(line, keys[i], klen) == 0 &&
+                (line[klen] == ' ' || line[klen] == '=')) {
+                drop = 1;
+            }
+        }
+        if (!drop) strncat(out, line, len);
+        line = end ? end + 1 : NULL;
+    }
+    return out;
+}
+
+/* The keys a LEAF-RA-1 frontend profile may change: recording and audio. */
+static const char *const profile_keys[] = {
+    "record_driver", "video_record_config", "video_record_quality",
+    "recording_output_directory", "audio_driver", "audio_device",
+};
+
 int main(void) {
     char root[] = "/tmp/jw-retroarch-config-XXXXXX";
     int fd = mkstemp(root);
@@ -343,7 +395,7 @@ int main(void) {
             return fail("per-launch info fixture mkdir failed");
         }
         runtime_cfg = jw_prepare_retroarch_config_with_info(
-            runtime, root, core, launch_info, NULL, true, false,
+            runtime, root, core, launch_info, NULL, true, false, NULL,
             error, sizeof(error));
         char *text = runtime_cfg ? read_text(runtime_cfg) : NULL;
         char resolved_info[PATH_MAX];
@@ -873,6 +925,235 @@ int main(void) {
             return fail("roster player indices not protected from overrides");
         }
     }
+
+    /* LEAF-RA-1 frontend profile (a content pak's own RetroArch). It may take
+       away only what such a RetroArch can lack: FFmpeg recording and the
+       BlueALSA audio plugin. Everything else in the protected block, the
+       command port above all, is Leaf's, byte for byte. */
+    {
+        unsetenv("JAWAKA_AUDIO_OUTPUT");
+        unsetenv("UMRK_AUDIO_OUTPUT");
+        unsetenv("JAWAKA_AUDIO_DEVICE");
+        unsetenv("UMRK_AUDIO_DEVICE");
+        /* Persisted recording and audio keys must not leak into either. */
+        if (write_text(shared_cfg,
+                       "menu_driver = \"rgui\"\n"
+                       "record_driver = \"ffmpeg\"\n"
+                       "video_record_config = \"/persisted/evil.cfg\"\n"
+                       "audio_driver = \"alsa\"\n"
+                       "audio_device = \"bluealsa\"\n") != 0) {
+            return fail("frontend profile shared config write failed");
+        }
+        char *leaf = prepare_text(runtime, root, core, NULL, error, sizeof(error));
+        char *pak = prepare_text(runtime, root, core,
+                                 &jw_retroarch_frontend_profile_leaf_ra_1,
+                                 error, sizeof(error));
+        if (!leaf || !pak) {
+            free(leaf);
+            free(pak);
+            return fail(error[0] ? error : "frontend profile config generation failed");
+        }
+        int ok = 1;
+        /* The profile object itself says what it does. */
+        ok &= expect_ok(jw_retroarch_frontend_profile_leaf_ra_1.no_recording &&
+                            jw_retroarch_frontend_profile_leaf_ra_1.pulse_audio,
+                        "profile flags: no_recording and pulse_audio");
+        /* The command interface Leaf drives stays on, once, on the same port. */
+        ok &= expect_ok(occurrences(pak, "network_cmd_enable") == 1 &&
+                            key_count(pak, "network_cmd_enable", "= \"true\"") == 1,
+                        "frontend: network_cmd_enable true exactly once");
+        ok &= expect_ok(occurrences(pak, "network_cmd_port") == 1 &&
+                            key_count(pak, "network_cmd_port", "= \"55355\"") == 1,
+                        "frontend: network_cmd_port 55355 exactly once");
+        ok &= expect_ok(key_count(pak, "pause_nonactive", "= \"false\"") == 1 &&
+                            key_count(pak, "config_save_on_exit", "= \"true\"") == 1 &&
+                            key_count(pak, "sort_savefiles_enable", "= \"true\"") == 1 &&
+                            key_count(pak, "sort_savestates_enable", "= \"true\"") == 1 &&
+                            key_count(pak, "video_shader_enable", "= \"true\"") == 1 &&
+                            occurrences(pak, "rgui_config_directory") == 1,
+                        "frontend: the rest of the protected block is present");
+        /* Same lines as Leaf's own RetroArch once recording and audio are set
+           aside. */
+        char *leaf_rest = without_keys(leaf, profile_keys,
+                                       sizeof(profile_keys) / sizeof(profile_keys[0]));
+        char *pak_rest = without_keys(pak, profile_keys,
+                                      sizeof(profile_keys) / sizeof(profile_keys[0]));
+        ok &= expect_ok(leaf_rest && pak_rest && strcmp(leaf_rest, pak_rest) == 0,
+                        "the profile changes only recording and audio keys");
+        free(leaf_rest);
+        free(pak_rest);
+#ifdef PLATFORM_MLP1
+        /* Persisted recording and audio values are stripped from the merge on
+           the MLP1 (and only there), so none of them comes back. */
+        ok &= expect_ok(key_count(pak, "video_record_config", "/persisted/evil.cfg") == 0 &&
+                            key_count(leaf, "video_record_config", "/persisted/evil.cfg") == 0,
+                        "a persisted video_record_config never reaches the session");
+        ok &= expect_ok(key_count(pak, "audio_device", "bluealsa") == 0 &&
+                            key_count(leaf, "audio_device", "bluealsa") == 0,
+                        "a persisted audio_device never reaches the session");
+        char *leaf_record = ra_parse_value(leaf, "record_driver");
+        char *pak_record = ra_parse_value(pak, "record_driver");
+        /* Leaf's RetroArch records through the preset that exists in
+           defaults/; the frontend gets the do-nothing driver although the same
+           preset is right there, and none of the ffmpeg keys. */
+        ok &= expect_ok(path_exists(record_cfg), "recording preset fixture present");
+        ok &= expect_ok(leaf_record && strcmp(leaf_record, "ffmpeg") == 0 &&
+                            occurrences(leaf, "record_driver") == 1 &&
+                            key_count(leaf, "video_record_config", record_cfg) == 1 &&
+                            key_count(leaf, "recording_output_directory",
+                                      recordings_dir) == 1,
+                        "no profile: ffmpeg recording through the preset");
+        ok &= expect_ok(pak_record && strcmp(pak_record, "null") == 0 &&
+                            occurrences(pak, "record_driver") == 1 &&
+                            occurrences(pak, "video_record_config") == 0 &&
+                            occurrences(pak, "video_record_quality") == 0 &&
+                            occurrences(pak, "recording_output_directory") == 0,
+                        "frontend profile: record_driver null, no ffmpeg keys, "
+                        "although the preset exists");
+        free(leaf_record);
+        free(pak_record);
+#else
+        /* Neither the recording nor the audio block exists off the MLP1, so
+           the profile has no effect at all. */
+        ok &= expect_ok(strcmp(leaf, pak) == 0,
+                        "off the MLP1 the profile changes nothing");
+#endif
+        free(leaf);
+        free(pak);
+        if (!ok) {
+            return fail("frontend profile contract not met");
+        }
+    }
+
+#ifdef PLATFORM_MLP1
+    /* The audio half. Without a profile the Bluetooth route is ALSA through
+       BlueALSA, as before; a frontend without that plugin stays on PulseAudio
+       and never names "bluealsa" as its device. */
+    {
+        static const struct {
+            const char *label;
+            const char *output_env;     /* NULL: no output variable */
+            const char *output;
+            const char *device_env;     /* NULL: no device variable */
+            const char *device;
+            /* Leaf's RetroArch (NULL profile) */
+            const char *leaf_driver;
+            const char *leaf_device;
+            /* a LEAF-RA-1 frontend */
+            const char *pak_driver;
+            const char *pak_device;
+        } cases[] = {
+            { "bluetooth, no device", "JAWAKA_AUDIO_OUTPUT", "BLUETOOTH", NULL, NULL,
+              "alsa", "bluealsa", "pulse", "" },
+            { "bluetooth, device bluealsa", "JAWAKA_AUDIO_OUTPUT", "BLUETOOTH",
+              "JAWAKA_AUDIO_DEVICE", "bluealsa",
+              "alsa", "bluealsa", "pulse", "" },
+            { "bluetooth through the UMRK_ names", "UMRK_AUDIO_OUTPUT", "BLUETOOTH",
+              "UMRK_AUDIO_DEVICE", "bluealsa",
+              "alsa", "bluealsa", "pulse", "" },
+            { "bluetooth, device default", "JAWAKA_AUDIO_OUTPUT", "BLUETOOTH",
+              "JAWAKA_AUDIO_DEVICE", "default",
+              "alsa", "bluealsa", "pulse", "" },
+            { "speaker, no device", "JAWAKA_AUDIO_OUTPUT", "SPEAKER", NULL, NULL,
+              "pulse", "", "pulse", "" },
+            { "speaker, named sink", "JAWAKA_AUDIO_OUTPUT", "SPEAKER",
+              "JAWAKA_AUDIO_DEVICE", "alsa_output.platform-sound.stereo",
+              "pulse", "alsa_output.platform-sound.stereo",
+              "pulse", "alsa_output.platform-sound.stereo" },
+            { "nothing set", NULL, NULL, NULL, NULL, "pulse", "", "pulse", "" },
+        };
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            unsetenv("JAWAKA_AUDIO_OUTPUT");
+            unsetenv("UMRK_AUDIO_OUTPUT");
+            unsetenv("JAWAKA_AUDIO_DEVICE");
+            unsetenv("UMRK_AUDIO_DEVICE");
+            if (cases[i].output_env) setenv(cases[i].output_env, cases[i].output, 1);
+            if (cases[i].device_env) setenv(cases[i].device_env, cases[i].device, 1);
+            char *leaf = prepare_text(runtime, root, core, NULL, error, sizeof(error));
+            char *pak = prepare_text(runtime, root, core,
+                                     &jw_retroarch_frontend_profile_leaf_ra_1,
+                                     error, sizeof(error));
+            unsetenv("JAWAKA_AUDIO_OUTPUT");
+            unsetenv("UMRK_AUDIO_OUTPUT");
+            unsetenv("JAWAKA_AUDIO_DEVICE");
+            unsetenv("UMRK_AUDIO_DEVICE");
+            if (!leaf || !pak) {
+                free(leaf);
+                free(pak);
+                return fail(error[0] ? error : "audio profile config generation failed");
+            }
+            char *leaf_driver = ra_parse_value(leaf, "audio_driver");
+            char *leaf_device = ra_parse_value(leaf, "audio_device");
+            char *pak_driver = ra_parse_value(pak, "audio_driver");
+            char *pak_device = ra_parse_value(pak, "audio_device");
+            int ok = leaf_driver && leaf_device && pak_driver && pak_device &&
+                     strcmp(leaf_driver, cases[i].leaf_driver) == 0 &&
+                     strcmp(leaf_device, cases[i].leaf_device) == 0 &&
+                     strcmp(pak_driver, cases[i].pak_driver) == 0 &&
+                     strcmp(pak_device, cases[i].pak_device) == 0 &&
+                     /* each exactly once: the persisted alsa/bluealsa lines
+                        from the shared config never survive */
+                     occurrences(leaf, "audio_driver") == 1 &&
+                     occurrences(leaf, "audio_device") == 1 &&
+                     occurrences(pak, "audio_driver") == 1 &&
+                     occurrences(pak, "audio_device") == 1 &&
+                     /* a frontend never names the BlueALSA pcm anywhere */
+                     strstr(pak, "bluealsa") == NULL &&
+                     /* the rest of the audio block is shared */
+                     key_count(pak, "audio_latency", "= \"128\"") == 1 &&
+                     key_count(pak, "audio_block_frames", "= \"256\"") == 1;
+            if (!ok) {
+                fprintf(stderr,
+                        "retroarch-config-test: audio case \"%s\": leaf %s/%s (want %s/%s), "
+                        "frontend %s/%s (want %s/%s)\n",
+                        cases[i].label,
+                        leaf_driver ? leaf_driver : "(none)",
+                        leaf_device ? leaf_device : "(none)",
+                        cases[i].leaf_driver, cases[i].leaf_device,
+                        pak_driver ? pak_driver : "(none)",
+                        pak_device ? pak_device : "(none)",
+                        cases[i].pak_driver, cases[i].pak_device);
+            }
+            free(leaf_driver);
+            free(leaf_device);
+            free(pak_driver);
+            free(pak_device);
+            free(leaf);
+            free(pak);
+            if (!ok) {
+                return fail("audio routing differs from the frontend profile contract");
+            }
+        }
+    }
+
+    /* The recording gate is the profile, not the preset: with no preset on the
+       card Leaf's own RetroArch lands on the same do-nothing driver. */
+    {
+        char preset_stash[PATH_MAX + 8];
+        snprintf(preset_stash, sizeof(preset_stash), "%s.stash", record_cfg);
+        if (rename(record_cfg, preset_stash) != 0) {
+            return fail("could not stash the recording preset");
+        }
+        char *leaf = prepare_text(runtime, root, core, NULL, error, sizeof(error));
+        char *pak = prepare_text(runtime, root, core,
+                                 &jw_retroarch_frontend_profile_leaf_ra_1,
+                                 error, sizeof(error));
+        int restored = rename(preset_stash, record_cfg) == 0;
+        char *leaf_record = leaf ? ra_parse_value(leaf, "record_driver") : NULL;
+        char *pak_record = pak ? ra_parse_value(pak, "record_driver") : NULL;
+        int ok = restored && leaf_record && pak_record &&
+                 strcmp(leaf_record, "null") == 0 &&
+                 strcmp(pak_record, "null") == 0 &&
+                 occurrences(leaf, "video_record_config") == 0;
+        free(leaf_record);
+        free(pak_record);
+        free(leaf);
+        free(pak);
+        if (!ok) {
+            return fail("no recording preset did not select the null record driver");
+        }
+    }
+#endif
 
     /* RAOfflineProxy transient launch bridge. The shared config deliberately
        already carries both cheevos keys with foreign values, which is the

@@ -4,6 +4,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* The only frontend protocol a content pak can declare (leaf-contracts
+   docs/leaf-retroarch-frontend.md). */
+#define JW_RA_FRONTEND_PROTOCOL "leaf-ra-1"
+
 typedef struct {
     char **items;
     size_t count;
@@ -29,6 +33,10 @@ typedef struct {
     char *core_root_rel;
     char *provider;
     char *source_id;
+    /* LEAF-RA-1 frontend: a pak-supplied RetroArch launched in place of
+       Leaf's own for this core. Pak-relative like file_name; NULL for every
+       release core and for pak cores that run in Leaf's RetroArch. */
+    char *frontend_path;
     bool supports_menu;
     bool supports_savestate;
     bool supports_disk_control;
@@ -159,6 +167,12 @@ bool jw_ra_catalog_core_available(const jw_ra_catalog *catalog,
    platform_dir for type:path); content cores use APPS_PATH/provider and keep
    only pak-relative paths in catalog data. require_executable applies to
    standalone path cores. */
+/* The absolute path of a pak core's LEAF-RA-1 frontend, checked to be an
+   executable regular file. -1 when the core has none or it is missing. */
+int jw_ra_catalog_resolve_frontend_path(const jw_ra_catalog *catalog,
+                                        const jw_ra_core *core,
+                                        char *out,
+                                        size_t out_size);
 int jw_ra_catalog_resolve_core_path(const jw_ra_catalog *catalog,
                                     const jw_ra_core *core,
                                     const char *core_dir,

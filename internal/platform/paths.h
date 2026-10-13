@@ -78,13 +78,26 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
                                    bool proxied_cheevos,
                                    char *error, size_t error_size);
 
+/* What a LEAF-RA-1 frontend (a content pak's own RetroArch, launched in place
+   of Leaf's) cannot be assumed to have, so the protected block must not ask
+   for it. NULL means Leaf's own RetroArch, which has everything. */
+typedef struct {
+    bool no_recording;  /* no FFmpeg: record_driver "null", nothing else */
+    bool pulse_audio;   /* no BlueALSA plugin: PulseAudio even on Bluetooth */
+} jw_retroarch_frontend_profile;
+
+/* Every LEAF-RA-1 frontend gets this profile. */
+extern const jw_retroarch_frontend_profile jw_retroarch_frontend_profile_leaf_ra_1;
+
 /* Per-launch variant used when the core was selected from an immutable
    effective-catalog snapshot. explicit_info_dir must come from that same
-   snapshot, so an in-session generation swap cannot leave INFO_PATH stale. */
+   snapshot, so an in-session generation swap cannot leave INFO_PATH stale.
+   frontend is NULL for Leaf's own RetroArch. */
 char *jw_prepare_retroarch_config_with_info(
     const char *runtime_dir, const char *sdcard_root, const char *core_path,
     const char *explicit_info_dir, const int player_joypad_indices[4],
     bool persist_changes, bool proxied_cheevos,
+    const jw_retroarch_frontend_profile *frontend,
     char *error, size_t error_size);
 
 /* RAOfflineProxy transient launch bridge (umrk-workspace/plans/RAOfflineProxy).
