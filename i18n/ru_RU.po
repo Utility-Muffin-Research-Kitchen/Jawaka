@@ -11,6 +11,12 @@
 # Two final periods and one "ё" the update dropped are restored, the comma
 # it added before "или" is not, and "Turn on Save Before Power Off first"
 # follows that setting's new name.
+# Hide and delete strings by LVD14 (GitHub, Jawaka#212), 2026-10-13, with
+# edits by Atanvaron (GitHub, Jawaka#212), 2026-10-13, taken except that
+# "пресет" stays, as in RetroArch's own Russian menus; Show/Hide stays an
+# action; Storage free stays "Свободно"; unhiding reads "показать", as on
+# the Unhide button; and the file counts keep LVD14's "Карта: %s" form,
+# with one placeholder fewer in "1 file". Three typos are fixed.
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
@@ -170,6 +176,14 @@ msgstr "%s: пропущено %d значков (больше %dpx)"
 msgid "%s: %d icons over %dpx skipped, %d off-size"
 msgstr "%s: пропущено %d значков (больше %dpx), %d нестандартных"
 
+#: internal/settings/settings.c
+msgid "%s: Not in your library"
+msgstr "%s: нет в вашей библиотеке"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%zu files, %s, on your %s."
+msgstr "Файлов: %zu (%s). Карта: %s."
+
 #: cmd/jawaka-launcher/main.c
 msgid ", %d not found"
 msgstr ", %d не найдено"
@@ -177,6 +191,10 @@ msgstr ", %d не найдено"
 #: internal/settings/settings.c
 msgid "-"
 msgstr "-"
+
+#: cmd/jawaka-launcher/main.c
+msgid "1 file, %s, on your %s."
+msgstr "Файлов: 1 (%s). Карта: %s."
 
 #: internal/settings/settings.c
 msgid "1 min"
@@ -326,7 +344,7 @@ msgstr "После перезапуска игры может вступить �
 
 #: internal/retroarch/shader_strings.c
 msgid "A lighter handheld LCD grid with softer cell edges."
-msgstr "Облегчённая LCD-сетка портативной консоли с более мягкими краями ячеек."
+msgstr "Облегчённая LCD-сетка консоли с более мягкими краями ячеек."
 
 #: cmd/jawaka-launcher/main.c
 msgid "A theme folder named %s is already on your SD card.\n\nReplace it with %s from Pak Rat so it can be updated? The files in that folder will be replaced."
@@ -338,7 +356,7 @@ msgstr "Папка темы с таким именем уже есть на SD-�
 
 #: cmd/jawaka-launcher/main.c
 msgid "A theme that comes with Leaf already uses this folder name, so this one can't be installed."
-msgstr "Тема, поставляемая вместе с Leaf, уже использует это имя папки, поэтому её нельзя установить."
+msgstr "Тема в составе Leaf уже использует это имя папки, поэтому её нельзя установить."
 
 #: internal/settings/settings.c
 msgid "A: Choose   B: Back"
@@ -418,7 +436,7 @@ msgstr "Добавляет сдержанную текстуру в стиле P
 
 #: internal/retroarch/shader_strings.c
 msgid "Adds lightweight scanlines with reduced darkness for 8-bit, 16-bit, and PlayStation-era games."
-msgstr "Добавляет лёгкие сканлайны с уменьшенным затемнением для 8-, 16-битных игр и эры PlayStation."
+msgstr "Добавляет лёгкие сканлайны с уменьшенным затемнением для 8/16-битных игр и игр эры PlayStation."
 
 #: internal/retroarch/shader_strings.c
 msgid "Adds the fine RGB pixel grid of a handheld LCD panel."
@@ -435,6 +453,10 @@ msgstr "Настроить"
 #: cmd/jawaka-menu/main.c
 msgid "Advanced RetroArch menu"
 msgstr "Расширенное меню RetroArch"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Affected Files"
+msgstr "Затронутые файлы"
 
 #: internal/settings/timezones.c
 msgid "Afghanistan"
@@ -459,6 +481,10 @@ msgstr "Все системы"
 #: cmd/jawaka-launcher/main.c
 msgid "All rights reserved, redistribution permitted"
 msgstr "Все права защищены, распространение разрешено"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Already missing"
+msgstr "Уже отсутствует"
 
 #: internal/settings/settings.c
 msgid "Already used by %s"
@@ -772,6 +798,10 @@ msgstr "Проверить обновления"
 msgid "Check SD card"
 msgstr "Проверить SD-карту"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Checking your game's files..."
+msgstr "Проверка файлов вашей игры..."
+
 #: internal/settings/timezones.c
 msgid "China"
 msgstr "Китай"
@@ -851,11 +881,11 @@ msgstr "Подтвердить"
 
 #: internal/settings/storage_ui.c
 msgid "Connect to power or charge the battery to at least 30 percent and try again."
-msgstr "Подключите питание или зарядите аккумулятор хотя бы до 30%, затем повторите попытку."
+msgstr "Подключите консоль к источнику питания или зарядите аккумулятор хотя бы до 30%, а затем повторите попытку."
 
 #: internal/settings/storage_ui.c
 msgid "Connect to power or charge the battery to at least 30 percent to repair this card."
-msgstr "Для восстановления карты подключите питание или зарядите аккумулятор хотя бы до 30%."
+msgstr "Для восстановления карты подключите консоль к источнику питания или зарядите аккумулятор хотя бы до 30%."
 
 #: internal/settings/settings.c
 msgid "Connected"
@@ -877,17 +907,33 @@ msgstr "Не удалось настроить контроллер. Перез�
 msgid "Core"
 msgstr "Ядро"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Could not hide this game"
+msgstr "Не удалось скрыть эту игру"
+
 #: internal/settings/settings.c
 msgid "Could not save"
 msgstr "Не удалось сохранить"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Couldn't confirm the result. Check your library."
+msgstr "Не удалось подтвердить результат. Проверьте вашу библиотеку."
+
+#: cmd/jawaka-launcher/main.c
 msgid "Couldn't install %s"
 msgstr "Не удалось установить %s"
+
+#: internal/settings/settings.c
+msgid "Couldn't load hidden games."
+msgstr "Не удалось загрузить скрытые игры."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't resume your game. Open it to try loading your save."
 msgstr "Не удалось возобновить игру. Откройте её, чтобы попытаться загрузить сохранение."
+
+#: internal/settings/settings.c
+msgid "Couldn't unhide your selection."
+msgstr "Не удалось показать выбранные игры."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't uninstall %s"
@@ -928,6 +974,34 @@ msgstr "По умолчанию"
 #: internal/settings/settings.c
 msgid "Defaults"
 msgstr "По умолчанию"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Delete Game"
+msgstr "Удалить игру"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted %zu files."
+msgstr "Удалено файлов: %zu."
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted %zu of %zu files."
+msgstr "Удалено файлов: %zu из %zu."
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted 1 file."
+msgstr "Удалено файлов: 1."
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleting your game. Keep your cards inserted."
+msgstr "Удаление вашей игры. Не извлекайте карты."
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deletion finished. Library refresh failed."
+msgstr "Удаление завершено. Не удалось обновить библиотеку."
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deletion is permanent. This might not delete every file your game uses."
+msgstr "Удаление будет необратимым. При этом могут удалиться не все файлы, используемые игрой."
 
 #: internal/retroarch/shader_strings.c
 msgid "Designed for handheld content."
@@ -1070,6 +1144,10 @@ msgid "Fernando de Noronha"
 msgstr "Фернанду-ди-Норонья"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Files"
+msgstr "Файлы"
+
+#: cmd/jawaka-launcher/main.c
 msgid "Filter"
 msgstr "Фильтр"
 
@@ -1169,6 +1247,14 @@ msgstr "Вибрация в играх"
 msgid "Game Switcher"
 msgstr "Переключатель игр"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Game hidden. Library refresh failed."
+msgstr "Игра скрыта. Не удалось обновить библиотеку."
+
+#: cmd/jawaka-launcher/main.c
+msgid "Game hidden. Unhide it in Settings > Games > Hidden Games."
+msgstr "Игра скрыта. Чтобы показать её, перейдите в меню: «Настройки» > «Игры» > «Скрытые игры»."
+
 #: cmd/jawaka-osd/game_launch.c
 msgid "Game not saved"
 msgstr "Игра не сохранена"
@@ -1176,6 +1262,14 @@ msgstr "Игра не сохранена"
 #: cmd/jawaka-osd/game_launch.c
 msgid "Game saved"
 msgstr "Игра сохранена"
+
+#: internal/settings/settings.c
+msgid "Game unhidden"
+msgstr "Игра показана"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Game unhidden. Library refresh failed."
+msgstr "Игра показана. Не удалось обновить библиотеку."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Games"
@@ -1239,16 +1333,24 @@ msgid "Hidden"
 msgstr "Скрыто"
 
 #: internal/settings/settings.c
+msgid "Hidden Games"
+msgstr "Скрытые игры"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Hide Game"
+msgstr "Скрыть игру"
+
+#: internal/settings/settings.c
 msgid "Hold Menu, then press the button.   X: Disable"
-msgstr "Удерживайте «Menu», затем нажмите кнопку.   X: Отключить"
+msgstr "Удерживая «Menu», нажмите кнопку.   X: Отключить"
 
 #: internal/settings/settings.c
 msgid "Hold power to shut down, then release to save"
-msgstr "Удерживайте кнопку питания для выключения, затем отпустите для сохранения"
+msgstr "Удерживайте «Power» для выключения и отпустите, чтобы сохранить"
 
 #: internal/settings/settings.c
 msgid "Hold the power button %d seconds to force off"
-msgstr "Удерживайте кнопку питания %d сек. для принудительного выключения"
+msgstr "Удерживайте «Power» %d сек. для принудительного выключения"
 
 #: internal/settings/settings.c
 msgid "Home Layout"
@@ -1420,7 +1522,7 @@ msgstr "Leaf не может найти %s в папке Themes"
 
 #: internal/settings/storage_ui.c
 msgid "Leaf checked this card and found file system errors, usually left by a shutdown that didn't finish saving. To keep your files safe, you can't save to this card until it's repaired."
-msgstr "Leaf проверил эту карту и обнаружил ошибки файловой системы, которые обычно возникают при выключении, не успевшем завершить сохранение. Чтобы защитить ваши файлы, запись на эту карту запрещена до её восстановления."
+msgstr "Leaf проверил эту карту и обнаружил ошибки файловой системы, которые обычно возникают при выключении, не успевшем сохранить данные. Чтобы защитить ваши файлы, система запретила запись на эту карту, пока она не будет восстановлена."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Leaf couldn't confirm your SD card can be written."
@@ -1436,7 +1538,7 @@ msgstr "Leaf не смог распознать эту карту."
 
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't repair this card on your device. Turn off your device, repair the card on a computer, then check it here to save to it again."
-msgstr "Leaf не смог восстановить эту карту на вашем устройстве. Выключите устройство, восстановите карту на компьютере, затем проверьте её здесь, чтобы снова записывать на неё данные."
+msgstr "Leaf не смог восстановить эту карту на вашем устройстве. Выключите устройство, восстановите карту на компьютере, а затем проверьте её здесь, чтобы снова записывать на неё данные."
 
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't safely check this card, so nothing was changed. Check the card on a computer."
@@ -1675,6 +1777,10 @@ msgstr "Нет доступных игр"
 msgid "No games found"
 msgstr "Игры не найдены"
 
+#: internal/settings/settings.c
+msgid "No hidden games."
+msgstr "Нет скрытых игр."
+
 #: cmd/jawaka-launcher/main.c
 msgid "No lock"
 msgstr "Без блокировки"
@@ -1717,7 +1823,7 @@ msgstr "Сохранений пока нет"
 
 #: internal/retroarch/shader_strings.c
 msgid "No screen curvature; use CRT Curved for that."
-msgstr "Без кривизны экрана; для этого используйте CRT (кривизна)."
+msgstr "Без кривизны экрана; для неё используйте CRT (кривизна)."
 
 #: internal/settings/settings.c
 msgid "No services installed"
@@ -1742,6 +1848,10 @@ msgstr "Не найдено"
 #: internal/settings/settings.c
 msgid "Not connected"
 msgstr "Не подключено"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Not deleted"
+msgstr "Не удалено"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Not enough memory to open the BIOS picker"
@@ -1944,6 +2054,10 @@ msgstr "Предыдущая страница"
 msgid "Profile"
 msgstr "Профиль"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Progress stored inside a writable game image is erased with that image."
+msgstr "Прогресс, хранящийся в записываемом образе игры, стирается вместе с ним."
+
 #: internal/settings/settings.c
 msgid "Queued"
 msgstr "В очереди"
@@ -1978,7 +2092,7 @@ msgstr "Перезагрузка"
 
 #: cmd/jawaka-menu/main.c
 msgid "Reboot failed"
-msgstr "Ошибка перезагрузки"
+msgstr "Не удалось перезагрузить"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reboot?"
@@ -2057,6 +2171,10 @@ msgid "Remove the saved preset at the selected scope and turn shaders off."
 msgstr "Удалить сохранённый пресет для выбранной области и отключить шейдеры."
 
 #: cmd/jawaka-launcher/main.c
+msgid "Removed"
+msgstr "Убрано"
+
+#: cmd/jawaka-launcher/main.c
 msgid "Removing retained Pak Rat data"
 msgstr "Удаление сохранённых данных Pak Rat"
 
@@ -2118,7 +2236,7 @@ msgstr "Сброс настроек RetroArch"
 
 #: internal/settings/settings.c
 msgid "Reset shared RetroArch config to packaged defaults?"
-msgstr "Сбросить общую конфигурацию RetroArch до значений по умолчанию?"
+msgstr "Сбросить общую конфигурацию RetroArch к заводским настройкам?"
 
 #: internal/settings/settings.c
 msgid "Restart"
@@ -2134,7 +2252,7 @@ msgstr "Перезапустить и восстановить"
 
 #: internal/settings/settings.c
 msgid "Restart now to finish installing?"
-msgstr "Перезапустить сейчас для завершения установки?"
+msgstr "Перезапустить сейчас, чтобы завершить установку?"
 
 #: internal/settings/storage_ui.c
 msgid "Restarting to check your SD card"
@@ -2358,7 +2476,7 @@ msgstr "Скриншот"
 
 #: internal/settings/settings.c
 msgid "Screenshot Hotkey"
-msgstr "Горячая кнопка скриншота"
+msgstr "Горячая кнопка для скриншота"
 
 #: internal/settings/settings.c
 msgid "Screenshots"
@@ -2394,7 +2512,7 @@ msgstr "Sega CD"
 
 #: internal/launcher/system_names.c
 msgid "Sega Genesis"
-msgstr "Sega Mega Drive"
+msgstr "Sega Genesis"
 
 #: internal/launcher/system_names.c
 msgid "Sega Master System"
@@ -2426,7 +2544,7 @@ msgstr "Выбранный файл BIOS отсутствует"
 
 #: internal/launcher/bios.c
 msgid "Selected BIOS file is not a 512 KiB image"
-msgstr "Выбранный файл BIOS — не образ 512 КиБ"
+msgstr "Выбранный файл BIOS не является образом 512 КиБ"
 
 #: internal/launcher/bios.c
 msgid "Selected BIOS file is not a file"
@@ -2466,15 +2584,15 @@ msgstr "Шейдер"
 
 #: cmd/jawaka-menu/main.c
 msgid "Shader failed and the previous shader could not be restored. Reopen the game."
-msgstr "Сбой применения шейдера. Не удалось восстановить предыдущий шейдер. Перезапустите игру."
+msgstr "Сбой шейдера. Не удалось восстановить предыдущий шейдер. Перезапустите игру."
 
 #: cmd/jawaka-menu/main.c
 msgid "Shader is active for this session, but could not be saved for %s."
-msgstr "Шейдер активен для этой сессии, но его не удалось сохранить для %s."
+msgstr "Шейдер активен для этой сессии, но не был сохранён для %s."
 
 #: cmd/jawaka-menu/main.c
 msgid "Shader operation failed."
-msgstr "Сбой операции с шейдером."
+msgstr "Сбой операции шейдера."
 
 #: cmd/jawaka-menu/main.c
 msgid "Shader scope"
@@ -2507,7 +2625,7 @@ msgstr "Сигнал: %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Size is not proof that a file is a Saturn BIOS."
-msgstr "Размер не гарантирует, что файл является BIOS для Sega Saturn."
+msgstr "Размер не гарантирует, что файл является BIOS Saturn."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Sleep"
@@ -2515,7 +2633,7 @@ msgstr "Сон"
 
 #: cmd/jawaka-menu/main.c
 msgid "Sleep failed"
-msgstr "Ошибка перехода в режим сна"
+msgstr "Не удалось перейти в режим сна"
 
 #: cmd/jawaka-menu/main.c
 msgid "Sleeping…"
@@ -2563,7 +2681,7 @@ msgstr "Скорость"
 
 #: internal/settings/settings.c
 msgid "Split Over 10MB"
-msgstr "Разделить более 10 МБ"
+msgstr "Разделить больше 10 МБ"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Splore import incomplete"
@@ -2644,6 +2762,10 @@ msgstr "Стиль"
 #: internal/retroarch/shader_strings.c
 msgid "Subtle Scanlines"
 msgstr "Тонкие сканлайны"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Summary"
+msgstr "Сводка"
 
 #: internal/launcher/system_names.c
 msgid "Super Famicom"
@@ -2811,7 +2933,7 @@ msgstr "В теме есть арт с недопустимым именем с�
 
 #: cmd/jawaka-launcher/main.c
 msgid "The theme has more than one wallpaper in the same folder."
-msgstr "В папке темы содержится более одного фонового изображения."
+msgstr "В одной папке темы находится несколько обоев."
 
 #: cmd/jawaka-launcher/main.c
 msgid "The theme has no preview image."
@@ -3010,6 +3132,10 @@ msgid "Unavailable"
 msgstr "Недоступно"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Unhide"
+msgstr "Показать"
+
+#: cmd/jawaka-launcher/main.c
 msgid "Uninstall"
 msgstr "Удалить"
 
@@ -3192,15 +3318,15 @@ msgstr "Ваша SD-карта только для чтения"
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card is read-only after a file system error. You can't save new files or changes to this card. This can happen after an unexpected shutdown."
-msgstr "Ваша SD-карта только для чтения после ошибки файловой системы. Новые файлы и изменения сохранить нельзя. Бывает после внезапного выключения."
+msgstr "После ошибки файловой системы ваша SD-карта доступна только для чтения. Вы не можете сохранять на эту карту новые файлы или вносить изменения. Это могло произойти после внезапного выключения."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your SD card is read-only. Nothing new can be saved to it."
-msgstr "Ваша SD-карта только для чтения. Сохранение новых данных невозможно."
+msgstr "Ваша SD-карта доступна только для чтения. Сохранять новые данные на неё нельзя."
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card is read-only. The cause couldn't be determined. You can't save new files or changes to this card."
-msgstr "Ваша SD-карта только для чтения. Причину определить не удалось. Вы не сможете сохранять новые файлы или изменения на этой карте."
+msgstr "Ваша SD-карта доступна только для чтения. Причину установить не удалось. Вы не можете сохранять на эту карту новые файлы или вносить изменения."
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card is still protected. Turn off your device, repair the card on a computer, safely eject it, then insert it and turn your device on to check it again."
@@ -3208,7 +3334,7 @@ msgstr "Ваша SD-карта по-прежнему защищена. Выкл�
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your SD card is waiting for repair. Nothing new can be saved to it."
-msgstr "Ваша SD-карта ожидает восстановления. Сохранение новых данных невозможно."
+msgstr "Ваша SD-карта ожидает восстановления. Сохранять новые данные на неё нельзя."
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card is write-protected"
@@ -3228,11 +3354,11 @@ msgstr "Ваша карта прошла проверку файловой си�
 
 #: internal/settings/storage_ui.c
 msgid "Your device can't write to this card, so it can't be repaired here."
-msgstr "Ваше устройство не может записывать на эту карту, восстановить её здесь нельзя."
+msgstr "Ваше устройство не может записывать данные на эту карту, восстановить её здесь нельзя."
 
 #: internal/settings/storage_ui.c
 msgid "Your device can't write to this card. If you use an adapter with a lock switch, check that it isn't set to lock."
-msgstr "Ваше устройство не может записывать на карту. Если вы используете адаптер с переключателем блокировки, проверьте, что он не находится в положении блокировки."
+msgstr "Ваше устройство не может записывать данные на эту карту. Если вы используете переходник с переключателем, проверьте, что он не в положении «Lock»."
 
 #: internal/settings/storage_ui.c
 msgid "Your device will restart to check and repair this card on battery power. If the battery drops below 30 percent before repair starts, it won't run. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first."
@@ -3240,7 +3366,7 @@ msgstr "Ваше устройство перезагрузится, чтобы �
 
 #: internal/settings/storage_ui.c
 msgid "Your device will restart to check and repair this card. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first if you need to recover them. Keep your device connected to power until the check finishes."
-msgstr "Ваше устройство перезагрузится для проверки и восстановления карты. Повреждённые файлы могут быть укорочены, переименованы или восстановлены под новыми именами. Сначала сделайте резервную копию важных файлов на компьютере, если вам может понадобиться их восстановить. Держите устройство подключённым к питанию до конца проверки."
+msgstr "Ваше устройство перезагрузится для проверки и восстановления карты. Повреждённые файлы могут быть укорочены, переименованы или восстановлены под новыми именами. Если вам нужно восстановить важные файлы, сначала сделайте их резервную копию на компьютере. Не отключайте устройство от источника питания до завершения проверки."
 
 #: internal/settings/storage_ui.c
 msgid "Your device will restart to check this card. If the check passes, you can save files again."
@@ -3259,12 +3385,24 @@ msgid "Your last shutdown didn't finish saving."
 msgstr "Последнее выключение не завершило сохранение."
 
 #: internal/settings/storage_ui.c
+msgid "Your library is read-only. You can't save changes. Open Settings > System > SD Cards to check your card."
+msgstr "Ваша библиотека доступна только для чтения. Изменения не будут сохранены. Откройте «Настройки» > «Система» > «SD-карты», чтобы проверить карту."
+
+#: internal/settings/settings.c
+msgid "Your library is read-only. Your selection is still hidden."
+msgstr "Ваша библиотека доступна только для чтения. Выбранные игры по-прежнему скрыты."
+
+#: internal/settings/storage_ui.c
 msgid "Your other SD card is still read-only, so your library can't update yet."
-msgstr "Вторая SD-карта всё ещё только для чтения, поэтому библиотека пока не может быть обновлена."
+msgstr "Вторая SD-карта всё ещё доступна только для чтения, поэтому библиотека пока не может обновиться."
+
+#: cmd/jawaka-launcher/main.c
+msgid "Your save files, states and artwork are kept."
+msgstr "Ваши сохранения, состояния и картинки сохранены."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your saves and save states may not be kept while this SD card is read-only."
-msgstr "Пока карта только для чтения, сохранения и состояния могут не записаться."
+msgstr "Пока карта доступна только для чтения, сохранения и состояния могут не записаться."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your saves and save states may not be kept while this SD card is waiting for repair."
