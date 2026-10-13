@@ -620,6 +620,12 @@ check_load_failure() { # name load-mode want; NO_STATE_INFO=1: no GET_STATE_SAVE
     stop
     expect 'boot resume: sent QUIT to RetroArch pid='
     expect 'the launcher opens with a notice'
+    # Only Hardcore gets its own notice: opening the game can't load the save.
+    if [ "$2" = HARDCORE ]; then
+        expect 'boot resume: the notice names Hardcore'
+    else
+        expect_not 'the notice names Hardcore'
+    fi
     expect 'boot resume: no play recorded'
     expect 'boot resume: RetroArch config not kept'
     expect_not 'RetroArch shared config backed up'
@@ -642,7 +648,7 @@ grep -q -x "LOAD_STATE_SYNC $REQUEST_ID 99" "$RA_COMMANDS" &&
 NO_STATE_INFO=1 check_load_failure load-oldest-retroarch silent \
     'RetroArch cannot sync-load (state info=timeout)'
 grep -q '^LOAD_STATE_SYNC' "$RA_COMMANDS" && fail "the oldest RetroArch was probed for the load"
-echo "row load-failure: error, busy, active Hardcore and older RetroArch builds quit to the launcher"
+echo "row load-failure: error, busy, active Hardcore (named in the notice) and older RetroArch builds quit to the launcher"
 
 # --- Saved through the proxy: the boot waits for it and resumes casual. ---
 health_up

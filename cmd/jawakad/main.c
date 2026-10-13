@@ -572,6 +572,9 @@ typedef struct {
     char boot_id[JW_BOOT_RESUME_BOOT_ID_MAX];
     jw_boot_resume_launch boot_resume;
     bool boot_resume_notice_pending;
+    /* The pending notice says Hardcore refused the load, so the player knows
+       what to turn off. */
+    bool boot_resume_notice_hardcore;
     /* Host-build test hook (scripts/boot-resume-ipc-smoke.sh): the mock card
        has no uuid:/fat: identity, so the primary source reads as this one. */
     char test_source_fingerprint[JW_BOOT_RESUME_FINGERPRINT_MAX];
@@ -9803,6 +9806,11 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
             setenv("JAWAKA_BOOT_RESUME_FAILED", "1", 1);
         else
             unsetenv("JAWAKA_BOOT_RESUME_FAILED");
+        if (kind == JW_CHILD_LAUNCHER && state->boot_resume_notice_pending &&
+            state->boot_resume_notice_hardcore)
+            setenv("JAWAKA_BOOT_RESUME_REASON", "hardcore", 1);
+        else
+            unsetenv("JAWAKA_BOOT_RESUME_REASON");
         /* 5-Game Mode: while active, every launcher spawn (incl. return-from-game)
            re-enters the focus screen. Pass the chosen set + style so the launcher
            renders focus mode instead of the normal tab UI. */
@@ -9829,6 +9837,7 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     if (kind == JW_CHILD_LAUNCHER) {
         state->launch_input_failed = false;
         state->boot_resume_notice_pending = false;
+        state->boot_resume_notice_hardcore = false;
     }
     state->launcher_levels_signal = false;   /* until the new one says hello */
     state->child_pid = pid;
@@ -12886,6 +12895,10 @@ static void jw__tick_boot_resume(jw_daemon_state *state) {
         char why[64];
         snprintf(why, sizeof(why), "LOAD_STATE_SYNC %s", reply.error);
         jw__boot_resume_fail(state, why, true);
+        if (state->boot_resume_notice_pending && strcmp(reply.error, "HARDCORE") == 0) {
+            state->boot_resume_notice_hardcore = true;
+            jw_log_info("boot resume: the notice names Hardcore");
+        }
         return;
     }
     jw__boot_resume_succeed(state, reply.bytes);

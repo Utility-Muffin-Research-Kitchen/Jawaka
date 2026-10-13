@@ -912,6 +912,10 @@ msgstr ""
 msgid "Couldn't resume your game. Open it to try loading your save."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Couldn't resume: Hardcore mode doesn't allow loading a save."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Couldn't unhide your selection."
 msgstr ""
