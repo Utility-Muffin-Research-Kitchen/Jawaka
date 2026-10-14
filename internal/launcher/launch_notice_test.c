@@ -22,6 +22,30 @@ static void expect_remaining(const char *label, uint32_t actual, uint32_t expect
     exit(1);
 }
 
+/* 10 px per character, 20 px per CJK character. */
+static int fake_width(void *context, const char *text) {
+    (void)context;
+    int w = 0;
+    for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
+        if ((*p & 0xC0) == 0x80) continue;
+        w += *p >= 0xE0 ? 20 : 10;
+    }
+    return w;
+}
+
+static void expect_split(const char *label, const char *text, int max_w,
+                         int count, const char *first, const char *second) {
+    jw_launch_notice_lines lines;
+    memset(&lines, 'z', sizeof(lines));
+    int got = jw_launch_notice_split(text, max_w, fake_width, NULL, &lines);
+    if (got == count && lines.count == count && strcmp(lines.line[0], first) == 0 &&
+        strcmp(lines.line[1], second) == 0)
+        return;
+    fprintf(stderr, "%s: got %d [%s] [%s], expected %d [%s] [%s]\n", label, got,
+            lines.line[0], lines.line[1], count, first, second);
+    exit(1);
+}
+
 int main(void) {
     jw_system_notice notice;
     memset(&notice, 0, sizeof(notice));
@@ -80,6 +104,33 @@ int main(void) {
     expect("long message terminated",
            notice.text[sizeof(notice.text) - 1] == '\0', true);
     expect("long message kept", strlen(notice.text) == sizeof(notice.text) - 1, true);
+
+    expect_split("fits on one line", "Launch canceled", 1000, 1, "Launch canceled", "");
+    expect_split("empty notice", "", 1000, 0, "", "");
+    /* 600 px: the break nearest the middle, so neither line is much wider. */
+    expect_split("balanced two lines",
+                 "Couldn't resume: Hardcore mode doesn't allow loading a save.", 400, 2,
+                 "Couldn't resume: Hardcore mode", "doesn't allow loading a save.");
+    /* Too long for two lines: line one fills, line two keeps the rest for the
+       caller to ellipsize. */
+    expect_split("overflow fills line one",
+                 "Couldn't resume: Hardcore mode doesn't allow loading a save.", 250, 2,
+                 "Couldn't resume: Hardcore", "mode doesn't allow loading a save.");
+    expect_split("space run is not kept", "Launch   canceled", 100, 2, "Launch", "canceled");
+    expect_split("long word cut at a character", "Supercalifragilisticexpialidocious", 200, 2,
+                 "Supercalifragilistic", "expialidocious");
+    /* Chinese has no spaces: break between characters, never inside one. */
+    expect_split("CJK breaks between characters",
+                 "无法继续游戏。请打开游戏并尝试读取存档。", 250, 2,
+                 "无法继续游戏。请打开", "游戏并尝试读取存档。");
+    /* Breaking before 。 ties on width but would start line two with it. */
+    expect_split("closing punctuation stays on line one", "一二三四。五六七八", 100, 2,
+                 "一二三四。", "五六七八");
+    /* Breaking after （ would be narrower, but would end line one with it. */
+    expect_split("opening punctuation stays on line two", "一二三（四五六七", 100, 2,
+                 "一二三", "（四五六七");
+    expect_split("CJK keeps a spaced word whole", "请重启 Leaf 后重试。", 120, 2,
+                 "请重启 Leaf", "后重试。");
 
     printf("launch-notice-test: ok\n");
     return 0;
