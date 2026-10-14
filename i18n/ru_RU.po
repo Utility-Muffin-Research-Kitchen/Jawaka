@@ -17,6 +17,9 @@
 # action; Storage free stays "Свободно"; unhiding reads "показать", as on
 # the Unhide button; and the file counts keep LVD14's "Карта: %s" form,
 # with one placeholder fewer in "1 file". Three typos are fixed.
+# Resume notices by Atanvaron (GitHub, Jawaka#212), 2026-10-14, which fit
+# now that a long notice wraps onto two lines; Removed reads "Удалено", as
+# LVD14 agreed.
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
@@ -929,7 +932,11 @@ msgstr "Не удалось загрузить скрытые игры."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't resume your game. Open it to try loading your save."
-msgstr "Не удалось возобновить игру. Откройте её, чтобы попытаться загрузить сохранение."
+msgstr "Не удалось возобновить игру. Запустите её, чтобы попытаться загрузить сохранение."
+
+#: cmd/jawaka-launcher/main.c
+msgid "Couldn't resume: Hardcore mode doesn't allow loading a save."
+msgstr "Не удалось возобновить игру: режим хардкора не позволяет загружать сохранения."
 
 #: internal/settings/settings.c
 msgid "Couldn't unhide your selection."
@@ -2172,7 +2179,7 @@ msgstr "Удалить сохранённый пресет для выбранн
 
 #: cmd/jawaka-launcher/main.c
 msgid "Removed"
-msgstr "Убрано"
+msgstr "Удалено"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Removing retained Pak Rat data"
