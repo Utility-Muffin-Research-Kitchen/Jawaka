@@ -988,9 +988,15 @@ static void jw__draw_system_activity(const jw_launcher_state *state) {
         cat_get_theme()->hint, cat_get_screen_width() - 2 * (margin + CAT_S(12)));
 }
 
+static int jw__launch_notice_measure(void *font, const char *text) {
+    return cat_measure_text((TTF_Font *)font, text);
+}
+
 /* Draw the launch notice as an opaque pill above the footer and the system-
    activity strip. Called only from jw__present(); opaque, because a theme
-   background image is not. */
+   background image is not. A notice too wide for one line wraps onto a
+   second, which grows the pill upward; only text too long for two lines
+   ellipsizes. */
 static void jw__draw_launch_notice(const jw_launcher_state *state) {
     if (!state) return;
     const char *text = jw_launch_notice_text(&state->launch_notice, SDL_GetTicks());
@@ -1004,11 +1010,19 @@ static void jw__draw_launch_notice(const jw_launcher_state *state) {
     int pad_x = CAT_S(12);
     int pad_y = CAT_S(4);
     int font_h = TTF_FontHeight(small);
-    int pill_h = font_h + pad_y * 2;
+    int line_skip = TTF_FontLineSkip(small);
     int max_pill_w = sw * 90 / 100;
     int max_text_w = max_pill_w - pad_x * 2;
     if (max_text_w < 1) max_text_w = 1;
-    int text_w = cat_measure_text_ellipsized(small, text, max_text_w);
+    jw_launch_notice_lines lines;
+    jw_launch_notice_split(text, max_text_w, jw__launch_notice_measure, small, &lines);
+    int line_w[2] = { 0, 0 };
+    int text_w = 0;
+    for (int i = 0; i < lines.count; ++i) {
+        line_w[i] = cat_measure_text_ellipsized(small, lines.line[i], max_text_w);
+        if (line_w[i] > text_w) text_w = line_w[i];
+    }
+    int pill_h = font_h + (lines.count - 1) * line_skip + pad_y * 2;
     int pill_w = text_w + pad_x * 2;
     if (pill_w > max_pill_w) pill_w = max_pill_w;
     int pill_x = (sw - pill_w) / 2;
@@ -1019,9 +1033,11 @@ static void jw__draw_launch_notice(const jw_launcher_state *state) {
     cat_draw_rounded_rect(pill_x, pill_y, pill_w, pill_h, CAT_S(8), theme->hint);
     cat_draw_rounded_rect(pill_x + 1, pill_y + 1, pill_w - 2, pill_h - 2,
                           CAT_S(7), theme->background);
-    cat_draw_text_ellipsized(small, text, pill_x + pad_x,
-                             pill_y + (pill_h - font_h) / 2,
-                             theme->text, max_text_w);
+    for (int i = 0; i < lines.count; ++i) {
+        cat_draw_text_ellipsized(small, lines.line[i], pill_x + (pill_w - line_w[i]) / 2,
+                                 pill_y + pad_y + i * line_skip,
+                                 theme->text, max_text_w);
+    }
 }
 
 static void jw__system_activity_tick(jw_launcher_state *state) {

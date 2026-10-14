@@ -1381,7 +1381,8 @@ performance-dreamcast-ipc-smoke:
 	scripts/performance-dreamcast-ipc-smoke.sh
 
 # Pure header over the shared system-notice primitive: set/expiry/only-a-new-
-# launch-attempt-clears. Link-free, so no product sources are dragged in.
+# launch-attempt-clears, and the two-line split. Link-free, so no product
+# sources are dragged in.
 launch-notice-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/launch-notice-test \
 		internal/launcher/launch_notice_test.c
