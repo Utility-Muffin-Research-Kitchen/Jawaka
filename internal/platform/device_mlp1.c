@@ -4536,6 +4536,7 @@ static void jw__mlp1_game_display_begin(jw_platform_context *ctx,
        mirroring, say): unknown, so the end rebuilds it. */
     gd->mode = !live ? JW_GAME_DISPLAY_PANEL
                      : jw__mlp1_hdmi_tv_active() ? s_mlp1_hdmi_mode : -1;
+    snprintf(gd->connector, sizeof(gd->connector), "%s", live ? "HDMI-A-1" : "DSI-1");
     (void)jw__mlp1_get_display_mode(ctx, &gd->width, &gd->height, &gd->hz);
 
     if (!jw_game_display_hide_external(jw__mlp1_hdmi_connected(), live)) {

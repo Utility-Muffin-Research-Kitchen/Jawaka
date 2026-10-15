@@ -341,6 +341,7 @@ typedef struct {
     int  width;             /* scanout before the game; 0 when unknown */
     int  height;
     int  hz;
+    char connector[16];     /* the live output's DRM connector; "" when unknown */
 } jw_platform_game_display;
 
 typedef struct {

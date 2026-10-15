@@ -62,6 +62,44 @@ static inline bool jw_game_display_needs_restart(bool compositor_stopped,
     return now_w != before_w || now_h != before_h;
 }
 
+/* The screen a standalone game draws on, for every standalone child:
+
+     LEAF_DISPLAY_OUTPUT     panel | hdmi
+     LEAF_DISPLAY_CONNECTOR  the DRM connector, e.g. DSI-1 or HDMI-A-1
+     LEAF_DISPLAY_MODE       the scanout the launcher was using, WxH@Hz
+     LEAF_DISPLAY_ASPECT     4:3 | stretch (HDMI Output's choice on a TV)
+
+   The MLP1 panel is a portrait part mounted sideways, so emulators that drive
+   the display themselves rotate for it; a TV needs no rotation. An unset
+   LEAF_DISPLAY_OUTPUT means the panel, which is how Leaf before these variables
+   behaved, so a launch script reading them works on either. A TV whose mode
+   Leaf did not set up (mode -1) still counts as hdmi. */
+typedef struct {
+    char output[8];
+    char connector[16];
+    char mode[32];
+    char aspect[8];
+} jw_game_display_env;
+
+/* Values for the variables above; an empty string means "leave it unset". */
+static inline void jw_game_display_env_values(int mode, const char *connector,
+                                              int width, int height, int hz,
+                                              jw_game_display_env *out) {
+    snprintf(out->output, sizeof(out->output), "%s",
+             mode == JW_GAME_DISPLAY_PANEL ? "panel" : "hdmi");
+    snprintf(out->connector, sizeof(out->connector), "%s", connector ? connector : "");
+    out->mode[0] = '\0';
+    if (width > 0 && height > 0) {
+        if (hz > 0) {
+            snprintf(out->mode, sizeof(out->mode), "%dx%d@%d", width, height, hz);
+        } else {
+            snprintf(out->mode, sizeof(out->mode), "%dx%d", width, height);
+        }
+    }
+    snprintf(out->aspect, sizeof(out->aspect), "%s",
+             mode == JW_GAME_DISPLAY_TV_STRETCH ? "stretch" : "4:3");
+}
+
 /* The JW_WESTON_INITD command that brings Weston up on one output, single-head:
 
    - the panel (DSI-1). `panel_override`, when not NULL, is removed first: the
