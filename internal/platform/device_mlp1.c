@@ -128,14 +128,16 @@
    volume runs through PulseAudio's software sink volume above. PulseAudio can,
    however, drift this hardware element low (we have seen it stuck at 0 = muted
    and at ~167 = barely audible), leaving the speaker silent no matter the sink %.
-   This self-heal re-asserts the pin whenever it has fallen below it. Keep the
-   value (210) in sync with 00-audio-init.sh. */
-#define JW_MLP1_DAC_PIN 210
+   This self-heal re-asserts the pin whenever it has fallen below it. 222 is what
+   stock's loudest volume level (14 via /sys/kernel/rk817/volume) sets, so Leaf
+   at 100% matches stock at max. Keep the value (222) in sync with
+   00-audio-init.sh. */
+#define JW_MLP1_DAC_PIN 222
 #define JW_MLP1_ENSURE_DAC_FLOOR \
     "v=$(amixer -c 1 cget numid=16 2>/dev/null | " \
     "sed -n 's/.*: values=\\([0-9]*\\).*/\\1/p' | head -1); " \
-    "if [ -n \"$v\" ] && [ \"$v\" -lt 210 ]; then " \
-    "amixer -c 1 cset numid=16 210,210 >/dev/null 2>&1; fi"
+    "if [ -n \"$v\" ] && [ \"$v\" -lt 222 ]; then " \
+    "amixer -c 1 cset numid=16 222,222 >/dev/null 2>&1; fi"
 /* Suspend/resume the PulseAudio sink around a system suspend. Suspending the sink
    closes the ALSA device, which powers the codec output stage down through the
    driver's DAPM sequence (pop-free, unlike an amixer Playback Path switch) - the
