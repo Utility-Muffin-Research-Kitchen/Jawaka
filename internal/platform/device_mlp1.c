@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include "internal/platform/power_request.h"
 #include "internal/platform/stock_volume.h"
+#include "internal/platform/game_display.h"
 #include "internal/platform/weston_initd.h"
 #include "internal/power/power_hard_cut.h"
 #include <linux/i2c-dev.h>
@@ -1729,35 +1730,26 @@ static bool jw__mlp1_hdmi_has_1080p120(void) {
    1080p120, drive 1920x1080@120 so BFI + smoothness work over HDMI; otherwise the
    crisp, universal 720p60 (the 960x720 4:3 UI maps 1:1). 4:3 pillarboxes via a
    centered rect; Stretch fills the frame. */
+/* 1080p120 for the TV when the user wants 120 Hz and the TV advertises it.
+   `fallback_hz` stands in for the Refresh Rate setting until it is known. */
+static bool jw__mlp1_hdmi_use120(int fallback_hz) {
+    int want = (s_mlp1_target_refresh_hz > 0) ? s_mlp1_target_refresh_hz : fallback_hz;
+    return want >= 120 && jw__mlp1_hdmi_has_1080p120();
+}
+
 static int jw__mlp1_set_hdmi_output(int mode) {
-    char script[1024];
-    if (mode == JW_MLP1_HDMI_OFF) {
-        snprintf(script, sizeof(script),
-            "rm -f /tmp/.weston_drm.conf %s; "
-            JW_WESTON_ROOTFS_ENV " WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=DSI-1 "
-            JW_WESTON_INITD_SCRIPT " restart; sleep 1; "
-            "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
-            JW_MLP1_WESTON_OVERRIDE_INI);
-    } else {
-        int want = (s_mlp1_target_refresh_hz > 0) ? s_mlp1_target_refresh_hz
-                                                  : jw__mlp1_get_refresh_hz();
-        bool use120 = (want >= 120) && jw__mlp1_hdmi_has_1080p120();
-        const char *modestr = use120 ? "1920x1080@120" : "1280x720";
-        char rectline[64] = "";
-        if (mode == JW_MLP1_HDMI_4_3) {
-            snprintf(rectline, sizeof(rectline),
-                     "output:HDMI-A-1:rect=<%s>\\n",
-                     use120 ? "240,0,1680,1080" : "160,0,1120,720");
-        }
-        snprintf(script, sizeof(script),
-            "rm -f %s; "
-            "printf 'output:HDMI-A-1:mode=%s\\n%soutput:HDMI-A-1:primary\\n' > /tmp/.weston_drm.conf; "
-            JW_WESTON_ROOTFS_ENV " WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=HDMI-A-1 "
-            "WESTON_DRM_VIRTUAL_SIZE=960x720 WESTON_DRM_CONFIG=/tmp/.weston_drm.conf "
-            JW_WESTON_INITD_SCRIPT " restart; sleep 1; "
-            "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
-            JW_MLP1_WESTON_OVERRIDE_INI, modestr, rectline);
+    char command[1024];
+    char script[1200];
+    bool use120 = mode != JW_MLP1_HDMI_OFF &&
+                  jw__mlp1_hdmi_use120(jw__mlp1_get_refresh_hz());
+    if (jw_game_display_weston_command(mode, use120, JW_MLP1_WESTON_OVERRIDE_INI,
+                                       "restart", command, sizeof(command)) != 0) {
+        return -1;
     }
+    snprintf(script, sizeof(script),
+             "%s; sleep 1; "
+             "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
+             command);
 
     /* The color-temperature LUT stays programmed on the (shared) CRTC across the
        Weston restart and the connector switch, so it would tint the TV. It is
@@ -4481,6 +4473,173 @@ static void jw__mlp1_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
     jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "led applied");
 }
 
+/* ── Standalone games and the display ─────────────────────────────────────
+   See game_display.h. Hiding the TV is the DRM sysfs connector force: `off`
+   makes HDMI-A-1 read disconnected with no modes to every client, `detect`
+   hands it back to the hotplug detection. Measured on the vendor 5.10 kernel:
+   a Weston running on DSI-1 is unaffected, and Flycast then stays on the panel.
+   The force outlives jawakad, so a marker in the runtime directory (tmpfs,
+   cleared by a reboot, which also clears the force) records it until the
+   connector is shown again. */
+#define JW_MLP1_HDMI_ENABLED "/sys/class/drm/card0-HDMI-A-1/enabled"
+#define JW_MLP1_HDMI_HIDDEN_MARKER "hdmi-hidden-for-game"
+/* After `detect` the connector reads the EDID again; give it this long to
+   report a cable that is still there. */
+#define JW_MLP1_HDMI_DETECT_WAIT_MS 1500
+
+/* Is HDMI-A-1 the output the CRTC drives right now? */
+static bool jw__mlp1_hdmi_live(void) {
+    FILE *fp = fopen(JW_MLP1_HDMI_ENABLED, "r");
+    if (!fp) {
+        return false;
+    }
+    char s[32] = { 0 };
+    char *got = fgets(s, sizeof(s), fp);
+    fclose(fp);
+    if (!got) {
+        return false;
+    }
+    s[strcspn(s, "\r\n")] = '\0';
+    return strcmp(s, "enabled") == 0;
+}
+
+static int jw__mlp1_hdmi_force(const char *value) {
+    FILE *fp = fopen(JW_MLP1_HDMI_STATUS, "w");
+    if (!fp) {
+        return -1;
+    }
+    int ok = fputs(value, fp) >= 0;
+    return fclose(fp) == 0 && ok ? 0 : -1;
+}
+
+static bool jw__mlp1_hdmi_hidden_marker(const jw_platform_context *ctx, char *buf,
+                                        size_t size) {
+    const char *dir = ctx && ctx->runtime_dir[0] ? ctx->runtime_dir : "/tmp";
+    int n = snprintf(buf, size, "%s/%s", dir, JW_MLP1_HDMI_HIDDEN_MARKER);
+    return n > 0 && (size_t)n < size;
+}
+
+static void jw__mlp1_hdmi_show(const jw_platform_context *ctx) {
+    if (jw__mlp1_hdmi_force("detect") != 0) {
+        jw_log_warn("display: could not show HDMI again: %s", strerror(errno));
+    }
+    char marker[PATH_MAX];
+    if (jw__mlp1_hdmi_hidden_marker(ctx, marker, sizeof(marker))) {
+        unlink(marker);
+    }
+}
+
+static void jw__mlp1_game_display_begin(jw_platform_context *ctx,
+                                        jw_platform_game_display *gd) {
+    bool live = jw__mlp1_hdmi_live();
+    /* A live TV with no applied mode is a state Leaf did not set up (stock
+       mirroring, say): unknown, so the end rebuilds it. */
+    gd->mode = !live ? JW_GAME_DISPLAY_PANEL
+                     : jw__mlp1_hdmi_tv_active() ? s_mlp1_hdmi_mode : -1;
+    (void)jw__mlp1_get_display_mode(ctx, &gd->width, &gd->height, &gd->hz);
+
+    if (!jw_game_display_hide_external(jw__mlp1_hdmi_connected(), live)) {
+        return;
+    }
+    /* Marker first, so a daemon that dies between the two still finds it.
+       Without one the TV is left alone: nothing could show it again. */
+    char marker[PATH_MAX];
+    if (!jw__mlp1_hdmi_hidden_marker(ctx, marker, sizeof(marker))) {
+        jw_log_warn("display: runtime path too long; HDMI not hidden for the game");
+        return;
+    }
+    int fd = open(marker, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd >= 0) {
+        close(fd);
+    }
+    if (jw__mlp1_hdmi_force("off") != 0) {
+        jw_log_warn("display: could not hide HDMI for the game: %s", strerror(errno));
+        unlink(marker);
+        return;
+    }
+    gd->external_hidden = true;
+    jw_log_info("display: HDMI hidden for the game (HDMI Output does not use it)");
+}
+
+static void jw__mlp1_game_display_end(jw_platform_context *ctx,
+                                      jw_platform_game_display *gd,
+                                      int hdmi_setting, bool compositor_stopped,
+                                      jw_platform_game_display_result *out) {
+    out->mode = s_mlp1_hdmi_mode;
+    if (!gd->active && !compositor_stopped) {
+        return;
+    }
+    if (gd->external_hidden) {
+        jw__mlp1_hdmi_show(ctx);
+        for (int waited = 0; waited < JW_MLP1_HDMI_DETECT_WAIT_MS &&
+                             !jw__mlp1_hdmi_connected(); waited += 100) {
+            usleep(100 * 1000);
+        }
+        jw_log_info("display: HDMI shown again after the game");
+    }
+
+    bool connected = jw__mlp1_hdmi_connected();
+    out->hdmi_connected = connected ? 1 : 0;
+    int want = jw_game_display_restore_mode(connected, hdmi_setting);
+    int before = gd->active ? gd->mode : s_mlp1_hdmi_mode;
+    int now_w = 0, now_h = 0;
+    if (!compositor_stopped) {
+        (void)jw__mlp1_get_display_mode(ctx, &now_w, &now_h, NULL);
+    }
+    out->mode = before;
+    if (!jw_game_display_needs_restart(compositor_stopped, before, want,
+                                       gd->active ? gd->width : 0,
+                                       gd->active ? gd->height : 0, now_w, now_h)) {
+        return;
+    }
+
+    /* Same commands as the HDMI Output switch, except that putting the panel
+       back keeps its refresh-rate override. "restart" also covers a Weston
+       that is already running, so a game never ends with two of them. */
+    char command[1024];
+    bool use120 = want != JW_GAME_DISPLAY_PANEL &&
+                  jw__mlp1_hdmi_use120(gd->active ? gd->hz : jw__mlp1_get_refresh_hz());
+    if (jw_game_display_weston_command(
+            want, use120,
+            want == JW_GAME_DISPLAY_PANEL ? NULL : JW_MLP1_WESTON_OVERRIDE_INI,
+            "restart", command, sizeof(command)) != 0) {
+        jw_log_warn("display: Weston command too long; display not restored");
+        return;
+    }
+    if (jw_weston_initd_run(command) == -1) {
+        jw_log_warn("display: could not run the Weston restart after the game");
+        return;
+    }
+    static const char *const names[] = { "panel", "TV 4:3", "TV stretch" };
+    jw_log_info("display: Weston back on the %s after the game", names[want]);
+    s_mlp1_hdmi_mode = want;
+    out->compositor_restarted = true;
+    out->mode = want;
+    out->output_changed = before != want;
+    if (!out->output_changed) {
+        return;
+    }
+    /* Audio follows the display, as for the HDMI Output switch. */
+    if (want == JW_GAME_DISPLAY_PANEL) {
+        jw__mlp1_hdmi_audio_off();
+        jw_platform_result ar;
+        jw_platform_result_set(&ar, JW_PLATFORM_RESULT_OK, "");
+        (void)jw__mlp1_set_audio_output(jw__mlp1_desired_audio_output(false), &ar);
+    } else {
+        jw__mlp1_hdmi_audio_on();
+    }
+}
+
+static void jw__mlp1_game_display_recover(jw_platform_context *ctx) {
+    char marker[PATH_MAX];
+    if (!jw__mlp1_hdmi_hidden_marker(ctx, marker, sizeof(marker)) ||
+        access(marker, F_OK) != 0) {
+        return;
+    }
+    jw_log_info("display: showing HDMI again; an earlier game hid it");
+    jw__mlp1_hdmi_show(ctx);
+}
+
 const jw_platform_backend *jw_platform_get_backend(void) {
     static const jw_platform_backend backend = {
         .platform_id = "mlp1",
@@ -4524,6 +4683,9 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .safe_unmount_storage = jw__mlp1_safe_unmount_storage,
         .set_led = jw__mlp1_set_led,
         .get_display_mode = jw__mlp1_get_display_mode,
+        .game_display_begin = jw__mlp1_game_display_begin,
+        .game_display_end = jw__mlp1_game_display_end,
+        .game_display_recover = jw__mlp1_game_display_recover,
         .set_power_hard_cut = jw__mlp1_set_power_hard_cut,
     };
     return &backend;

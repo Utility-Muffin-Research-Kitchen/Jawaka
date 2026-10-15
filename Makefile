@@ -667,6 +667,12 @@ weston-initd-test: | $(BUILD)/bin
 	@if grep -rnE -A2 --include='*.c' '(system|popen|exec[lv]p?e?) *\(' cmd internal | grep 'JW_WESTON'; then \
 		echo "weston-initd-test: run JW_WESTON_INITD commands through jw_weston_initd_run/_spawn_detached"; exit 1; fi
 
+# Handing the display to a standalone game and taking it back; see game_display.h.
+.PHONY: game-display-test
+game-display-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/game-display-test internal/platform/game_display_test.c
+	$(BUILD)/bin/game-display-test
+
 .PHONY: power-request-test
 power-request-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/power-request-test internal/platform/power_request_test.c

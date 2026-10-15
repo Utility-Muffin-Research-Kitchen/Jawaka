@@ -448,6 +448,8 @@ typedef struct {
     char osd_font_bump[16];
     bool direct_drm_active;
     bool direct_drm_weston_stopped;
+    /* The output a standalone game was handed (jw__game_display_end). */
+    jw_platform_game_display game_display;
     pid_t ledd_pid;            /* jawaka-ledd custom LED effect engine, -1 when idle */
     long long ledd_started_ms; /* monotonic start of the running ledd */
     jw_ledd_restarts ledd_restarts;
@@ -8389,6 +8391,64 @@ static void jw__schedule_lut_sync(jw_daemon_state *state, bool external) {
     state->lut_sync_deadline_ms = state->lut_sync_not_before_ms + JW_LUT_SYNC_WINDOW_MS;
 }
 
+/* The persisted HDMI Output setting: 0 off, 1 4:3, 2 stretch. */
+static int jw__hdmi_output_setting(const jw_daemon_state *state) {
+    int mode = 0;
+    if (state && state->db_path) {
+        char val[16];
+        if (jw_db_get_setting(state->db_path, "hdmi_output_mode", val, sizeof(val)) == 0) {
+            mode = atoi(val);
+            if (mode < 0 || mode > 2) mode = 0;
+        }
+    }
+    return mode;
+}
+
+/* Put the display back after a standalone game, or after a launch that failed
+   once jw_platform_game_display_begin ran: show a TV hidden for the game and
+   bring Weston back on the output the HDMI Output setting and the cable call
+   for. Safe to call twice. */
+static void jw__game_display_end(jw_daemon_state *state) {
+    bool stopped = state->direct_drm_weston_stopped;
+    if (!state->game_display.active && !stopped) {
+        state->direct_drm_active = false;
+        return;
+    }
+    if (stopped) {
+        jw_log_info("direct DRM handoff ended; restarting Weston");
+    }
+    jw_platform_game_display_result result;
+    jw_platform_game_display_end(&state->platform, &state->game_display,
+                                 jw__hdmi_output_setting(state), stopped, &result);
+    state->direct_drm_active = false;
+    state->direct_drm_weston_stopped = false;
+    if (result.compositor_restarted) {
+        jw__usleep(1000000UL);
+        /* An OSD that outlived the old compositor never draws again (see
+           jw__mlp1_set_refresh_rate); replace it. No-op when it was stopped
+           for the handoff. */
+        jw__stop_osd_child(state);
+    }
+    if (result.hdmi_connected >= 0) {
+        /* The output matches the cable now: no hotplug edge is left to act on. */
+        state->hdmi_last_connected = result.hdmi_connected;
+    }
+    if (result.output_changed) {
+        jw__schedule_lut_sync(state, result.mode != 0);
+    }
+    if ((stopped || result.compositor_restarted) &&
+        !state->shutdown_requested && !g_shutdown_requested) {
+        jw__spawn_osd(state);
+    }
+}
+
+/* A standalone game has the display: it may draw on it itself, and the TV may
+   be hidden for it. */
+static bool jw__standalone_owns_display(const jw_daemon_state *state) {
+    return jw__has_standalone_session(state) || state->direct_drm_active ||
+           state->game_display.active;
+}
+
 static void jw__persist_volume(jw_daemon_state *state, int percent) {
     if (!state || !state->db_path) {
         return;
@@ -10354,6 +10414,11 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
                     "Flycast is updated");
     }
 
+    /* Every standalone game: an emulator may drive the display itself, beside
+       Weston or after the handoff below, and must not land on a TV that HDMI
+       Output does not use. Ended by jw__game_display_end. */
+    jw_platform_game_display_begin(&state->platform, &state->game_display);
+
     if (direct_drm) {
         jw_log_info("direct DRM handoff requested for core=%s rom=%s",
                     target->core_id, rom_abs);
@@ -10415,14 +10480,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         if (sync_pipe[1] >= 0) close(sync_pipe[1]);
         if (err_pipe[0] >= 0) close(err_pipe[0]);
         if (err_pipe[1] >= 0) close(err_pipe[1]);
-        if (direct_drm) {
-            state->direct_drm_active = false;
-            if (state->direct_drm_weston_stopped) {
-                (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
-                state->direct_drm_weston_stopped = false;
-                jw__spawn_osd(state);
-            }
-        }
+        jw__game_display_end(state);
         jw_input_proxy_shutdown(&state->input_proxy);  /* drop the watch-only proxy */
         jw__start_input_proxy(state);
         state->pending_launch = false;
@@ -10515,14 +10573,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
             jw__rumble_publish_ff(NULL);
             /* The direct-DRM handoff already stopped Weston pre-fork; undo it
                so the user gets a desktop back on this blocked launch. */
-            if (direct_drm) {
-                state->direct_drm_active = false;
-                if (state->direct_drm_weston_stopped) {
-                    (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
-                    state->direct_drm_weston_stopped = false;
-                    jw__spawn_osd(state);
-                }
-            }
+            jw__game_display_end(state);
             state->pending_launch = false;
             state->pending_launch_resume_switcher = false;
             state->pending_launch_override_unverified = false;
@@ -10582,6 +10633,9 @@ static int jw__spawn_authorized_pending_game(jw_daemon_state *state) {
                  ? jw__spawn_standalone_emulator(state, &target)
                  : jw__spawn_retroarch(state, &target);
     if (rc != 0) {
+        /* A standalone launch can fail after the display was handed over
+           (Weston stopped, TV hidden); give it back. No-op otherwise. */
+        jw__game_display_end(state);
         /* Both spawns apply the game's governor profile before the child runs,
            so a handoff that never starts a writer would otherwise leave the
            device in the game's mode with the launcher (or a still-running
@@ -11551,6 +11605,15 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
         }
     }
 
+    /* Leave the cable alone while a standalone game has the display; the
+       output is put back for the cable as it is then once the game exits
+       (jw__game_display_end). Acting now restarted Weston under the game,
+       blanked it, and left a second Weston behind at exit. A hidden TV also
+       reads disconnected here. */
+    if (jw__standalone_owns_display(state)) {
+        return;
+    }
+
     /* ── Auto-revert safety for 1080p120 ──
        A 1080p120 switch can black out a TV/cable that can't carry the 297MHz signal,
        stranding the user on a screen they can't see to navigate back. When 1080p120
@@ -11588,15 +11651,7 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
     }
     state->hdmi_last_connected = cur;
 
-    /* The persisted HDMI Output setting (0 off / 1 4:3 / 2 stretch). */
-    int mode = 0;
-    if (state->db_path) {
-        char val[16];
-        if (jw_db_get_setting(state->db_path, "hdmi_output_mode", val, sizeof(val)) == 0) {
-            mode = atoi(val);
-            if (mode < 0 || mode > 2) mode = 0;
-        }
-    }
+    int mode = jw__hdmi_output_setting(state);
     if (mode == 0) {
         return;   /* feature disabled -> ignore plug/unplug */
     }
@@ -17510,24 +17565,11 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
            so it can be validated against the just-exited game. */
         jw__consume_standalone_switcher_marker(state, exited_pid);
         jw__standalone_session_finish(state, exited_pid, status);
-        if (state->direct_drm_active) {
-            state->direct_drm_active = false;
-            if (state->direct_drm_weston_stopped) {
-                jw_log_info("direct DRM handoff ended; restarting Weston");
-                /* From / and with the rootfs environment, not jawakad's
-                   card working directory and launcher LD_LIBRARY_PATH:
-                   Weston outlives this session, and a compositor sitting in
-                   or mapping libraries from a launcher bundle that an update
-                   has since replaced keeps the card from closing at
-                   shutdown. See weston_initd.h. */
-                (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
-                jw__usleep(1000000UL);
-                state->direct_drm_weston_stopped = false;
-            }
-            if (!state->shutdown_requested && !g_shutdown_requested) {
-                jw__spawn_osd(state);
-            }
-        }
+        /* Weston is restarted through weston_initd.h (from /, without the
+           launcher's LD_LIBRARY_PATH): it outlives this session, and a
+           compositor mapping libraries from a replaced launcher bundle keeps
+           the card from closing at shutdown. */
+        jw__game_display_end(state);
     }
     if (jw__child_kind_has_writer_barrier(exited_kind)) {
         /* Process-group absence was proved before this function reaped the
@@ -18179,6 +18221,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /* A daemon that died during a game can leave the TV hidden; show it again
+       before the first poll reads the cable. */
+    jw_platform_game_display_recover(&state.platform);
     /* HDMI boot-apply happens via the first hotplug poll; defer it a few seconds
        so the launcher + OSD are up before any TV-switch weston restart. */
     state.hdmi_last_connected = -1;
