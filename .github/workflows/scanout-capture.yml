@@ -1,0 +1,21 @@
+name: Scanout capture
+
+# The screenshot hotkey and the in-game menu still read the display with
+# kmsgrab (internal/platform/scanout_capture.h). The panel's buffer is portrait
+# and is turned upright; a TV's is landscape and kept as is. The test covers
+# the size line, both conversions, and a grab through a fake kmsgrab.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make scanout-capture-test
