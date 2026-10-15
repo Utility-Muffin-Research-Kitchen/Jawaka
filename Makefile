@@ -667,6 +667,12 @@ weston-initd-test: | $(BUILD)/bin
 	@if grep -rnE -A2 --include='*.c' '(system|popen|exec[lv]p?e?) *\(' cmd internal | grep 'JW_WESTON'; then \
 		echo "weston-initd-test: run JW_WESTON_INITD commands through jw_weston_initd_run/_spawn_detached"; exit 1; fi
 
+# Screenshot and in-game menu still capture; see scanout_capture.h.
+.PHONY: scanout-capture-test
+scanout-capture-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/scanout-capture-test internal/platform/scanout_capture_test.c
+	$(BUILD)/bin/scanout-capture-test
+
 # Handing the display to a standalone game and taking it back; see game_display.h.
 .PHONY: game-display-test
 game-display-test: | $(BUILD)/bin

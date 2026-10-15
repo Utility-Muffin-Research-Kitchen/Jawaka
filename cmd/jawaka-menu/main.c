@@ -12,6 +12,7 @@
 #include "internal/launcher/game_switcher.h"
 #include "internal/platform/cat_services.h"
 #include "internal/platform/paths.h"
+#include "internal/platform/scanout_capture.h"
 #include "internal/retroarch/shader_catalog.h"
 #include "internal/retroarch/shader_picker.h"
 #include "internal/retroarch/states.h"
@@ -1148,11 +1149,9 @@ static void jw__ingame_detail(const jw_ingame_state *state, int item,
    the DRM scanout with the on-device `kmsgrab` tool — no RetroArch screenshot,
    no PNG, no filesystem polling. It is captured synchronously *before* the menu
    window is mapped, so the very first visible frame already shows the game
-   behind the menu (no late "pop-in"). The scanout is the panel-native portrait
-   buffer (720x960, bytes B,G,R,X); we rotate it 90° CW into the menu's landscape
-   space and force opaque alpha while uploading the texture. */
-#define JW_KMS_PANEL_W 720
-#define JW_KMS_PANEL_H 960
+   behind the menu (no late "pop-in"). scanout_capture.h turns the frame
+   upright: the panel's portrait buffer 90° clockwise, a TV's landscape one as
+   is. Alpha is forced opaque for the texture. */
 
 static int g_kms_crtc = -2; /* -2 = not probed, -1 = unavailable, else crtc id */
 
@@ -1183,26 +1182,6 @@ static int jw__kms_probe_crtc(void) {
     return crtc >= 0 ? crtc : 85; /* MLP1 DSI-1 default */
 }
 
-/* Grab one raw scanout frame (JW_KMS_PANEL_W*H*4 bytes) into buf. */
-static bool jw__kms_read_raw(int crtc, uint8_t *buf, size_t buf_size) {
-    char cmd[64];
-    snprintf(cmd, sizeof(cmd), "kmsgrab --crtc %d 2>/dev/null", crtc);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        return false;
-    }
-    size_t got = 0;
-    while (got < buf_size) {
-        size_t n = fread(buf + got, 1, buf_size - got, fp);
-        if (n == 0) {
-            break;
-        }
-        got += n;
-    }
-    pclose(fp);
-    return got >= buf_size;
-}
-
 static SDL_Texture *jw__load_blend_texture(const char *path) {
     SDL_Texture *tex = cat_load_image(path);
     if (tex) {
@@ -1211,7 +1190,7 @@ static SDL_Texture *jw__load_blend_texture(const char *path) {
     return tex;
 }
 
-/* Capture the paused frame and build state->still_tex (960x720, opaque ARGB).
+/* Capture the paused frame and build state->still_tex (upright, opaque ARGB).
    Synchronous; call before showing the window so the still is ready in the first
    frame. On any failure still_tex stays NULL and the menu falls back to the flat
    dark background. */
@@ -1223,37 +1202,19 @@ static void jw__ingame_capture_still(jw_ingame_state *state) {
         return;
     }
 
-    const size_t raw_size = (size_t)JW_KMS_PANEL_W * JW_KMS_PANEL_H * 4;
-    uint8_t *raw = malloc(raw_size);
+    jw_scanout_format fmt;
+    uint8_t *raw = jw_scanout_grab("/usr/bin/kmsgrab", g_kms_crtc, &fmt);
     if (!raw) {
         return;
     }
-    if (!jw__kms_read_raw(g_kms_crtc, raw, raw_size)) {
-        free(raw);
-        return;
-    }
-
-    /* Rotate 90° CW into landscape: out(H-1-y, x) = in(x, y). Keep B,G,R and
-       force A=255 — ARGB8888 is B,G,R,A in little-endian memory, matching the
-       scanout's B,G,R,X byte order. */
-    const int iw = JW_KMS_PANEL_W, ih = JW_KMS_PANEL_H;
-    const int ow = ih, oh = iw; /* 960x720 */
-    uint8_t *out = malloc((size_t)ow * oh * 4);
+    int ow = 0, oh = 0;
+    jw_scanout_upright_size(&fmt, &ow, &oh);
+    uint8_t *out = malloc((size_t)ow * (size_t)oh * 4u);
     if (!out) {
         free(raw);
         return;
     }
-    for (int y = 0; y < ih; y++) {
-        const uint8_t *irow = raw + (size_t)y * iw * 4;
-        for (int x = 0; x < iw; x++) {
-            const uint8_t *ip = irow + (size_t)x * 4;
-            uint8_t *op = out + ((size_t)x * ow + (ih - 1 - y)) * 4;
-            op[0] = ip[0];
-            op[1] = ip[1];
-            op[2] = ip[2];
-            op[3] = 255;
-        }
-    }
+    jw_scanout_to_upright(raw, &fmt, JW_SCANOUT_BGRA32, out);
     free(raw);
 
     SDL_Texture *tex = SDL_CreateTexture(cat_get_renderer(),

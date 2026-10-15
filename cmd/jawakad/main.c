@@ -30,6 +30,7 @@
 #include "internal/platform/perf_policy.h"
 #include "internal/platform/raofflineproxy.h"
 #include "internal/platform/game_display.h"
+#include "internal/platform/scanout_capture.h"
 #include "internal/platform/weston_initd.h"
 #include "internal/platform/wifi.h"
 #include "internal/power/boot_resume.h"
@@ -9028,12 +9029,11 @@ static bool jw__input_game_switcher(void *userdata) {
 
 /* ─── Screenshot hotkey (Menu + L1) ─────────────────────────────────────────
    Captured on-device so it works with Wi-Fi off, in-game, and in 5-Game Mode.
-   UI/focus (Weston up): kmsgrab the composited CRTC scanout and encode. In-game
-   (Weston stopped, RetroArch is DRM master): phase 2, via the RA SCREENSHOT
-   command. Capture runs on a detached worker so the input tick never blocks.
+   Outside a RetroArch session: kmsgrab the CRTC scanout and encode it upright
+   (scanout_capture.h; the panel's buffer is portrait, a TV's is not). In a
+   RetroArch session: phase 2, via the RA SCREENSHOT command. Capture runs on a
+   detached worker so the input tick never blocks.
    See umrk-workspace/plans/Jawaka/on-device-screenshots.md. */
-#define JW_SS_SCANOUT_W   720   /* panel native (portrait); UI runs landscape */
-#define JW_SS_SCANOUT_H   960
 #define JW_SS_THROTTLE_MS 1000
 #define JW_RECORD_THROTTLE_MS 250 /* a toggle needs bounce protection, not a full second */
 #define JW_SS_PRE_MAX     64      /* max pre-existing PNGs tracked for the in-game diff */
@@ -9071,9 +9071,9 @@ static bool jw__screenshots_dir(const char *sdcard_root, char *out, size_t out_s
     return true;
 }
 
-/* Grab the composited CRTC scanout via kmsgrab, convert XR24 (BGRX) -> RGB, and
-   rotate 90 CW (the panel is mounted portrait). Returns a malloc'd RGB buffer of
-   960x720 (caller frees) and sets ow + oh, or NULL on failure. */
+/* Grab the CRTC scanout via kmsgrab and convert it to upright RGB (the panel's
+   portrait buffer turned 90° clockwise, a TV's landscape one as is). Returns a
+   malloc'd buffer (caller frees) and sets ow + oh, or NULL on failure. */
 static uint8_t *jw__kmsgrab_rgb(int *ow, int *oh) {
     int crtc = 85;   /* the usual MLP1 CRTC; rediscovered below if it differs */
     FILE *disc = popen("/usr/bin/kmsgrab 2>&1 >/dev/null", "r");
@@ -9092,48 +9092,20 @@ static uint8_t *jw__kmsgrab_rgb(int *ow, int *oh) {
         pclose(disc);
     }
 
-    const size_t need = (size_t)JW_SS_SCANOUT_W * JW_SS_SCANOUT_H * 4u;
-    uint8_t *raw = (uint8_t *)malloc(need);
+    jw_scanout_format fmt;
+    uint8_t *raw = jw_scanout_grab("/usr/bin/kmsgrab", crtc, &fmt);
     if (!raw) {
         return NULL;
     }
-    char cmd[64];
-    snprintf(cmd, sizeof(cmd), "/usr/bin/kmsgrab --crtc %d 2>/dev/null", crtc);
-    FILE *cap = popen(cmd, "r");
-    if (!cap) {
-        free(raw);
-        return NULL;
-    }
-    size_t got = 0, n;
-    while (got < need && (n = fread(raw + got, 1, need - got, cap)) > 0) {
-        got += n;
-    }
-    pclose(cap);
-    if (got < need) {
-        free(raw);
-        return NULL;
-    }
-
-    const int W = JW_SS_SCANOUT_W, H = JW_SS_SCANOUT_H;
-    const int OW = H;   /* rotated width = 960 */
-    uint8_t *dst = (uint8_t *)malloc((size_t)W * H * 3u);
-    if (!dst) {
-        free(raw);
-        return NULL;
-    }
-    for (int y = 0; y < H; y++) {
-        for (int x = 0; x < W; x++) {
-            const uint8_t *px = raw + ((size_t)y * W + x) * 4u;   /* B,G,R,X */
-            int nx = H - 1 - y, ny = x;                            /* 90 CW */
-            uint8_t *o = dst + ((size_t)ny * OW + nx) * 3u;
-            o[0] = px[2];   /* R */
-            o[1] = px[1];   /* G */
-            o[2] = px[0];   /* B */
-        }
+    int w = 0, h = 0;
+    jw_scanout_upright_size(&fmt, &w, &h);
+    uint8_t *dst = (uint8_t *)malloc((size_t)w * (size_t)h * 3u);
+    if (dst) {
+        jw_scanout_to_upright(raw, &fmt, JW_SCANOUT_RGB24, dst);
+        *ow = w;
+        *oh = h;
     }
     free(raw);
-    *ow = OW;   /* 960 */
-    *oh = W;    /* 720 */
     return dst;
 }
 
