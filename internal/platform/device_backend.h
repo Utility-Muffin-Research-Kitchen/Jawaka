@@ -43,6 +43,12 @@ typedef struct {
                     jw_platform_result *out);
     /* Optional: the current mode of the active output. 0 on success, -1 unknown. */
     int  (*get_display_mode)(jw_platform_context *ctx, int *width, int *height, int *hz);
+    /* Optional: see jw_platform_game_display_begin / _end / _recover. */
+    void (*game_display_begin)(jw_platform_context *ctx, jw_platform_game_display *gd);
+    void (*game_display_end)(jw_platform_context *ctx, jw_platform_game_display *gd,
+                             int hdmi_setting, bool compositor_stopped,
+                             jw_platform_game_display_result *out);
+    void (*game_display_recover)(jw_platform_context *ctx);
     /* Optional: see jw_platform_set_power_hard_cut_s. NULL = unsupported. */
     void (*set_power_hard_cut)(jw_platform_context *ctx, int seconds,
                                jw_platform_result *out);

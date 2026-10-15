@@ -442,6 +442,46 @@ int jw_platform_get_display_mode(jw_platform_context *ctx, int *width, int *heig
     return -1;
 }
 
+void jw_platform_game_display_begin(jw_platform_context *ctx,
+                                    jw_platform_game_display *gd) {
+    if (!gd) {
+        return;
+    }
+    memset(gd, 0, sizeof(*gd));
+    gd->active = true;
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (ctx && backend && backend->game_display_begin) {
+        backend->game_display_begin(ctx, gd);
+    }
+}
+
+void jw_platform_game_display_end(jw_platform_context *ctx,
+                                  jw_platform_game_display *gd, int hdmi_setting,
+                                  bool compositor_stopped,
+                                  jw_platform_game_display_result *out) {
+    jw_platform_game_display_result unused;
+    if (!out) {
+        out = &unused;
+    }
+    memset(out, 0, sizeof(*out));
+    out->hdmi_connected = -1;
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (ctx && gd && backend && backend->game_display_end) {
+        backend->game_display_end(ctx, gd, hdmi_setting, compositor_stopped, out);
+    }
+    if (gd) {
+        gd->active = false;
+        gd->external_hidden = false;
+    }
+}
+
+void jw_platform_game_display_recover(jw_platform_context *ctx) {
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (ctx && backend && backend->game_display_recover) {
+        backend->game_display_recover(ctx);
+    }
+}
+
 void jw_platform_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
                          jw_platform_result *out) {
     if (!ctx) {

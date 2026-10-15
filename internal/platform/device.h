@@ -329,6 +329,45 @@ bool        jw_led_mode_parse(const char *name, jw_led_mode *out);
    the platform cannot report it. */
 int  jw_platform_get_display_mode(jw_platform_context *ctx, int *width, int *height,
                                   int *hz);
+
+/* Standalone games and the display (internal/platform/game_display.h). jawakad
+   calls begin before every standalone game, and end after it exits or after a
+   launch that failed once begin had run. Outputs: 0 panel, 1 TV 4:3, 2 TV
+   stretch, -1 unknown. */
+typedef struct {
+    bool active;            /* begin ran and end has not */
+    bool external_hidden;   /* the external display was hidden for the game */
+    int  mode;              /* output live before the game */
+    int  width;             /* scanout before the game; 0 when unknown */
+    int  height;
+    int  hz;
+} jw_platform_game_display;
+
+typedef struct {
+    bool compositor_restarted;  /* Weston was (re)started: respawn its clients */
+    bool output_changed;        /* the output differs from the one before the game */
+    int  hdmi_connected;        /* cable after the game: -1 unknown, 0 no, 1 yes */
+    int  mode;                  /* output now */
+} jw_platform_game_display_result;
+
+/* Remember the live output and, when an external display is connected but is
+   not the live output, hide it, so a game that drives the display itself stays
+   on the built-in screen. */
+void jw_platform_game_display_begin(jw_platform_context *ctx,
+                                    jw_platform_game_display *gd);
+/* Show a hidden external display again and put the compositor back on the
+   output that `hdmi_setting` (the saved HDMI Output mode) and the cable call
+   for. Weston is restarted when `compositor_stopped`, when the output changes,
+   or when the game left another scanout size behind. No-op when begin did not
+   run and the compositor is up. */
+void jw_platform_game_display_end(jw_platform_context *ctx,
+                                  jw_platform_game_display *gd, int hdmi_setting,
+                                  bool compositor_stopped,
+                                  jw_platform_game_display_result *out);
+/* At daemon start: show an external display that an earlier daemon hid for a
+   game and never showed again. */
+void jw_platform_game_display_recover(jw_platform_context *ctx);
+
 void jw_platform_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
                          jw_platform_result *out);
 /* Force-off hold: how long the power button must stay down before the PMIC

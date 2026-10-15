@@ -5,6 +5,8 @@ name: Weston restart
 # strings from a jawakad-like environment and checks the compositor would start
 # from / without the launcher's card LD_LIBRARY_PATH, which otherwise pins
 # replaced card libraries and blocks the shutdown read-only remount.
+# game-display-test covers putting the display back after a standalone game
+# (the panel or the TV, as HDMI Output and the cable call for).
 
 on:
   pull_request:
@@ -19,4 +21,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: make weston-initd-test
+      - run: make weston-initd-test game-display-test
