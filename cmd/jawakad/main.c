@@ -29,6 +29,7 @@
 #include "internal/platform/paths.h"
 #include "internal/platform/perf_policy.h"
 #include "internal/platform/raofflineproxy.h"
+#include "internal/platform/game_display.h"
 #include "internal/platform/weston_initd.h"
 #include "internal/platform/wifi.h"
 #include "internal/power/boot_resume.h"
@@ -1122,6 +1123,16 @@ static void jw__setenv_default(const char *name, const char *value) {
         return;
     }
     setenv(name, value, 0);
+}
+
+/* Set `name`, or remove it when `value` is empty, so a child never keeps an
+   inherited value. */
+static void jw__setenv_or_unset(const char *name, const char *value) {
+    if (value && value[0]) {
+        setenv(name, value, 1);
+    } else {
+        unsetenv(name);
+    }
 }
 
 static void jw__setenvf_default(const char *name, const char *fmt, ...) {
@@ -10520,6 +10531,19 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
         setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);
         setenv("JAWAKA_GAME_CORE_ID", target->core_id, 1);
+        /* Which screen the game draws on (game_display.h): the panel is a
+           portrait part mounted sideways, a TV is not. Set from what begin
+           saw before the handoff; empty values are unset, never inherited. */
+        jw_game_display_env display_env;
+        jw_game_display_env_values(state->game_display.mode,
+                                   state->game_display.connector,
+                                   state->game_display.width,
+                                   state->game_display.height,
+                                   state->game_display.hz, &display_env);
+        jw__setenv_or_unset("LEAF_DISPLAY_OUTPUT", display_env.output);
+        jw__setenv_or_unset("LEAF_DISPLAY_CONNECTOR", display_env.connector);
+        jw__setenv_or_unset("LEAF_DISPLAY_MODE", display_env.mode);
+        jw__setenv_or_unset("LEAF_DISPLAY_ASPECT", display_env.aspect);
         /* The Saturn BIOS contract with Yabasanshiro-standalone's launch.sh.
            Always written here, never in the daemon's own environment: an
            unrelated ambient override must not survive into a game, and a

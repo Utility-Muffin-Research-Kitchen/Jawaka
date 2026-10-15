@@ -115,6 +115,41 @@ static void check_decisions(void) {
     CHECK(!jw_game_display_needs_restart(false, 0, 0, 0, 0, 1024, 768));
 }
 
+/* The LEAF_DISPLAY_* values a standalone game gets. */
+static void check_env_values(void) {
+    jw_game_display_env env;
+
+    /* The panel, as before a TV is ever involved. */
+    jw_game_display_env_values(JW_GAME_DISPLAY_PANEL, "DSI-1", 720, 960, 60, &env);
+    CHECK(strcmp(env.output, "panel") == 0);
+    CHECK(strcmp(env.connector, "DSI-1") == 0);
+    CHECK(strcmp(env.mode, "720x960@60") == 0);
+    CHECK(strcmp(env.aspect, "4:3") == 0);
+
+    /* The TV in 4:3 and in stretch. */
+    jw_game_display_env_values(JW_GAME_DISPLAY_TV_4_3, "HDMI-A-1", 1280, 720, 60, &env);
+    CHECK(strcmp(env.output, "hdmi") == 0);
+    CHECK(strcmp(env.connector, "HDMI-A-1") == 0);
+    CHECK(strcmp(env.mode, "1280x720@60") == 0);
+    CHECK(strcmp(env.aspect, "4:3") == 0);
+    jw_game_display_env_values(JW_GAME_DISPLAY_TV_STRETCH, "HDMI-A-1", 1920, 1080, 120, &env);
+    CHECK(strcmp(env.mode, "1920x1080@120") == 0);
+    CHECK(strcmp(env.aspect, "stretch") == 0);
+
+    /* A live TV Leaf did not set up is still a TV. */
+    jw_game_display_env_values(-1, "HDMI-A-1", 1280, 720, 60, &env);
+    CHECK(strcmp(env.output, "hdmi") == 0);
+    CHECK(strcmp(env.aspect, "4:3") == 0);
+
+    /* Unknowns come out empty, so they are left unset. */
+    jw_game_display_env_values(JW_GAME_DISPLAY_PANEL, NULL, 0, 0, 0, &env);
+    CHECK(strcmp(env.output, "panel") == 0);
+    CHECK(env.connector[0] == '\0');
+    CHECK(env.mode[0] == '\0');
+    jw_game_display_env_values(JW_GAME_DISPLAY_TV_4_3, "HDMI-A-1", 1280, 720, 0, &env);
+    CHECK(strcmp(env.mode, "1280x720") == 0);
+}
+
 /* The HDMI Output switch must keep producing exactly the commands it always
    has; the builder replaced its inline snprintf calls. */
 static void check_switch_commands_unchanged(void) {
@@ -200,6 +235,7 @@ static void check_commands_run(void) {
 
 int main(void) {
     check_decisions();
+    check_env_values();
     check_switch_commands_unchanged();
 
     CHECK(mkdtemp(g_root));
