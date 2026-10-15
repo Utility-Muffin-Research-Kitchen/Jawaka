@@ -25,6 +25,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "internal/platform/power_request.h"
+#include "internal/platform/stock_volume.h"
 #include "internal/platform/weston_initd.h"
 #include "internal/power/power_hard_cut.h"
 #include <linux/i2c-dev.h>
@@ -2142,16 +2143,32 @@ static const char *jw__mlp1_sound_output_key(jw_platform_audio_output output) {
     }
 }
 
-static int jw__mlp1_percent_to_stock_level(int percent) {
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
-    return (percent + 5) / 10;
+/* True once this device's SOUND_PARAM levels are known to be on stock's 0-14
+   scale (see stock_volume.h). Only a seen tag is cached; until Leaf's first
+   write sets it, each load asks again. */
+static bool s_mlp1_sound_levels_tagged = false;
+
+static bool jw__mlp1_sound_levels_tagged(void) {
+    if (!s_mlp1_sound_levels_tagged) {
+        char *value = jw__mlp1_read_system_config(JW_STOCK_VOLUME_SCALE_PARAM);
+        s_mlp1_sound_levels_tagged = value && atoi(value) == JW_STOCK_VOLUME_LEVELS;
+        free(value);
+    }
+    return s_mlp1_sound_levels_tagged;
 }
 
-static int jw__mlp1_stock_level_to_percent(int level) {
-    if (level < 0) level = 0;
-    if (level > 10) level = 10;
-    return level * 10;
+/* Set after SOUND_PARAM is written, never before: a tag over levels still on
+   0-10 would read them as 0-14 (quieter). If this write fails, the exact
+   percents beside the levels still read first; only a stock session (which
+   drops them) before the next write retries the tag would read 0-14 as 0-10. */
+static void jw__mlp1_tag_sound_levels(void) {
+    if (s_mlp1_sound_levels_tagged) {
+        return;
+    }
+    char value[8];
+    snprintf(value, sizeof(value), "%d", JW_STOCK_VOLUME_LEVELS);
+    s_mlp1_sound_levels_tagged =
+        jw__mlp1_write_system_config(JW_STOCK_VOLUME_SCALE_PARAM, value) == 0;
 }
 
 static cJSON *jw__mlp1_load_sound_param(void) {
@@ -2167,8 +2184,11 @@ static cJSON *jw__mlp1_load_sound_param(void) {
     }
 
     (void)jw__json_ensure_number(root, "bgm", 0);
-    (void)jw__json_ensure_number(root, "sysVolume", 10);
+    (void)jw__json_ensure_number(root, "sysVolume", JW_STOCK_VOLUME_LEVELS);
     (void)jw__json_ensure_number(root, "toneVolume", 10);
+    /* Outputs without a level are left out: jw_stock_volume_get reads them as
+       100%, and adding one here (a "USB" key above all) would change how the
+       others read. jw_stock_volume_put adds them when it writes. */
     cJSON *devices = cJSON_GetObjectItemCaseSensitive(root, "devices");
     if (!cJSON_IsObject(devices)) {
         cJSON_DeleteItemFromObjectCaseSensitive(root, "devices");
@@ -2177,12 +2197,6 @@ static cJSON *jw__mlp1_load_sound_param(void) {
             cJSON_Delete(devices);
             cJSON_Delete(root);
             return NULL;
-        }
-    }
-    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
-        const char *key = jw__mlp1_sound_output_key((jw_platform_audio_output)i);
-        if (key) {
-            (void)jw__json_ensure_number(devices, key, 10);
         }
     }
     return root;
@@ -2218,12 +2232,11 @@ static void jw__mlp1_get_audio_volumes(int out[JW_PLATFORM_AUDIO_OUTPUT_COUNT]) 
     if (!root) {
         return;
     }
-    cJSON *devices = cJSON_GetObjectItemCaseSensitive(root, "devices");
+    bool tagged = jw__mlp1_sound_levels_tagged();
     for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
         const char *key = jw__mlp1_sound_output_key((jw_platform_audio_output)i);
-        const cJSON *level = key ? cJSON_GetObjectItemCaseSensitive(devices, key) : NULL;
-        if (cJSON_IsNumber(level)) {
-            out[i] = jw__mlp1_stock_level_to_percent(level->valueint);
+        if (key) {
+            out[i] = jw_stock_volume_get(root, key, tagged);
         }
     }
     cJSON_Delete(root);
@@ -2238,12 +2251,21 @@ static void jw__mlp1_sync_sound_volume(jw_platform_audio_output output, int perc
     if (!root) {
         return;
     }
-    cJSON *devices = cJSON_GetObjectItemCaseSensitive(root, "devices");
-    if (cJSON_IsObject(devices)) {
-        (void)jw__json_put_number(devices, key,
-                                  jw__mlp1_percent_to_stock_level(percent));
+    const char *keys[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
+    int key_count = 0;
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        const char *k = jw__mlp1_sound_output_key((jw_platform_audio_output)i);
+        if (k) {
+            keys[key_count++] = k;
+        }
     }
-    (void)jw__mlp1_write_sound_param(root);
+    /* Every write moves all outputs to stock's 0-14 scale, so stock reads Leaf's
+       100% as its own maximum. */
+    if (jw_stock_volume_put(root, keys, key_count, key, percent,
+                            jw__mlp1_sound_levels_tagged()) == 0 &&
+        jw__mlp1_write_sound_param(root) == 0) {
+        jw__mlp1_tag_sound_levels();
+    }
     cJSON_Delete(root);
 }
 

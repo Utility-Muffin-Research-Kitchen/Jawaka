@@ -123,7 +123,7 @@ LDLIBS_DAEMON += $(CURL_LDFLAGS)
 # MLP1 dismisses the stock boot transition from jawakad's platform backend by
 # dlopen-ing libloong_sdk.so at runtime, which needs libdl.
 LDLIBS_DAEMON += -ldl
-PLATFORM_BACKEND_SRC := internal/platform/device_mlp1.c
+PLATFORM_BACKEND_SRC := internal/platform/device_mlp1.c internal/platform/stock_volume.c
 PLATFORM_ID_SRC := internal/platform/platform_id_mlp1.c
 INPUT_PROXY_SRC := internal/platform/input_proxy_mlp1.c
 INPUT_ROSTER_SRC := internal/platform/input_roster_mlp1.c
@@ -577,6 +577,14 @@ wifi-attempt-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/wifi-attempt-test \
 		internal/platform/wifi_attempt_test.c internal/platform/wifi_attempt.c
 	$(BUILD)/bin/wifi-attempt-test
+
+# Stock's 0-14 SOUND_PARAM volume levels and the migration off Leaf's old 0-10.
+.PHONY: stock-volume-test
+stock-volume-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/stock-volume-test \
+		internal/platform/stock_volume_test.c internal/platform/stock_volume.c \
+		third_party/cjson/cJSON.c -lm
+	$(BUILD)/bin/stock-volume-test
 
 # Links input_shortcuts.c alone: it uses JW_UI(), which is a macro, so the
 # i18n.h include costs nothing at link time.
@@ -1786,6 +1794,7 @@ help:
 	@echo "  make power-hard-cut-test  Force Off Hold value mapping and register rewrite"
 	@echo "  make wifi-ssid-test          Validate wpa_supplicant SSID conversions"
 	@echo "  make wifi-attempt-test       Validate when a Wi-Fi join attempt succeeds or fails"
+	@echo "  make stock-volume-test       Validate stock 0-14 volume levels and the 0-10 migration"
 	@echo "  make jawaka-retroarch-runner Build RetroArch app/config runner"
 	@echo "  make jawaka-update-runner    Build OTA install handoff runner"
 	@echo "  make jawaka-pakrat-smoke     Build local Pak Rat install/uninstall smoke helper"
