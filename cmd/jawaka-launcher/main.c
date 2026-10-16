@@ -1355,12 +1355,12 @@ static const char *jw__flat_label(const jw_launcher_state *state, int idx) {
     if (idx < 0 || idx >= state->flat_count) return "";
     const jw_flat_item *it = &state->flat_items[idx];
     switch (it->kind) {
-        case JW_FLAT_RECENTLY_PLAYED: return "Recently Played";
-        case JW_FLAT_FAVORITES:       return "Favorites";
+        case JW_FLAT_RECENTLY_PLAYED: return T("Recently Played");
+        case JW_FLAT_FAVORITES:       return T("Favorites");
         case JW_FLAT_SYSTEM:          return state->systems[it->system_idx].display_name;
-        case JW_FLAT_APPS:            return "Apps";
-        case JW_FLAT_SETTINGS:        return "Settings";
-        case JW_FLAT_TOOLS:           return "Tools";
+        case JW_FLAT_APPS:            return T("Apps");
+        case JW_FLAT_SETTINGS:        return T("Settings");
+        case JW_FLAT_TOOLS:           return T("Tools");
         default:                      return "";
     }
 }
@@ -2171,6 +2171,8 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
     pthread_mutex_lock(&P->scrape_mu);
     s = P->scrape;
     pthread_mutex_unlock(&P->scrape_mu);
+    char reason[256];   /* the ScreenScraper client's English, translated */
+    jw_i18n_message(s.message, NULL, 0, reason, sizeof(reason));
 
     bool paused_storage = strcmp(s.state, "paused-storage") == 0;
     bool active = strcmp(s.state, "running") == 0 ||
@@ -2180,10 +2182,10 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
         activity->completion.text[0] = '\0';
         if (paused_storage) {
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping paused: %.200s"),
-                     s.message[0] ? s.message : T("SD card is read-only"));
+                     s.message[0] ? reason : T("SD card is read-only"));
         } else if (strcmp(s.state, "paused-quota") == 0) {
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping paused: %.200s"),
-                     s.message[0] ? s.message : T("daily quota exceeded"));
+                     s.message[0] ? reason : T("daily quota exceeded"));
         } else if (s.current_system[0]) {
             int shown = s.done < s.total ? s.done + 1 : s.total;
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping %s · %d/%d"),
@@ -2205,20 +2207,20 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
         }
         if (paused_storage) {
             snprintf(state->status, sizeof(state->status),
-                     "Scraping paused: %.200s",
-                     s.message[0] ? s.message : "SD card is read-only");
+                     T("Scraping paused: %.200s"),
+                     s.message[0] ? reason : T("SD card is read-only"));
         } else if (strcmp(s.state, "paused-quota") == 0) {
             snprintf(state->status, sizeof(state->status),
-                     "Scraping paused: %.200s",
-                     s.message[0] ? s.message : "daily quota exceeded");
+                     T("Scraping paused: %.200s"),
+                     s.message[0] ? reason : T("daily quota exceeded"));
         } else if (item[0]) {
             int shown = s.done + 1 > s.total ? s.total : s.done + 1;
             snprintf(state->status, sizeof(state->status),
-                     "Scraping %s: %d/%d - %.160s",
+                     T("Scraping %s: %d/%d - %.160s"),
                      s.current_system, shown, s.total, item);
         } else {
             snprintf(state->status, sizeof(state->status),
-                     "Scraping: %d/%d", s.done, s.total);
+                     T("Scraping: %d/%d"), s.done, s.total);
         }
         cat_request_frame();
         was_active = true;
@@ -2234,11 +2236,11 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
             }
             if (s.failed > 0 && n > 0 && (size_t)n < cap) {
                 n += snprintf(state->status + n, cap - (size_t)n,
-                              ", %d failed", s.failed);
+                              T(", %d failed"), s.failed);
             }
             if (s.cancelled > 0 && n > 0 && (size_t)n < cap) {
                 snprintf(state->status + n, cap - (size_t)n,
-                         ", %d cancelled", s.cancelled);
+                         T(", %d cancelled"), s.cancelled);
             }
             jw_system_notice_set(&activity->completion, state->status, SDL_GetTicks());
             cat_request_frame();
@@ -2692,35 +2694,35 @@ static void jw__draw_app_item(int idx, int ix, int iy, int iw, int ih,
 
 static const char *jw__pakrat_status_label(jw_pakrat_app_status status) {
     switch (status) {
-        case JW_PAKRAT_APP_AVAILABLE:        return "Available";
-        case JW_PAKRAT_APP_INSTALLED:        return "Installed";
-        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Update";
-        case JW_PAKRAT_APP_STALE:            return "Stale";
-        case JW_PAKRAT_APP_UNMANAGED:        return "Manual";
+        case JW_PAKRAT_APP_AVAILABLE:        return T("Available");
+        case JW_PAKRAT_APP_INSTALLED:        return T("Installed");
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return T("status|Update");
+        case JW_PAKRAT_APP_STALE:            return T("Stale");
+        case JW_PAKRAT_APP_UNMANAGED:        return T("Manual");
         default:                             return "";
     }
 }
 
 static const char *jw__pakrat_primary_action_label(const jw_pakrat_app_state *app) {
     if (!app) {
-        return "Select";
+        return JW_UI("Select");
     }
     if (app->managed) {
-        return "Blocked";
+        return JW_UI("Blocked");
     }
     if (jw_pakrat_primary_action_opens(app)) {
-        return "Open";
+        return JW_UI("Open");
     }
     if (!app->primary_action_allowed) {
-        return "Unavailable";
+        return JW_UI("Unavailable");
     }
     switch (app->status) {
-        case JW_PAKRAT_APP_AVAILABLE:        return "Install";
-        case JW_PAKRAT_APP_INSTALLED:        return "Reinstall";
-        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Update";
-        case JW_PAKRAT_APP_STALE:            return "Restore";
-        case JW_PAKRAT_APP_UNMANAGED:        return "Install";
-        default:                             return "Select";
+        case JW_PAKRAT_APP_AVAILABLE:        return JW_UI("Install");
+        case JW_PAKRAT_APP_INSTALLED:        return JW_UI("Reinstall");
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return JW_UI("Update");
+        case JW_PAKRAT_APP_STALE:            return JW_UI("Restore");
+        case JW_PAKRAT_APP_UNMANAGED:        return JW_UI("Install");
+        default:                             return JW_UI("Select");
     }
 }
 
@@ -3010,7 +3012,7 @@ static void jw__draw_search_item(int idx, int ix, int iy, int iw, int ih,
     TTF_Font *small     = cat_get_font(CAT_FONT_SMALL);
 
     const jw_search_result *result = &ctx->results[idx];
-    const char *kind = result->kind == JW_SEARCH_APP ? "App" : "Game";
+    const char *kind = result->kind == JW_SEARCH_APP ? T("App") : T("Game");
     const char *meta = result->kind == JW_SEARCH_APP ? result->pak_dir : result->system;
 
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
@@ -3432,10 +3434,10 @@ static void jw__draw_pakrat_detail_content(int x, int y, int w, void *user) {
     }
 
     int row_h = TTF_FontHeight(c->small) + CAT_S(8);
-    snprintf(line, sizeof(line), "Catalog version: %s", app->package.version);
+    snprintf(line, sizeof(line), T("Catalog version: %s"), app->package.version);
     cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
     cy += row_h;
-    snprintf(line, sizeof(line), "Installed version: %s",
+    snprintf(line, sizeof(line), T("Installed version: %s"),
              app->installed_version[0] ? app->installed_version : "-");
     cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
     cy += row_h;
@@ -6124,10 +6126,12 @@ static void jw__render_search(const jw_launcher_state *state) {
 
     char title[320];
     if (state->search_query[0])
-        snprintf(title, sizeof(title), "Search: %s  (%d %s)", state->search_query,
-                 state->search_count, state->search_count == 1 ? "result" : "results");
+        snprintf(title, sizeof(title),
+                 state->search_count == 1 ? T("Search: %s  (1 result)")
+                                          : T("Search: %s  (%d results)"),
+                 state->search_query, state->search_count);
     else
-        snprintf(title, sizeof(title), "%s", "Search: (empty)");
+        snprintf(title, sizeof(title), "%s", T("Search: (empty)"));
     cat_draw_text_ellipsized(large, title, margin, title_y, theme->text, sw - margin * 2);
 
     SDL_Rect list, image;
@@ -6500,9 +6504,9 @@ static void jw__render_search_cf(jw_launcher_state *state) {
 
     char hdr[320];
     if (state->search_query[0])
-        snprintf(hdr, sizeof(hdr), "Search: %s", state->search_query);
+        snprintf(hdr, sizeof(hdr), T("Search: %s"), state->search_query);
     else
-        snprintf(hdr, sizeof(hdr), "%s", "Search");
+        snprintf(hdr, sizeof(hdr), "%s", T("Search"));
     int maxhw = sw - CAT_S(40);
     int hw = cat_measure_text(small, hdr);
     int hx = (sw - (hw < maxhw ? hw : maxhw)) / 2;
@@ -6564,10 +6568,10 @@ static const char *jw__bios_basename(const char *rel_path) {
    effective value came from, not where the file is stored. */
 static const char *jw__bios_origin_suffix(jw_bios_origin origin) {
     switch (origin) {
-        case JW_BIOS_ORIGIN_GAME:   return "game";
-        case JW_BIOS_ORIGIN_SYSTEM: return "system";
+        case JW_BIOS_ORIGIN_GAME:   return T("scope|game");
+        case JW_BIOS_ORIGIN_SYSTEM: return T("scope|system");
         case JW_BIOS_ORIGIN_DEFAULT:
-        default:                    return "default";
+        default:                    return T("scope|default");
     }
 }
 
@@ -6601,23 +6605,23 @@ static void jw__action_row_strings(const jw_launcher_state *state,
     switch (row) {
         case JW_ACTION_ROW_SEARCH:
             snprintf(title, title_size, "%s", T("Search This System"));
-            snprintf(value, value_size, "%s", "Open");
+            snprintf(value, value_size, "%s", T("Open"));
             break;
         case JW_ACTION_ROW_DISPLAY_NAME: {
             snprintf(title, title_size, "%s", T("Display Name"));
             if (state->action_scope == JW_ACTION_SYSTEM) {
                 const char *label = state->action_system_display[0]
                     ? state->action_system_display
-                    : "Default";
+                    : T("Default");
                 if (state->action_system_display_override[0]) {
-                    snprintf(value, value_size, "%s (custom)", label);
+                    snprintf(value, value_size, "%s (%s)", label, T("scope|custom"));
                 } else {
                     snprintf(value, value_size, "%s", label);
                 }
             } else {
                 char name[256];
                 jw__clean_rom_name(state->action_game.name, name, sizeof(name));
-                jw__str_copy(value, value_size, name[0] ? name : "Scanned");
+                jw__str_copy(value, value_size, name[0] ? name : T("Scanned"));
             }
             break;
         }
@@ -6626,17 +6630,20 @@ static void jw__action_row_strings(const jw_launcher_state *state,
             if (state->action_scope == JW_ACTION_GAME &&
                 jw__action_find_core(
                     state, state->action_core_game_override) >= 0) {
-                snprintf(value, value_size, "%s (game)",
-                         jw__action_core_label(state, state->action_core_game_override));
+                snprintf(value, value_size, "%s (%s)",
+                         jw__action_core_label(state, state->action_core_game_override),
+                         T("scope|game"));
             } else if (jw__action_find_core(
                            state, state->action_core_system_override) >= 0) {
-                snprintf(value, value_size, "%s (system)",
-                         jw__action_core_label(state, state->action_core_system_override));
+                snprintf(value, value_size, "%s (%s)",
+                         jw__action_core_label(state, state->action_core_system_override),
+                         T("scope|system"));
             } else if (state->action_core_effective[0]) {
-                snprintf(value, value_size, "%s (default)",
-                         jw__action_core_label(state, state->action_core_effective));
+                snprintf(value, value_size, "%s (%s)",
+                         jw__action_core_label(state, state->action_core_effective),
+                         T("scope|default"));
             } else {
-                snprintf(value, value_size, "%s", "Unavailable");
+                snprintf(value, value_size, "%s", T("Unavailable"));
             }
             break;
         case JW_ACTION_ROW_BIOS:
@@ -6644,32 +6651,34 @@ static void jw__action_row_strings(const jw_launcher_state *state,
             jw__bios_row_value(state, value, value_size);
             break;
         case JW_ACTION_ROW_PERFORMANCE:
-            snprintf(title, title_size, "%s", "Performance");
+            snprintf(title, title_size, "%s", T("Performance"));
             if (state->action_scope == JW_ACTION_GAME &&
                 state->action_perf_game_override[0]) {
-                snprintf(value, value_size, "%s (game)",
-                         jw__action_perf_label(state->action_perf_game_override));
+                snprintf(value, value_size, "%s (%s)",
+                         jw__action_perf_label(state->action_perf_game_override),
+                         T("scope|game"));
             } else if (state->action_perf_system_override[0]) {
-                snprintf(value, value_size, "%s (system)",
-                         jw__action_perf_label(state->action_perf_system_override));
+                snprintf(value, value_size, "%s (%s)",
+                         jw__action_perf_label(state->action_perf_system_override),
+                         T("scope|system"));
             } else {
-                snprintf(value, value_size, "%s", "Auto");
+                snprintf(value, value_size, "%s", T("Auto"));
             }
             break;
         case JW_ACTION_ROW_SCRAPE:
-            snprintf(title, title_size, "%s", "Scrape Artwork");
-            snprintf(value, value_size, "%s", "Replace");
+            snprintf(title, title_size, "%s", T("Scrape Artwork"));
+            snprintf(value, value_size, "%s", T("Replace"));
             break;
         case JW_ACTION_ROW_SCRAPE_CANCEL:
-            snprintf(title, title_size, "%s", "Cancel Scraping");
-            snprintf(value, value_size, "%s", "Stop");
+            snprintf(title, title_size, "%s", T("Cancel Scraping"));
+            snprintf(value, value_size, "%s", T("Stop"));
             break;
         case JW_ACTION_ROW_RESET:
             snprintf(title, title_size, "%s",
                      state->action_scope == JW_ACTION_GAME
                          ? T("Reset Game Overrides")
-                         : "Reset System Overrides");
-            snprintf(value, value_size, "%s", "Clear");
+                         : T("Reset System Overrides"));
+            snprintf(value, value_size, "%s", T("Clear"));
             break;
         case JW_ACTION_ROW_HIDE:
             snprintf(title, title_size, "%s", T("Hide Game"));
@@ -6986,7 +6995,7 @@ static void jw__render_actions(const jw_launcher_state *state) {
         jw__clean_rom_name(state->action_game.name, name, sizeof(name));
         snprintf(title, sizeof(title), "%s", name);
     } else {
-        snprintf(title, sizeof(title), "System Options: %s",
+        snprintf(title, sizeof(title), T("System Options: %s"),
                  state->action_system_display);
     }
 
@@ -9877,32 +9886,33 @@ static bool jw__confirm_pakrat_adopt(const jw_pakrat_app_state *app) {
 static const char *jw__pakrat_running_label(const jw_pakrat_app_state *app,
                                             jw_pakrat_ui_action action) {
     if (action == JW_PAKRAT_UI_UNINSTALL) {
-        return "Uninstalling Pak Rat app";
+        return T("Uninstalling Pak Rat app");
     }
     if (!app) {
-        return "Installing Pak Rat app";
+        return T("Installing Pak Rat app");
     }
     switch (app->status) {
-        case JW_PAKRAT_APP_INSTALLED:        return "Reinstalling Pak Rat app";
-        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Updating Pak Rat app";
-        case JW_PAKRAT_APP_STALE:            return "Restoring Pak Rat app";
-        default:                             return "Installing Pak Rat app";
+        case JW_PAKRAT_APP_INSTALLED:        return T("Reinstalling Pak Rat app");
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return T("Updating Pak Rat app");
+        case JW_PAKRAT_APP_STALE:            return T("Restoring Pak Rat app");
+        default:                             return T("Installing Pak Rat app");
     }
 }
 
-static const char *jw__pakrat_done_label(const jw_pakrat_app_state *app,
-                                         jw_pakrat_ui_action action) {
+/* A whole sentence per result, so a translation can place the name. */
+static const char *jw__pakrat_done_format(const jw_pakrat_app_state *app,
+                                          jw_pakrat_ui_action action) {
     if (action == JW_PAKRAT_UI_UNINSTALL) {
-        return "Uninstalled";
+        return T("Uninstalled %s");
     }
     if (!app) {
-        return "Installed";
+        return T("Installed %s");
     }
     switch (app->status) {
-        case JW_PAKRAT_APP_INSTALLED:        return "Reinstalled";
-        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Updated";
-        case JW_PAKRAT_APP_STALE:            return "Restored";
-        default:                             return "Installed";
+        case JW_PAKRAT_APP_INSTALLED:        return T("Reinstalled %s");
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return T("Updated %s");
+        case JW_PAKRAT_APP_STALE:            return T("Restored %s");
+        default:                             return T("Installed %s");
     }
 }
 
@@ -10127,7 +10137,7 @@ static void jw__run_pakrat_theme_action(jw_launcher_state *state,
     jw_pakrat_ui_job job;
     memset(&job, 0, sizeof(job));
     if (jw__pakrat_context_from_state(state, &job.ctx) != 0) {
-        jw__set_pakrat_message(state, "%s", "Pak Rat runtime paths unavailable");
+        jw__set_pakrat_message(state, "%s", T("Pak Rat runtime paths unavailable"));
         return;
     }
     job.action = action;
@@ -10229,7 +10239,7 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
                                   jw_pakrat_ui_action action) {
     const jw_pakrat_app_state *selected = jw__pakrat_selected(state);
     if (!selected) {
-        jw__set_pakrat_message(state, "%s", "No Pak Rat app selected");
+        jw__set_pakrat_message(state, "%s", T("No Pak Rat app selected"));
         return;
     }
     if (selected->package.kind == JW_PAKRAT_KIND_THEME) {
@@ -10240,7 +10250,7 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
     jw_pakrat_app_state app = *selected;
     const char *name = app.package.name[0] ? app.package.name : app.package.id;
     if (app.managed) {
-        jw__set_pakrat_message(state, "%.120s is release-managed", name);
+        jw__set_pakrat_message(state, T("%.120s is release-managed"), name);
         return;
     }
     if (action != JW_PAKRAT_UI_UNINSTALL &&
@@ -10248,23 +10258,23 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
         if (app.installed_version_missing_from_history &&
             app.installed_version[0]) {
             jw__set_pakrat_message(
-                state, "Version %.40s is missing from catalog history",
+                state, T("Version %.40s is missing from catalog history"),
                 app.installed_version);
         } else if (app.gated_version[0] &&
                    app.gated_min_leaf_version[0]) {
             jw__set_pakrat_message(
-                state, "Version %.40s requires Leaf v%.40s",
+                state, T("Version %.40s requires Leaf v%.40s"),
                 app.gated_version, app.gated_min_leaf_version);
         } else {
             jw__set_pakrat_message(
-                state, "%.120s has no compatible install action", name);
+                state, T("%.120s has no compatible install action"), name);
         }
         return;
     }
 
     jw_pakrat_context ctx;
     if (jw__pakrat_context_from_state(state, &ctx) != 0) {
-        jw__set_pakrat_message(state, "%s", "Pak Rat runtime paths unavailable");
+        jw__set_pakrat_message(state, "%s", T("Pak Rat runtime paths unavailable"));
         return;
     }
 
@@ -10274,30 +10284,30 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
     bool allow_adopt = false;
     if (action == JW_PAKRAT_UI_UNINSTALL) {
         if (!jw__pakrat_can_uninstall(&app)) {
-            jw__set_pakrat_message(state, "%.120s is not installed by Pak Rat", name);
+            jw__set_pakrat_message(state, T("%.120s is not installed by Pak Rat"), name);
             return;
         }
         if (jw_pakrat_get_uninstall_info(
                 &ctx, app.package.id, &uninstall_info) != 0) {
             jw__set_pakrat_message(
-                state, "Could not inspect retained data for %.100s", name);
+                state, T("Could not inspect retained data for %.100s"), name);
             return;
         }
         uninstall_info_loaded = true;
         if (!jw__confirm_pakrat_uninstall(&app, &uninstall_info)) {
             jw_pakrat_free_uninstall_info(&uninstall_info);
-            jw__set_pakrat_message(state, "Uninstall cancelled: %.120s", name);
+            jw__set_pakrat_message(state, T("Uninstall cancelled: %.120s"), name);
             return;
         }
     } else if (app.status == JW_PAKRAT_APP_UNMANAGED) {
         if (!jw__confirm_pakrat_adopt(&app)) {
-            jw__set_pakrat_message(state, "Install cancelled: %.120s", name);
+            jw__set_pakrat_message(state, T("Install cancelled: %.120s"), name);
             return;
         }
         allow_adopt = true;
     } else if (app.status == JW_PAKRAT_APP_INSTALLED &&
                !jw__confirm_pakrat_reinstall(&app)) {
-        jw__set_pakrat_message(state, "Reinstall cancelled: %.120s", name);
+        jw__set_pakrat_message(state, T("Reinstall cancelled: %.120s"), name);
         return;
     }
 
@@ -10360,22 +10370,25 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
 
     if (rc == 0 && retained_rc == 0) {
         jw__set_pakrat_message(state,
-                               "Uninstalled %.100s and removed retained data",
+                               T("Uninstalled %.100s and removed retained data"),
                                name);
     } else if (rc == 0 && retained_rc != -2 && retained_rc != 0) {
         jw__set_pakrat_message(
-            state, "Uninstalled %.100s; retained-data removal failed", name);
+            state, T("Uninstalled %.100s; retained-data removal failed"), name);
     } else if (rc == 0) {
-        jw__set_pakrat_message(state, "%.80s %.120s",
-                               jw__pakrat_done_label(&app, action), name);
+        jw__set_pakrat_message(state, jw__pakrat_done_format(&app, action), name);
+    } else if (job.error_message[0]) {
+        /* Pak Rat writes English; the pak's own names may sit in a sentence. */
+        const char *values[] = { app.package.name, app.package.id,
+                                 app.package.install_name, app.package.version };
+        char reason[256];
+        jw_i18n_message(job.error_message, values, 4, reason, sizeof(reason));
+        jw__set_pakrat_message(state, "%s", reason);
     } else {
-        jw__set_pakrat_message(
-            state, "%s",
-            job.error_message[0] ? job.error_message
-                                 : "Pak Rat action failed");
+        jw__set_pakrat_message(state, "%s", T("Pak Rat action failed"));
     }
     if (rc == 0 && reload_rc != 0) {
-        jw__set_pakrat_message(state, "%.120s changed; refresh failed", name);
+        jw__set_pakrat_message(state, T("%.120s changed; refresh failed"), name);
     }
     cat_request_frame();
 }

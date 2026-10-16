@@ -1182,7 +1182,7 @@ void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui) {
             bool quiet_auto_scan = (ui->bt_op == JW_BT_OP_SCAN && !ui->bt_op_manual);
             if (!quiet_auto_scan) {
                 jw__bt_msg(ui, "%s", message[0] ? message :
-                           (st == JW_BT_OP_OK ? "Bluetooth done" : "Bluetooth failed"));
+                           (st == JW_BT_OP_OK ? T("Bluetooth done") : T("Bluetooth failed")));
             }
             ui->bt_op = JW_BT_OP_NONE;
             ui->bt_op_manual = false;
@@ -1530,7 +1530,7 @@ void jw_settings_ra_account_value(const jw_settings_ui *ui, char *out,
                                   size_t out_size) {
     if (!out || !out_size) return;
     if (ui && ui->ra_username[0]) {
-        snprintf(out, out_size, "Saved: %s", ui->ra_username);
+        snprintf(out, out_size, T("Saved: %s"), ui->ra_username);
     } else if (ui && ui->ra_account_needs_repair) {
         snprintf(out, out_size, "Not saved - sign in again");
     } else {
@@ -3650,17 +3650,17 @@ static void jw__render_bluetooth(const jw_settings_ui *ui, int x, int y, int w, 
     SDL_Rect content = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
     int dy = content.y;
 
-    const char *status = "Unavailable";
+    const char *status = T("Unavailable");
     if (ui->bt_status.available) {
-        status = ui->bt_radio_on ? "On" : "Off";
+        status = ui->bt_radio_on ? T("On") : T("Off");
     }
     char line[160];
-    snprintf(line, sizeof(line), "Status: %s", status);
+    snprintf(line, sizeof(line), T("Status: %s"), status);
     cat_draw_text(small, line, x + cat_scale(12), dy, theme->text);
     dy += line_h;
 
-    snprintf(line, sizeof(line), "Connected: %s",
-             (ui->bt_status.available && ui->bt_status.any_connected) ? "Yes" : "No");
+    snprintf(line, sizeof(line), T("Connected: %s"),
+             (ui->bt_status.available && ui->bt_status.any_connected) ? T("Yes") : T("No"));
     cat_draw_text(small, line, x + cat_scale(12), dy, theme->hint);
     dy += line_h;
 
@@ -4265,7 +4265,7 @@ static void jw__scrape_start_status(const jw_ipc_scrape_start_info *info,
     if (!info || !buf || buf_size == 0) return;
     if (info->queue_full) {
         if (info->enqueued > 0) {
-            snprintf(buf, buf_size, "Queue full: queued %d of %d",
+            snprintf(buf, buf_size, T("Queue full: queued %d of %d"),
                      info->enqueued, info->requested);
         } else {
             snprintf(buf, buf_size, "%s", "Scrape queue is full");
@@ -4286,7 +4286,7 @@ static void jw__scrape_start_status(const jw_ipc_scrape_start_info *info,
         snprintf(buf, buf_size, "%s", "No missing artwork");
     } else if (info->requested == 0) {
         snprintf(buf, buf_size, "%s",
-                 missing_only ? "No missing artwork" : "No games to scrape");
+                 missing_only ? T("No missing artwork") : T("No games to scrape"));
     } else {
         snprintf(buf, buf_size, "%s", "No new scrape jobs");
     }
@@ -4406,13 +4406,15 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
     if (animating) cat_request_frame();
 
     /* Error/cancel note below the info. */
+    char reason[256];   /* the ScreenScraper client's English, translated */
+    jw_i18n_message(row->message, NULL, 0, reason, sizeof(reason));
     const char *desc = NULL;
     if (row->state == JW_IPC_SCRAPE_ROW_NOT_FOUND)
         desc = T("Not found in the ScreenScraper.fr database.");
     else if (row->state == JW_IPC_SCRAPE_ROW_ERROR)
-        desc = row->message[0] ? row->message : "Artwork scrape failed.";
+        desc = row->message[0] ? reason : T("Artwork scrape failed.");
     else if (row->state == JW_IPC_SCRAPE_ROW_CANCELLED)
-        desc = row->message[0] ? row->message : "Scrape was cancelled before completion.";
+        desc = row->message[0] ? reason : T("Scrape was cancelled before completion.");
     if (desc) {
         ly += cat_scale(4);
         cat_draw_text_ellipsized(small, desc, c.x, ly, theme->hint, c.w);
@@ -4484,8 +4486,8 @@ static void jw__render_scrape_queue(const jw_settings_ui *ui,
     if (list->cursor >= count) list->cursor = count > 0 ? count - 1 : 0;
 
     if (count == 0) {
-        const char *msg = (q && q->total > 0) ? "No jobs match this filter."
-                                              : "No scrape jobs.";
+        const char *msg = (q && q->total > 0) ? T("No jobs match this filter.")
+                                              : T("No scrape jobs.");
         int tw = cat_measure_text(body, msg);
         cat_draw_text(body, msg, c.x + (c.w - tw) / 2,
                       c.y + (c.h - TTF_FontHeight(body)) / 2, theme->hint);
@@ -4774,7 +4776,7 @@ static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, i
                      ui->ss_username, quota);
         }
     } else if (ui->ss_username[0]) {
-        snprintf(ss_value, sizeof(ss_value), "Saved: %s (unverified)", ui->ss_username);
+        snprintf(ss_value, sizeof(ss_value), T("Saved: %s (unverified)"), ui->ss_username);
     } else if (ui->ss_rejected) {
         snprintf(ss_value, sizeof(ss_value), "Rejected - wrong username or password");
     } else {
@@ -5502,6 +5504,7 @@ static const char *jw__language_label(const char *code) {
     if (strcmp(code, "zh_CN") == 0) return "中文";
     if (strcmp(code, "de_DE") == 0) return "Deutsch";
     if (strcmp(code, "fr_FR") == 0) return "Français";
+    if (strcmp(code, "nl_BE") == 0) return "Nederlands (België)";
     if (strcmp(code, "es_MX") == 0) return "Español (México)";
     if (strcmp(code, "vi_VN") == 0) return "Tiếng Việt";
     if (strcmp(code, "ru_RU") == 0) return "Русский";
@@ -5762,21 +5765,31 @@ static void jw__format_update_size(long long bytes, char *out, size_t out_size) 
     }
 }
 
+/* Update messages arrive as English sentences composed by jawakad (the JW_UI
+   marks in update.c put them in leaf.pot); one naming the status's release is
+   matched with that release turned back into its %s. */
+static void jw__update_text(const jw_ipc_update_status_info *u, const char *msg,
+                            char *out, size_t out_size) {
+    const char *ids[3] = { u ? u->release_id : NULL, u ? u->current_release_id : NULL,
+                           u ? u->install_result_release_id : NULL };
+    jw_i18n_message(msg, ids, 3, out, out_size);
+}
+
 static const char *jw__update_state_label(const jw_ipc_update_status_info *u) {
     if (!u || !u->state[0]) {
-        return "Idle";
+        return T("Idle");
     }
-    if (strcmp(u->state, "checking") == 0) return "Checking...";
-    if (strcmp(u->state, "up-to-date") == 0) return "Up to date";
-    if (strcmp(u->state, "available") == 0) return "Available";
-    if (strcmp(u->state, "downloading") == 0) return "Downloading";
-    if (strcmp(u->state, "downloaded") == 0) return "Downloaded";
-    if (strcmp(u->state, "installing") == 0) return "Installing";
-    if (strcmp(u->state, "armed") == 0) return "Restart needed";
-    if (strcmp(u->state, "cancelled") == 0) return "Cancelled";
-    if (strcmp(u->state, "incompatible") == 0) return "Incompatible";
-    if (strcmp(u->state, "error") == 0) return "Error";
-    return "Idle";
+    if (strcmp(u->state, "checking") == 0) return T("Checking...");
+    if (strcmp(u->state, "up-to-date") == 0) return T("Up to date");
+    if (strcmp(u->state, "available") == 0) return T("Available");
+    if (strcmp(u->state, "downloading") == 0) return T("Downloading");
+    if (strcmp(u->state, "downloaded") == 0) return T("Downloaded");
+    if (strcmp(u->state, "installing") == 0) return T("Installing");
+    if (strcmp(u->state, "armed") == 0) return T("Restart needed");
+    if (strcmp(u->state, "cancelled") == 0) return T("Cancelled");
+    if (strcmp(u->state, "incompatible") == 0) return T("Incompatible");
+    if (strcmp(u->state, "error") == 0) return T("Error");
+    return T("Idle");
 }
 
 /* True when the offered release is the one already installed — so we don't tempt
@@ -5794,37 +5807,37 @@ static void jw__update_download_label(const jw_settings_ui *ui,
     }
     const jw_ipc_update_status_info *u = ui ? &ui->update : NULL;
     if (!ui || !ui->update_have_status) {
-        snprintf(out, out_size, "%s", "Unavailable");
+        snprintf(out, out_size, "%s", T("Unavailable"));
     } else if (u->download_active) {
         if (u->download_percent >= 0) {
-            snprintf(out, out_size, "Cancel %d%%", u->download_percent);
+            snprintf(out, out_size, T("Cancel %d%%"), u->download_percent);
         } else {
-            snprintf(out, out_size, "%s", "Cancel");
+            snprintf(out, out_size, "%s", T("Cancel"));
         }
     } else if (u->downloaded) {
-        snprintf(out, out_size, "%s", "Verified");
+        snprintf(out, out_size, "%s", T("Verified"));
     } else if (jw__update_is_current(u)) {
-        snprintf(out, out_size, "%s", "Up to date");
+        snprintf(out, out_size, "%s", T("Up to date"));
     } else if (u->compatible && u->artifact_name[0]) {
-        snprintf(out, out_size, "%s", "Download");
+        snprintf(out, out_size, "%s", T("Download"));
     } else {
-        snprintf(out, out_size, "%s", "Unavailable");
+        snprintf(out, out_size, "%s", T("Unavailable"));
     }
 }
 
 static const char *jw__update_blocked_label(const char *reason) {
-    if (!reason || !reason[0]) return "Blocked";
-    if (strcmp(reason, "install_again") == 0) return "Install Again";
-    if (strcmp(reason, "primary_slot_needed") == 0) return "Primary Slot";
-    if (strcmp(reason, "not_idle") == 0) return "Close Apps";
-    if (strcmp(reason, "space_low") == 0) return "No Space";
-    if (strcmp(reason, "battery_low") == 0) return "Battery Low";
-    if (strcmp(reason, "download_active") == 0) return "Downloading";
-    if (strcmp(reason, "not_downloaded") == 0) return "Download First";
-    if (strcmp(reason, "download_missing") == 0) return "Missing";
-    if (strcmp(reason, "unsupported_handoff") == 0) return "Unsupported";
-    if (strcmp(reason, "unsupported_artifact") == 0) return "Unsupported";
-    return "Blocked";
+    if (!reason || !reason[0]) return T("Blocked");
+    if (strcmp(reason, "install_again") == 0) return T("Install Again");
+    if (strcmp(reason, "primary_slot_needed") == 0) return T("Primary Slot");
+    if (strcmp(reason, "not_idle") == 0) return T("Close Apps");
+    if (strcmp(reason, "space_low") == 0) return T("No Space");
+    if (strcmp(reason, "battery_low") == 0) return T("Battery Low");
+    if (strcmp(reason, "download_active") == 0) return T("Downloading");
+    if (strcmp(reason, "not_downloaded") == 0) return T("Download First");
+    if (strcmp(reason, "download_missing") == 0) return T("update|Missing");
+    if (strcmp(reason, "unsupported_handoff") == 0) return T("Unsupported");
+    if (strcmp(reason, "unsupported_artifact") == 0) return T("Unsupported");
+    return T("Blocked");
 }
 
 static void jw__update_install_label(const jw_settings_ui *ui,
@@ -5835,32 +5848,32 @@ static void jw__update_install_label(const jw_settings_ui *ui,
     }
     const jw_ipc_update_status_info *u = ui ? &ui->update : NULL;
     if (!ui || !ui->update_have_status) {
-        snprintf(out, out_size, "%s", "Unavailable");
+        snprintf(out, out_size, "%s", T("Unavailable"));
     } else if (u->install_active) {
-        snprintf(out, out_size, "%s", "Installing");
+        snprintf(out, out_size, "%s", T("Installing"));
     } else if (u->install_armed) {
-        snprintf(out, out_size, "%s", "Restart");
+        snprintf(out, out_size, "%s", T("Restart"));
     } else if (u->install_ready) {
-        snprintf(out, out_size, "%s", "Install");
+        snprintf(out, out_size, "%s", T("Install"));
     } else if (u->install_needs_confirmation) {
-        snprintf(out, out_size, "%s", "Confirm");
+        snprintf(out, out_size, "%s", T("Confirm"));
     } else if (u->install_blocked) {
         snprintf(out, out_size, "%s",
                  jw__update_blocked_label(u->install_reason));
     } else if (u->downloaded) {
-        snprintf(out, out_size, "%s", "Ready Check");
+        snprintf(out, out_size, "%s", T("Ready Check"));
     } else if (u->install_result_state[0]) {
         if (strcmp(u->install_result_state, "installed") == 0) {
-            snprintf(out, out_size, "%s", "Installed");
+            snprintf(out, out_size, "%s", T("Installed"));
         } else if (strcmp(u->install_result_state, "armed") == 0) {
-            snprintf(out, out_size, "%s", "Restart Needed");
+            snprintf(out, out_size, "%s", T("Restart Needed"));
         } else if (strcmp(u->install_result_state, "error") == 0) {
-            snprintf(out, out_size, "%s", "Failed");
+            snprintf(out, out_size, "%s", T("Failed"));
         } else {
             snprintf(out, out_size, "%s", u->install_result_state);
         }
     } else {
-        snprintf(out, out_size, "%s", "Unavailable");
+        snprintf(out, out_size, "%s", T("Unavailable"));
     }
 }
 
@@ -5946,20 +5959,21 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
     bool checking = ui->update_have_status && strcmp(u->state, "checking") == 0;
     char message[320];
     if (ui->update_have_status && u->install_active && u->install_message[0]) {
-        snprintf(message, sizeof(message), "%s", T(u->install_message));
+        jw__update_text(u, u->install_message, message, sizeof(message));
     } else if (ui->update_msg[0]) {
-        snprintf(message, sizeof(message), "%s", ui->update_msg);
+        jw__update_text(u, ui->update_msg, message, sizeof(message));
     } else if (ui->update_have_status) {
         if (u->install_message[0] &&
             (u->install_active || u->install_armed ||
              u->install_blocked || u->install_needs_confirmation ||
              u->install_ready)) {
-            snprintf(message, sizeof(message), "%s", T(u->install_message));
+            jw__update_text(u, u->install_message, message, sizeof(message));
         } else if (u->message[0]) {
-            snprintf(message, sizeof(message), "%s", u->message);
+            jw__update_text(u, u->message, message, sizeof(message));
         } else if (u->install_result_message[0]) {
-            snprintf(message, sizeof(message), T("Last update: %s"),
-                     T(u->install_result_message));
+            char result[256];
+            jw__update_text(u, u->install_result_message, result, sizeof(result));
+            snprintf(message, sizeof(message), T("Last update: %s"), result);
         } else {
             snprintf(message, sizeof(message), "%s", jw__update_state_label(u));
         }
@@ -5998,10 +6012,10 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
     snprintf(current_value, sizeof(current_value), "%s",
              (ui->update_have_status && u->current_release_id[0])
              ? u->current_release_id
-             : (ui->update_have_status && u->current_unknown ? "Unknown" : "-"));
+             : (ui->update_have_status && u->current_unknown ? T("Unknown") : "-"));
     if (ui->update_have_status && u->release_id[0]) {
         if (jw__update_is_current(u)) {
-            snprintf(candidate_value, sizeof(candidate_value), "%s (current)",
+            snprintf(candidate_value, sizeof(candidate_value), T("%s (current)"),
                      u->release_id);
         } else {
             jw__format_update_size(u->artifact_size, size_value, sizeof(size_value));
@@ -6009,10 +6023,10 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
                      u->release_id, size_value);
         }
     } else if (ui->update_have_status && u->install_result_release_id[0]) {
-        snprintf(candidate_value, sizeof(candidate_value), "Last: %s",
+        snprintf(candidate_value, sizeof(candidate_value), T("Last: %s"),
                  u->install_result_release_id);
     } else if (ui->update_have_status && strcmp(u->state, "up-to-date") == 0) {
-        snprintf(candidate_value, sizeof(candidate_value), "%s", "None");
+        snprintf(candidate_value, sizeof(candidate_value), "%s", T("None"));
     } else {
         snprintf(candidate_value, sizeof(candidate_value), "%s", "-");
     }
@@ -6024,7 +6038,7 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
     if (!ui->update_checked_this_visit && ui->update_have_status && !checking &&
         !u->download_active && !u->install_active && !u->install_armed &&
         !u->downloaded) {
-        snprintf(check_value, sizeof(check_value), "%s", "Not checked");
+        snprintf(check_value, sizeof(check_value), "%s", T("Not checked"));
         snprintf(download_value, sizeof(download_value), "%s", "-");
         snprintf(install_value, sizeof(install_value), "%s", "-");
         snprintf(candidate_value, sizeof(candidate_value), "%s", "-");
@@ -6035,7 +6049,7 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
         /* Amber-tint the value so "you're on the tester channel" reads at a glance. */
         ap_color warn = cat_hex_to_color("#E8A44C");
         jw__render_list_row_vc(&ui->update_list, x, ly, w, JW_UPDATE_ROW_CHANNEL,
-                               "Update Channel", "Beta", true, warn);
+                               "Update Channel", JW_UI("Beta"), true, warn);
     } else {
         jw__render_list_row(&ui->update_list, x, ly, w, JW_UPDATE_ROW_CHANNEL,
                             "Update Channel", "Stable", true);
@@ -6079,12 +6093,12 @@ static const char *jw__update_option_badge(const jw_ipc_update_option_info *opti
         return "";
     }
     if (option->selected) {
-        return "Selected";
+        return T("Selected");
     }
     if (option->installed) {
-        return "Installed";
+        return T("Installed");
     }
-    return idx == 0 ? "Latest" : "Older";
+    return idx == 0 ? T("Latest") : T("Older");
 }
 
 static void jw__draw_update_option_item(int idx, int ix, int iy, int iw, int ih,
@@ -6105,7 +6119,7 @@ static void jw__draw_update_option_item(int idx, int ix, int iy, int iw, int ih,
                                                theme->highlighted_text, focus);
     ap_color hint_color = cat_draw_color_lerp(theme->hint,
                                                theme->highlighted_text, focus);
-    const char *label = option->release_id[0] ? option->release_id : "Leaf update";
+    const char *label = option->release_id[0] ? option->release_id : T("Leaf update");
     char detail[320];
     char size[64];
     jw__format_update_size(option->artifact_size, size, sizeof(size));
@@ -6137,13 +6151,15 @@ static void jw__render_update_picker(const jw_settings_ui *ui,
     }
 
     bool loading = ui && ui->update.options_loading;
-    const char *message = "Compatible releases";
+    const char *message = T("Compatible releases");
     if (loading) {
-        message = "Loading releases...";
+        message = T("Loading releases...");
     } else if (count <= 0) {
-        message = "Check releases first";
+        message = T("Check releases first");
     } else if (!ui->update.options_complete && ui->update.message[0]) {
-        message = ui->update.message;   /* the list load failed; say why */
+        static char failed[256];   /* the list load failed; say why */
+        jw__update_text(&ui->update, ui->update.message, failed, sizeof(failed));
+        message = failed;
     }
     cat_draw_text_ellipsized(small, message, x + cat_scale(12), dy,
                              theme->hint, w - cat_scale(24));
@@ -6614,7 +6630,7 @@ static bool jw__confirm_update_unknown_preflight(const char *message) {
     cat_message_opts opts = {
         .message = message && message[0]
                    ? message
-                   : "Install update even though checks are incomplete?",
+                   : JW_UI("Install update even though checks are incomplete?"),
         .footer = footer,
         .footer_count = 2,
     };
@@ -6655,7 +6671,9 @@ static bool jw__confirm_bt_unpair(const char *name) {
 static void jw__copy_status(char *status_buf, size_t status_size,
                             const char *value) {
     if (status_buf && status_size > 0) {
-        snprintf(status_buf, status_size, "%s", value ? value : "");
+        /* A "|" would make T() drop text it does not know, so pass it as is. */
+        const char *shown = value && !strchr(value, '|') ? T(value) : value;
+        snprintf(status_buf, status_size, "%s", shown ? shown : "");
     }
 }
 
@@ -6965,7 +6983,7 @@ static void jw__update_install_or_reboot(jw_settings_ui *ui,
     if (ui->update.install_blocked) {
         const char *msg = ui->update.install_message[0]
             ? ui->update.install_message
-            : "Update install blocked";
+            : JW_UI("Update install blocked");
         jw__copy_status(status_buf, status_size, msg);
         jw__update_msg(ui, "%s", msg);
         return;
@@ -6993,7 +7011,7 @@ static void jw__update_install_or_reboot(jw_settings_ui *ui,
     if (ui->update.install_blocked) {
         const char *msg = ui->update.install_message[0]
             ? ui->update.install_message
-            : "Update install blocked";
+            : JW_UI("Update install blocked");
         jw__copy_status(status_buf, status_size, msg);
         jw__update_msg(ui, "%s", msg);
         return;
@@ -7003,7 +7021,7 @@ static void jw__update_install_or_reboot(jw_settings_ui *ui,
     if (ui->update.install_needs_confirmation) {
         const char *msg = ui->update.install_message[0]
             ? ui->update.install_message
-            : "Install update even though checks are incomplete?";
+            : JW_UI("Install update even though checks are incomplete?");
         if (!jw__confirm_update_unknown_preflight(msg)) {
             jw__copy_status(status_buf, status_size, "Update install canceled");
             jw__update_msg(ui, "Update install canceled");
@@ -7063,7 +7081,7 @@ static void jw__set_adb(jw_settings_ui *ui, bool enabled,
                        status_buf, (int)status_size) != 0 &&
         !status_buf[0]) {
         snprintf(status_buf, status_size, "%s",
-                 enabled ? "ADB enable failed" : "ADB disable failed");
+                 enabled ? T("ADB enable failed") : T("ADB disable failed"));
     }
     jw__refresh_adb(ui);
 }
@@ -8189,10 +8207,12 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                         jw__persist(ui, "screenscraper_maxthreads", "");
                         jw__persist(ui, "screenscraper_requests_today", "");
                         jw__persist(ui, "screenscraper_max_requests", "");
+                        char why[256];
+                        jw_i18n_message(rc == 0 && info.message[0] ? info.message
+                                                                   : JW_UI("daemon unavailable"),
+                                        NULL, 0, why, sizeof(why));
                         snprintf(status_buf, status_size,
-                                 "Saved - could not verify: %s",
-                                 (rc == 0 && info.message[0]) ? info.message
-                                                              : "daemon unavailable");
+                                 T("Saved - could not verify: %s"), why);
                     }
                     break;
                 }

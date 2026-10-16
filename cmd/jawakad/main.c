@@ -3854,7 +3854,7 @@ static int jw__handle_update_install(jw_daemon_state *state,
                     if (!state->services) {
                         snprintf(state->update_status.message,
                                  sizeof(state->update_status.message), "%s",
-                                 "Service supervisor unavailable; update not started");
+                                 JW_UI("Service supervisor unavailable; update not started"));
                     } else if (stuck[0]) {
                         snprintf(state->update_status.message,
                                  sizeof(state->update_status.message),

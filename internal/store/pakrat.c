@@ -1,4 +1,5 @@
 #include "internal/store/pakrat.h"
+#include "internal/i18n/i18n.h"   /* JW_UI only: the launcher translates these */
 
 #include "internal/db/db.h"
 #include "internal/discovery/discovery.h"
@@ -130,7 +131,7 @@ static int jw__mutation_request(const jw_pakrat_context *ctx,
                                 const char *package_id) {
     if (!ctx || !type || !operation_id || !operation_id[0] ||
         !ctx->socket_path[0] || !jw__pakrat_path_exists(ctx->socket_path)) {
-        jw__pakrat_error(ctx, "Jawaka service supervisor is unavailable");
+        jw__pakrat_error(ctx, JW_UI("Jawaka service supervisor is unavailable"));
         return -1;
     }
     cJSON *request = cJSON_CreateObject();
@@ -141,13 +142,13 @@ static int jw__mutation_request(const jw_pakrat_context *ctx,
         (package_id &&
          !cJSON_AddStringToObject(request, "package_id", package_id))) {
         cJSON_Delete(request);
-        jw__pakrat_error(ctx, "Could not build package mutation request");
+        jw__pakrat_error(ctx, JW_UI("Could not build package mutation request"));
         return -1;
     }
     char *json = cJSON_PrintUnformatted(request);
     cJSON_Delete(request);
     if (!json) {
-        jw__pakrat_error(ctx, "Could not build package mutation request");
+        jw__pakrat_error(ctx, JW_UI("Could not build package mutation request"));
         return -1;
     }
     char *response = NULL;
@@ -158,7 +159,7 @@ static int jw__mutation_request(const jw_pakrat_context *ctx,
     cJSON_free(json);
     if (ipc_rc != 0 || !response) {
         free(response);
-        jw__pakrat_error(ctx, "Jawaka did not complete package quiescence");
+        jw__pakrat_error(ctx, JW_UI("Jawaka did not complete package quiescence"));
         return -1;
     }
     cJSON *reply = cJSON_ParseWithLength(response, response_len);
@@ -174,7 +175,7 @@ static int jw__mutation_request(const jw_pakrat_context *ctx,
             ctx, "%s",
             cJSON_IsString(message) && message->valuestring
                 ? message->valuestring
-                : "Jawaka refused package mutation");
+                : JW_UI("Jawaka refused package mutation"));
     }
     cJSON_Delete(reply);
     return ok ? 0 : -1;
@@ -657,7 +658,7 @@ static int jw__begin_theme_commit(const jw_pakrat_context *ctx,
     free(themes);
     if (!listed) {
         jw__set_refusal(ctx, JW_PAKRAT_REFUSED_THEME_NOT_LISTED);
-        jw__pakrat_error(ctx, "The launcher does not list the installed theme %s",
+        jw__pakrat_error(ctx, JW_UI("The launcher does not list the installed theme %s"),
                          folder);
         return -1;
     }
@@ -803,7 +804,7 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
         /* Withdrawn: installed copies keep working, nothing new is installed. */
         if (pkg.withdrawn) {
             jw__set_refusal(ctx, JW_PAKRAT_REFUSED_WITHDRAWN);
-            jw__pakrat_error(ctx, "%s is no longer available in Pak Rat",
+            jw__pakrat_error(ctx, JW_UI("%s is no longer available in Pak Rat"),
                              pkg.name);
             goto cleanup;
         }
@@ -814,8 +815,8 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
                 jw__set_refusal(ctx, JW_PAKRAT_REFUSED_RESERVED_NAME);
             }
             jw__pakrat_error(ctx, reserved > 0
-                                      ? "Theme folder %s belongs to a theme Leaf ships"
-                                      : "Could not read the bundled theme list for %s",
+                                      ? JW_UI("Theme folder %s belongs to a theme Leaf ships")
+                                      : JW_UI("Could not read the bundled theme list for %s"),
                              pkg.install_name);
             goto cleanup;
         }
@@ -855,7 +856,7 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     if (jw_storage_sources_resolve(ctx->sdcard_root, &sources) != 0 ||
         !(primary_source = jw_storage_sources_primary(&sources)) ||
         !primary_source->available) {
-        jw__pakrat_error(ctx, "Pak Rat Primary source is unavailable");
+        jw__pakrat_error(ctx, JW_UI("Pak Rat Primary source is unavailable"));
         goto cleanup;
     }
     target_source = install_row == 0
@@ -863,12 +864,12 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
               &sources, existing.source_id[0] ? existing.source_id : "primary")
         : primary_source;
     if (!target_source || !target_source->available) {
-        jw__pakrat_error(ctx, "Installed package source is unavailable");
+        jw__pakrat_error(ctx, JW_UI("Installed package source is unavailable"));
         goto cleanup;
     }
     /* The launcher discovers user themes on the primary card only. */
     if (theme && target_source != primary_source) {
-        jw__pakrat_error(ctx, "Installed theme is not on the primary card");
+        jw__pakrat_error(ctx, JW_UI("Installed theme is not on the primary card"));
         goto cleanup;
     }
 
@@ -894,13 +895,13 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     if (theme) {
         int folders = jw_pakrat_theme_folder_count(target_source->root);
         if (folders < 0) {
-            jw__pakrat_error(ctx, "Could not read the Themes folder");
+            jw__pakrat_error(ctx, JW_UI("Could not read the Themes folder"));
             goto cleanup;
         }
         if (jw_pakrat_theme_slots_full(folders, target_existed)) {
             jw__set_refusal(ctx, JW_PAKRAT_REFUSED_THEME_LIMIT);
             jw__pakrat_error(ctx,
-                             "The Themes folder already holds %d themes, the most Leaf lists",
+                             JW_UI("The Themes folder already holds %d themes, the most Leaf lists"),
                              JW_USER_THEME_MAX);
             goto cleanup;
         }
@@ -980,7 +981,7 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
             strcmp(package.root, pkg.install_name) != 0 ||
             strcmp(package.version, pkg.version) != 0 ||
             strcmp(package.min_leaf_version, pkg.min_leaf_version) != 0) {
-            jw__pakrat_error(ctx, "Theme package does not match the catalog entry");
+            jw__pakrat_error(ctx, JW_UI("Theme package does not match the catalog entry"));
             goto cleanup;
         }
         if (jw__pakrat_join2(extracted_pak, sizeof(extracted_pak),
@@ -1032,7 +1033,7 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
             }
         } else if (metadata_rc != 0) {
             jw__pakrat_error(ctx,
-                             "Installed package metadata is corrupt or unavailable");
+                             JW_UI("Installed package metadata is corrupt or unavailable"));
             goto cleanup;
         }
         installed_metadata_loaded = 1;
@@ -1040,7 +1041,7 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
             strcmp(installed_metadata.package_id, store_id) != 0 ||
             strcmp(installed_metadata.install_path,
                    existing.install_path) != 0) {
-            jw__pakrat_error(ctx, "Installed package metadata does not match ownership");
+            jw__pakrat_error(ctx, JW_UI("Installed package metadata does not match ownership"));
             goto cleanup;
         }
     }
@@ -1061,7 +1062,7 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     if (candidate_metadata.has_service && !target_source->primary) {
         jw__pakrat_error(
             ctx,
-            "%s is installed on Secondary. Uninstall it there first, then install the service pak on Primary.",
+            JW_UI("%s is installed on Secondary. Uninstall it there first, then install the service pak on Primary."),
             candidate_metadata.display_name[0]
                 ? candidate_metadata.display_name : store_id);
         goto cleanup;
@@ -1490,7 +1491,7 @@ int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) 
 
     if (jw_pakrat_txn_pending_persist(ctx->db_path, row.source_id,
                                       &metadata) != 0) {
-        jw__pakrat_error(ctx, "Could not record confirmed uninstall intent");
+        jw__pakrat_error(ctx, JW_UI("Could not record confirmed uninstall intent"));
         goto uninstall_done;
     }
     pending_written = true;
@@ -1498,7 +1499,7 @@ int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) 
     int pending_rc = jw_pakrat_txn_pending_get(ctx->db_path, store_id,
                                                &pending);
     if (pending_rc != 0) {
-        jw__pakrat_error(ctx, "Could not reload confirmed uninstall intent");
+        jw__pakrat_error(ctx, JW_UI("Could not reload confirmed uninstall intent"));
         goto uninstall_done;
     }
     int complete_rc = jw_pakrat_txn_complete_uninstall(ctx, &pending);
@@ -1506,8 +1507,8 @@ int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) 
     if (complete_rc != 0) {
         jw__pakrat_error(
             ctx, "%s",
-            complete_rc > 0 ? "Installed package source is absent; uninstall will resume when it returns"
-                            : "Confirmed uninstall could not be completed");
+            complete_rc > 0 ? JW_UI("Installed package source is absent; uninstall will resume when it returns")
+                            : JW_UI("Confirmed uninstall could not be completed"));
         goto uninstall_done;
     }
     pending_written = false;
@@ -1529,7 +1530,7 @@ int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) 
         goto uninstall_done;
     }
     if (jw_pakrat_rescan(ctx) != 0) {
-        jw__pakrat_error(ctx, "Package was removed, but library refresh failed");
+        jw__pakrat_error(ctx, JW_UI("Package was removed, but library refresh failed"));
         goto uninstall_done;
     }
     (void)jw__notify_daemon_scan(ctx);
