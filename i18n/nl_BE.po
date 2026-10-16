@@ -96,6 +96,10 @@ msgstr "%ldu geleden"
 msgid "%ldm ago"
 msgstr "%ldm geleden"
 
+#: internal/settings/settings.c
+msgid "%s (current)"
+msgstr "%s (huidig)"
+
 #: cmd/jawaka-launcher/main.c
 msgid "%s can't be installed because Leaf could not read it as a theme.\n\nNothing was changed."
 msgstr "%s kan niet worden geïnstalleerd omdat Leaf het niet als thema kon lezen.\n\nEr is niets gewijzigd."
@@ -128,9 +132,17 @@ msgstr "%s eerst"
 msgid "%s is already your theme"
 msgstr "%s is al uw thema"
 
+#: internal/store/pakrat.c
+msgid "%s is installed on Secondary. Uninstall it there first, then install the service pak on Primary."
+msgstr "%s is geïnstalleerd op de tweede SD-kaart. Deïnstalleer het daar eerst en installeer de dienst-pak daarna op de hoofd-SD-kaart."
+
 #: cmd/jawaka-launcher/main.c
 msgid "%s is installed.\n\nApply it now?"
 msgstr "%s is geïnstalleerd.\n\nNu toepassen?"
+
+#: internal/store/pakrat.c
+msgid "%s is no longer available in Pak Rat"
+msgstr "%s is niet meer beschikbaar in Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%s is no longer available in Pak Rat.\n\nA copy that is already installed keeps working."
@@ -183,6 +195,14 @@ msgstr "%s: niet in uw bibliotheek"
 #: cmd/jawaka-launcher/main.c
 msgid "%zu files, %s, on your %s."
 msgstr "%zu bestanden, %s, op uw %s."
+
+#: cmd/jawaka-launcher/main.c
+msgid ", %d cancelled"
+msgstr ", %d geannuleerd"
+
+#: cmd/jawaka-launcher/main.c
+msgid ", %d failed"
+msgstr ", %d mislukt"
 
 #: cmd/jawaka-launcher/main.c
 msgid ", %d not found"
@@ -551,6 +571,10 @@ msgstr "Ordenen"
 #: internal/settings/settings.c
 msgid "Artwork Priority"
 msgstr "Voorrang coverart"
+
+#: internal/scrape/scrape_worker.c
+msgid "Artwork saved"
+msgstr "Coverart opgeslagen"
 
 #: internal/settings/settings.c
 msgid "Artwork scrape failed."
@@ -1000,6 +1024,10 @@ msgstr "Compatibele releases"
 msgid "Confirm"
 msgstr "Bevestigen"
 
+#: internal/store/pakrat.c
+msgid "Confirmed uninstall could not be completed"
+msgstr "De bevestigde deïnstallatie kon niet worden voltooid"
+
 #: internal/settings/storage_ui.c
 msgid "Connect to power or charge the battery to at least 30 percent and try again."
 msgstr "Sluit de voeding aan of laad de batterij op tot minstens 30 procent en probeer het opnieuw."
@@ -1032,6 +1060,10 @@ msgstr "Controllers instellen mislukt. Start Leaf opnieuw en probeer het nog een
 msgid "Core"
 msgstr "Core"
 
+#: internal/store/pakrat.c
+msgid "Could not build package mutation request"
+msgstr "Kon de pakketwijziging niet voorbereiden"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Could not hide this game"
 msgstr "Kon deze game niet verbergen"
@@ -1039,6 +1071,22 @@ msgstr "Kon deze game niet verbergen"
 #: cmd/jawaka-launcher/main.c
 msgid "Could not inspect retained data for %.100s"
 msgstr "Kon de bewaarde gegevens van %.100s niet controleren"
+
+#: internal/store/pakrat.c
+msgid "Could not read the Themes folder"
+msgstr "Kon de map Themes niet lezen"
+
+#: internal/store/pakrat.c
+msgid "Could not read the bundled theme list for %s"
+msgstr "Kon de lijst met meegeleverde thema's niet lezen voor %s"
+
+#: internal/store/pakrat.c
+msgid "Could not record confirmed uninstall intent"
+msgstr "Kon de bevestigde deïnstallatie niet vastleggen"
+
+#: internal/store/pakrat.c
+msgid "Could not reload confirmed uninstall intent"
+msgstr "Kon de bevestigde deïnstallatie niet opnieuw laden"
 
 #: internal/settings/settings.c
 msgid "Could not save"
@@ -1095,6 +1143,10 @@ msgstr "D-pad: Waarde/Positie   B: Terug   A: Volgende"
 #: cmd/jawaka-menu/main.c
 msgid "DMC"
 msgstr "DMC"
+
+#: internal/scrape/scrape_worker.c
+msgid "Daily quota exhausted (%d/%d)"
+msgstr "Daglimiet bereikt (%d/%d)"
 
 #: internal/settings/timezones.c
 msgid "Darwin"
@@ -1283,6 +1335,18 @@ msgstr "Extra groot"
 #: internal/settings/settings.c
 msgid "Failed"
 msgstr "Mislukt"
+
+#: internal/scrape/ss_client.c
+msgid "Failed to finalize media file"
+msgstr "Kon het mediabestand niet afronden"
+
+#: internal/scrape/ss_client.c
+msgid "Failed to parse ScreenScraper response"
+msgstr "Kon het antwoord van ScreenScraper niet verwerken"
+
+#: internal/scrape/ss_client.c
+msgid "Failed to write media file"
+msgstr "Kon het mediabestand niet wegschrijven"
 
 #: internal/launcher/system_names.c
 msgid "Famicom Disk System"
@@ -1608,6 +1672,26 @@ msgstr "Geïnstalleerd"
 msgid "Installed %s"
 msgstr "%s geïnstalleerd"
 
+#: internal/store/pakrat.c
+msgid "Installed package metadata does not match ownership"
+msgstr "De metadata van het geïnstalleerde pakket komt niet overeen met de eigenaar"
+
+#: internal/store/pakrat.c
+msgid "Installed package metadata is corrupt or unavailable"
+msgstr "De metadata van het geïnstalleerde pakket is beschadigd of niet beschikbaar"
+
+#: internal/store/pakrat.c
+msgid "Installed package source is absent; uninstall will resume when it returns"
+msgstr "De bron van het geïnstalleerde pakket ontbreekt; de deïnstallatie gaat verder zodra ze terug is"
+
+#: internal/store/pakrat.c
+msgid "Installed package source is unavailable"
+msgstr "De bron van het geïnstalleerde pakket is niet beschikbaar"
+
+#: internal/store/pakrat.c
+msgid "Installed theme is not on the primary card"
+msgstr "Het geïnstalleerde thema staat niet op de hoofd-SD-kaart"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Installed version: %s"
 msgstr "Geïnstalleerde versie: %s"
@@ -1635,6 +1719,18 @@ msgstr "Het is een schalingsfilter, geen CRT- of LCD-simulatie."
 #: internal/settings/timezones.c
 msgid "Japan / Korea"
 msgstr "Japan / Korea"
+
+#: internal/store/pakrat.c
+msgid "Jawaka did not complete package quiescence"
+msgstr "Jawaka kon de diensten van het pakket niet stilleggen"
+
+#: internal/store/pakrat.c
+msgid "Jawaka refused package mutation"
+msgstr "Jawaka weigerde de pakketwijziging"
+
+#: internal/store/pakrat.c
+msgid "Jawaka service supervisor is unavailable"
+msgstr "De dienstenbeheerder van Jawaka is niet beschikbaar"
 
 #: cmd/jawaka-menu/main.c
 msgid "Keep"
@@ -1868,6 +1964,14 @@ msgstr "Handmatig"
 msgid "Marquesas Islands"
 msgstr "Marquesaseilanden"
 
+#: internal/scrape/ss_client.c
+msgid "Media download returned HTTP %d"
+msgstr "Mediadownload gaf HTTP %d terug"
+
+#: internal/scrape/ss_client.c
+msgid "Media download returned an empty body"
+msgstr "Mediadownload gaf een lege inhoud terug"
+
 #: internal/settings/settings.c
 msgid "Memory free"
 msgstr "Vrij geheugen"
@@ -2003,6 +2107,10 @@ msgstr "Geen BIOS-bestand geselecteerd"
 #: cmd/jawaka-launcher/main.c
 msgid "No Pak Rat app selected"
 msgstr "Geen Pak Rat-app geselecteerd"
+
+#: internal/scrape/ss_client.c
+msgid "No ScreenScraper username configured"
+msgstr "Geen ScreenScraper-gebruikersnaam ingesteld"
 
 #: internal/settings/settings.c
 msgid "No Space"
@@ -2228,6 +2336,10 @@ msgstr "Pincode"
 msgid "PINs did not match - try again"
 msgstr "Pincodes komen niet overeen - probeer opnieuw"
 
+#: internal/store/pakrat.c
+msgid "Package was removed, but library refresh failed"
+msgstr "Pakket verwijderd, maar bibliotheek vernieuwen mislukt"
+
 #: internal/settings/settings.c
 msgid "Paired"
 msgstr "Gekoppeld"
@@ -2235,6 +2347,10 @@ msgstr "Gekoppeld"
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat"
 msgstr "Pak Rat"
+
+#: internal/store/pakrat.c
+msgid "Pak Rat Primary source is unavailable"
+msgstr "De hoofdbron van Pak Rat is niet beschikbaar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat Themes"
@@ -2773,6 +2889,10 @@ msgid "Save your edits in RetroArch before you leave."
 msgstr "Sla uw wijzigingen in RetroArch op voordat u het verlaat."
 
 #: internal/settings/settings.c
+msgid "Saved - could not verify: %s"
+msgstr "Opgeslagen - kon niet verifiëren: %s"
+
+#: internal/settings/settings.c
 msgid "Saved: %s"
 msgstr "Opgeslagen: %s"
 
@@ -2865,12 +2985,40 @@ msgid "Scraping %s · %d/%d"
 msgstr "Downloaden %s · %d/%d"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Scraping %s: %d/%d - %.160s"
+msgstr "Downloaden %s: %d/%d - %.160s"
+
+#: internal/scrape/ss_client.c
+msgid "Scraping is unavailable in this build (no API credentials)"
+msgstr "Coverart downloaden is niet beschikbaar in deze build (geen API-gegevens)"
+
+#: cmd/jawaka-launcher/main.c
 msgid "Scraping paused: %.200s"
 msgstr "Downloaden gepauzeerd: %.200s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping: %d/%d"
 msgstr "Downloaden: %d/%d"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper rejected the credentials"
+msgstr "ScreenScraper weigerde de inloggegevens"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper request failed"
+msgstr "Aanvraag bij ScreenScraper mislukt"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper returned HTTP %d"
+msgstr "ScreenScraper gaf HTTP %d terug"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper returned an empty response"
+msgstr "ScreenScraper gaf een leeg antwoord"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper validation failed"
+msgstr "Verificatie bij ScreenScraper mislukt"
 
 #: internal/settings/settings.c
 msgid "ScreenScraper.fr"
@@ -2995,6 +3143,10 @@ msgstr "De gekozen update is niet meer beschikbaar"
 #: internal/settings/settings.c
 msgid "Selection"
 msgstr "Selectie"
+
+#: cmd/jawakad/main.c
+msgid "Service supervisor unavailable; update not started"
+msgstr "Dienstenbeheerder niet beschikbaar; update niet gestart"
 
 #: internal/settings/settings.c
 msgid "Services"
@@ -3320,6 +3472,10 @@ msgstr "Die mapnaam is te lang om te openen."
 msgid "The Themes folder already has %d themes, the most Leaf can list. Remove one to install this theme."
 msgstr "De map Themes bevat al %d thema's, het maximum dat Leaf kan tonen. Verwijder er een om dit thema te installeren."
 
+#: internal/store/pakrat.c
+msgid "The Themes folder already holds %d themes, the most Leaf lists"
+msgstr "De map Themes bevat al %d thema's, het maximum dat Leaf toont"
+
 #: internal/settings/storage_ui.c
 msgid "The card passed the check but couldn't be made writable. Restart your device, then try Check SD card."
 msgstr "De kaart heeft de controle doorstaan, maar kon niet beschrijfbaar worden gemaakt. Herstart uw toestel en probeer daarna “SD-kaart controleren”."
@@ -3335,6 +3491,10 @@ msgstr "De laatste controle of reparatie is niet voltooid. Herstart uw toestel o
 #: internal/settings/storage_ui.c
 msgid "The last check took too long and stopped. Restart your device to check the card again before saving is enabled."
 msgstr "De laatste controle duurde te lang en is gestopt. Herstart uw toestel om de kaart opnieuw te controleren voordat opslaan mogelijk is."
+
+#: internal/store/pakrat.c
+msgid "The launcher does not list the installed theme %s"
+msgstr "De launcher toont het geïnstalleerde thema %s niet"
 
 #: internal/settings/storage_ui.c
 msgid "The repair couldn't be started. Check the card on a computer instead."
@@ -3435,6 +3595,14 @@ msgstr "Thema"
 #: cmd/jawaka-launcher/main.c
 msgid "Theme colors"
 msgstr "Themakleuren"
+
+#: internal/store/pakrat.c
+msgid "Theme folder %s belongs to a theme Leaf ships"
+msgstr "Themamap %s hoort bij een thema dat met Leaf wordt meegeleverd"
+
+#: internal/store/pakrat.c
+msgid "Theme package does not match the catalog entry"
+msgstr "Het themapakket komt niet overeen met de catalogus"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Themes"
@@ -4047,6 +4215,10 @@ msgstr "helderheid mislukt"
 #: internal/settings/settings.c
 msgid "count|Systems"
 msgstr "Systemen"
+
+#: internal/settings/settings.c
+msgid "daemon unavailable"
+msgstr "achtergronddienst niet beschikbaar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "daily quota exceeded"
