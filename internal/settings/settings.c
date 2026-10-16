@@ -5500,6 +5500,7 @@ static void jw__apply_shortcut(jw_settings_ui *ui,
 static const char *jw__language_label(const char *code) {
     if (!code || !code[0] || strcmp(code, "en") == 0) return "English";
     if (strcmp(code, "zh_CN") == 0) return "中文";
+    if (strcmp(code, "de_DE") == 0) return "Deutsch";
     if (strcmp(code, "fr_FR") == 0) return "Français";
     if (strcmp(code, "es_MX") == 0) return "Español (México)";
     if (strcmp(code, "vi_VN") == 0) return "Tiếng Việt";
