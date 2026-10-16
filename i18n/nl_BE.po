@@ -484,6 +484,10 @@ msgstr "Amiga"
 msgid "An image in the theme is not a supported PNG or JPEG, or is too large."
 msgstr "Een afbeelding in het thema is geen ondersteunde PNG of JPEG, of is te groot."
 
+#: cmd/jawaka-launcher/main.c
+msgid "App"
+msgstr "App"
+
 #: internal/settings/settings.c
 msgid "Appearance"
 msgstr "Weergave"
@@ -518,7 +522,7 @@ msgstr "Ordenen"
 
 #: internal/settings/settings.c
 msgid "Artwork Priority"
-msgstr "Voorrang afbeeldingen"
+msgstr "Voorrang coverart"
 
 #: internal/launcher/system_names.c
 msgid "Atari 2600"
@@ -556,7 +560,7 @@ msgstr "Audio-uitvoer"
 msgid "Author: %s"
 msgstr "Auteur: %s"
 
-#: internal/platform/platform_common.c
+#: cmd/jawaka-launcher/main.c
 msgid "Auto"
 msgstr "Auto"
 
@@ -747,6 +751,10 @@ msgstr "CRT-effecten verlagen de helderheid; de voorinstelling gebruikt een mild
 #: cmd/jawaka-launcher/main.c
 msgid "Cancel"
 msgstr "Annuleren"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Cancel Scraping"
+msgstr "Downloaden annuleren"
 
 #: internal/settings/settings.c
 msgid "Cancelled"
@@ -1102,7 +1110,7 @@ msgstr "5-gamesmodus verlaten?"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Exit to Stock"
-msgstr "Naar standaardsysteem"
+msgstr "Afsluiten naar standaardsysteem"
 
 #: internal/settings/settings.c
 msgid "Extra Large"
@@ -1188,7 +1196,7 @@ msgstr "GBC-kleur"
 msgid "GPU"
 msgstr "GPU"
 
-#: cmd/jawaka-menu/main.c
+#: cmd/jawaka-launcher/main.c
 msgid "Game"
 msgstr "Game"
 
@@ -1222,7 +1230,7 @@ msgstr "Game Gear"
 
 #: internal/settings/settings.c
 msgid "Game Performance"
-msgstr "Gameprestaties"
+msgstr "Gameperformantie"
 
 #: internal/settings/settings.c
 msgid "Game Rumble"
@@ -1932,13 +1940,13 @@ msgstr "Pad: Apps/%s"
 msgid "Percent"
 msgstr "Percentage"
 
-#: cmd/jawaka-menu/main.c
+#: cmd/jawaka-launcher/main.c
 msgid "Performance"
-msgstr "Prestaties"
+msgstr "Performantie"
 
 #: cmd/jawaka-menu/main.c
 msgid "Performance unavailable"
-msgstr "Prestaties niet beschikbaar"
+msgstr "Performantie niet beschikbaar"
 
 #: internal/settings/settings.c
 msgid "Photographic"
@@ -2216,6 +2224,10 @@ msgstr "Overschrijving resetten"
 msgid "Reset RetroArch Config"
 msgstr "RetroArch-configuratie resetten"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Reset System Overrides"
+msgstr "Systeemoverschrijvingen resetten"
+
 #: internal/settings/settings.c
 msgid "Reset shared RetroArch config to packaged defaults?"
 msgstr "Gedeelde RetroArch-configuratie terugzetten naar de meegeleverde standaardwaarden?"
@@ -2396,6 +2408,10 @@ msgstr "Scanlines en een CRT-masker, met kromming van het scherm, afgeronde hoek
 msgid "Scanlines reduce brightness, especially when combined with BFI."
 msgstr "Scanlines verlagen de helderheid, vooral in combinatie met BFI."
 
+#: cmd/jawaka-launcher/main.c
+msgid "Scanned"
+msgstr "Gescand"
+
 #: internal/settings/settings.c
 msgid "Scanning"
 msgstr "Bezig met scannen"
@@ -2414,39 +2430,39 @@ msgstr "Bereik"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape"
-msgstr "Ophalen"
+msgstr "Downloaden"
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Scrape Artwork"
-msgstr "Afbeeldingen ophalen"
+msgstr "Coverart downloaden"
 
 #: internal/settings/settings.c
 msgid "Scrape Queue"
-msgstr "Ophaalwachtrij"
+msgstr "Downloadwachtrij"
 
 #: internal/settings/settings.c
 msgid "Scrape Queue - %s"
-msgstr "Ophaalwachtrij - %s"
+msgstr "Downloadwachtrij - %s"
 
 #: internal/settings/settings.c
 msgid "Scrape Result"
-msgstr "Ophaalresultaat"
+msgstr "Downloadresultaat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape finished: %d found"
-msgstr "Ophalen voltooid: %d gevonden"
+msgstr "Downloaden voltooid: %d gevonden"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s · %d/%d"
-msgstr "Ophalen %s · %d/%d"
+msgstr "Downloaden %s · %d/%d"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping paused: %.200s"
-msgstr "Ophalen gepauzeerd: %.200s"
+msgstr "Downloaden gepauzeerd: %.200s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping: %d/%d"
-msgstr "Ophalen: %d/%d"
+msgstr "Downloaden: %d/%d"
 
 #: internal/settings/settings.c
 msgid "ScreenScraper.fr"
@@ -2471,6 +2487,22 @@ msgstr "Zoeken"
 #: cmd/jawaka-launcher/main.c
 msgid "Search This System"
 msgstr "Dit systeem doorzoeken"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s"
+msgstr "Zoeken: %s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s  (%d results)"
+msgstr "Zoeken: %s  (%d resultaten)"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s  (1 result)"
+msgstr "Zoeken: %s  (1 resultaat)"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: (empty)"
+msgstr "Zoeken: (leeg)"
 
 #: internal/settings/settings.c
 msgid "Searching"
@@ -2708,7 +2740,7 @@ msgstr "Statusbalk"
 msgid "Status: %s"
 msgstr "Status: %s"
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Stop"
 msgstr "Stoppen"
 
@@ -2803,6 +2835,10 @@ msgstr "Systeem"
 #: internal/settings/settings.c
 msgid "System Icons"
 msgstr "Systeempictogrammen"
+
+#: cmd/jawaka-launcher/main.c
+msgid "System Options: %s"
+msgstr "Systeemopties: %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "System Update"
@@ -3378,7 +3414,7 @@ msgstr "Uw andere SD-kaart is nog alleen-lezen, dus uw bibliotheek kan nog niet 
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your save files, states and artwork are kept."
-msgstr "Uw opslagbestanden, savestates en afbeeldingen blijven bewaard."
+msgstr "Uw opslagbestanden, savestates en coverart blijven bewaard."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your saves and save states may not be kept while this SD card is read-only."
@@ -3446,7 +3482,7 @@ msgstr "wordt overschreven"
 
 #: internal/settings/settings.c
 msgid "performance unavailable"
-msgstr "prestaties niet beschikbaar"
+msgstr "performantie niet beschikbaar"
 
 #: internal/settings/settings.c
 msgid "platform|System"
@@ -3459,6 +3495,22 @@ msgstr "verversingssnelheid wijzigen mislukt"
 #: internal/settings/settings.c
 msgid "refresh rate unavailable on this platform"
 msgstr "verversingssnelheid is niet beschikbaar op dit platform"
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|custom"
+msgstr "aangepast"
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|default"
+msgstr "standaard"
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|game"
+msgstr "game"
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|system"
+msgstr "systeem"
 
 #: cmd/jawaka-launcher/main.c
 msgid "second SD card"
