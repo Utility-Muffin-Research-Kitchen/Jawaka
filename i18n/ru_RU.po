@@ -20,12 +20,30 @@
 # Resume notices by Atanvaron (GitHub, Jawaka#212), 2026-10-14, which fit
 # now that a long notice wraps onto two lines; Removed reads "Удалено", as
 # LVD14 agreed.
+# The 209 strings added with Jawaka#244 (2026-10-16) are drafts by Claude,
+# awaiting review in Jawaka#212.
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
 #: internal/settings/storage_ui.c
 msgid " Some damaged files were changed."
 msgstr " Некоторые повреждённые файлы были изменены."
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s changed; refresh failed"
+msgstr "Изменено: %.120s, но обновить список не удалось"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s has no compatible install action"
+msgstr "Для %.120s нет подходящего действия установки"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s is not installed by Pak Rat"
+msgstr "Установлено не через Pak Rat: %.120s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s is release-managed"
+msgstr "Управляется релизом: %.120s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d %s games"
@@ -99,6 +117,10 @@ msgstr "%ld ч. назад"
 msgid "%ldm ago"
 msgstr "%ld мин. назад"
 
+#: internal/settings/settings.c
+msgid "%s (current)"
+msgstr "%s (текущая)"
+
 #: cmd/jawaka-launcher/main.c
 msgid "%s can't be installed because Leaf could not read it as a theme.\n\nNothing was changed."
 msgstr "%s нельзя установить, т.к. Leaf не смог распознать тему.\n\nНичего не изменилось."
@@ -131,9 +153,17 @@ msgstr "Сначала %s"
 msgid "%s is already your theme"
 msgstr "%s уже ваша тема"
 
+#: internal/store/pakrat.c
+msgid "%s is installed on Secondary. Uninstall it there first, then install the service pak on Primary."
+msgstr "%s установлено на второй SD-карте. Сначала удалите его там, затем установите пак со службой на основную SD-карту."
+
 #: cmd/jawaka-launcher/main.c
 msgid "%s is installed.\n\nApply it now?"
 msgstr "%s установлена.\n\nПрименить сейчас?"
+
+#: internal/store/pakrat.c
+msgid "%s is no longer available in Pak Rat"
+msgstr "Больше недоступно в Pak Rat: %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%s is no longer available in Pak Rat.\n\nA copy that is already installed keeps working."
@@ -188,6 +218,14 @@ msgid "%zu files, %s, on your %s."
 msgstr "Файлов: %zu (%s). Карта: %s."
 
 #: cmd/jawaka-launcher/main.c
+msgid ", %d cancelled"
+msgstr ", отменено: %d"
+
+#: cmd/jawaka-launcher/main.c
+msgid ", %d failed"
+msgstr ", ошибок: %d"
+
+#: cmd/jawaka-launcher/main.c
 msgid ", %d not found"
 msgstr ", %d не найдено"
 
@@ -239,8 +277,8 @@ msgstr "10 сек."
 msgid "100/120 Hz only"
 msgstr "Нужно 100/120 Гц"
 
-#: internal/settings/settings.c
 # Clock format, not a duration. Separate from the "24 Hour" entry.
+#: internal/settings/settings.c
 msgid "12 Hour"
 msgstr "12-часовой"
 
@@ -272,8 +310,8 @@ msgstr "2 мин."
 msgid "200 MHz"
 msgstr "200 МГц"
 
-#: internal/settings/settings.c
 # Clock format, not a duration. Separate from the "12 Hour" entry.
+#: internal/settings/settings.c
 msgid "24 Hour"
 msgstr "24-часовой"
 
@@ -378,8 +416,16 @@ msgid "ADB disable canceled"
 msgstr "Отключение ADB отменено"
 
 #: internal/settings/settings.c
+msgid "ADB disable failed"
+msgstr "Не удалось отключить ADB"
+
+#: internal/settings/settings.c
 msgid "ADB enable canceled"
 msgstr "Включение ADB отменено"
+
+#: internal/settings/settings.c
+msgid "ADB enable failed"
+msgstr "Не удалось включить ADB"
 
 #: internal/settings/settings.c
 msgid "ADB unavailable on this platform"
@@ -490,6 +536,10 @@ msgid "Already missing"
 msgstr "Уже отсутствует"
 
 #: internal/settings/settings.c
+msgid "Already on the latest version"
+msgstr "Уже установлена последняя версия"
+
+#: internal/settings/settings.c
 msgid "Already used by %s"
 msgstr "Уже используется: %s"
 
@@ -504,6 +554,10 @@ msgstr "Amiga"
 #: cmd/jawaka-launcher/main.c
 msgid "An image in the theme is not a supported PNG or JPEG, or is too large."
 msgstr "Одно из изображений темы — не поддерживаемый PNG/JPEG или слишком велико."
+
+#: cmd/jawaka-launcher/main.c
+msgid "App"
+msgstr "Приложение"
 
 #: internal/settings/settings.c
 msgid "Appearance"
@@ -541,6 +595,14 @@ msgstr "Упорядочить"
 msgid "Artwork Priority"
 msgstr "Приоритет картинки"
 
+#: internal/scrape/scrape_worker.c
+msgid "Artwork saved"
+msgstr "Картинка сохранена"
+
+#: internal/settings/settings.c
+msgid "Artwork scrape failed."
+msgstr "Не удалось скачать картинку."
+
 #: internal/launcher/system_names.c
 msgid "Atari 2600"
 msgstr "Atari 2600"
@@ -577,7 +639,7 @@ msgstr "Аудиовыход"
 msgid "Author: %s"
 msgstr "Автор: %s"
 
-#: internal/platform/platform_common.c
+#: cmd/jawaka-launcher/main.c
 msgid "Auto"
 msgstr "Авто"
 
@@ -645,13 +707,29 @@ msgstr "Аккумулятор"
 msgid "Battery Level"
 msgstr "Уровень заряда"
 
+#: internal/settings/settings.c
+msgid "Battery Low"
+msgstr "Низкий заряд"
+
 #: internal/platform/platform_common.c
 msgid "Battery Saver"
 msgstr "Энергосбережение"
 
+#: internal/update/update.c
+msgid "Battery must be at least %d%% or charging"
+msgstr "Заряд должен быть не ниже %d%% или подключите зарядку"
+
+#: internal/update/update.c
+msgid "Battery status is unknown; confirmation required"
+msgstr "Заряд батареи неизвестен; требуется подтверждение"
+
 #: internal/retroarch/shader_strings.c
 msgid "Best at integer or near-integer scaling; the upstream shader can look uneven at arbitrary scales."
 msgstr "Лучше всего при целом или близком к целому масштабированию; исходный шейдер может выглядеть неровно при произвольных масштабах."
+
+#: internal/settings/settings.c
+msgid "Beta"
+msgstr "Бета"
 
 #: internal/settings/settings.c
 msgid "Beta builds are tester previews and may be unstable or lose data. Switch to the Beta update channel?"
@@ -673,6 +751,10 @@ msgstr "Для вставки чёрных кадров нужны 100 или 12
 msgid "Black Frame Insertion off"
 msgstr "Вставка чёрных кадров отключена"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Blocked"
+msgstr "Заблокировано"
+
 #: internal/settings/settings.c
 msgid "Bluetooth"
 msgstr "Bluetooth"
@@ -680,6 +762,14 @@ msgstr "Bluetooth"
 #: internal/settings/settings.c
 msgid "Bluetooth Name"
 msgstr "Имя Bluetooth"
+
+#: internal/settings/settings.c
+msgid "Bluetooth done"
+msgstr "Bluetooth: готово"
+
+#: internal/settings/settings.c
+msgid "Bluetooth failed"
+msgstr "Bluetooth: ошибка"
 
 #: internal/settings/settings.c
 msgid "Board"
@@ -770,8 +860,52 @@ msgid "Cancel"
 msgstr "Отмена"
 
 #: internal/settings/settings.c
+msgid "Cancel %d%%"
+msgstr "Отмена %d%%"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Cancel Scraping"
+msgstr "Отменить скрапинг"
+
+#: internal/settings/settings.c
 msgid "Cancelled"
 msgstr "Отменено"
+
+#: internal/update/update.c
+msgid "Cannot download update artifact"
+msgstr "Не удалось скачать файл обновления"
+
+#: internal/update/update.c
+msgid "Cannot fetch Leaf releases"
+msgstr "Не удалось получить релизы Leaf"
+
+#: internal/settings/settings.c
+msgid "Cannot load releases"
+msgstr "Не удалось загрузить релизы"
+
+#: internal/update/update.c
+msgid "Cannot prepare update download directory"
+msgstr "Не удалось подготовить папку загрузки обновления"
+
+#: internal/update/update.c
+msgid "Cannot prepare update state directory"
+msgstr "Не удалось подготовить папку состояния обновления"
+
+#: internal/update/update.c
+msgid "Cannot read update manifest"
+msgstr "Не удалось прочитать манифест обновления"
+
+#: internal/update/update.c
+msgid "Cannot start update download"
+msgstr "Не удалось начать загрузку обновления"
+
+#: internal/update/update.c
+msgid "Cannot verify update artifact"
+msgstr "Не удалось проверить файл обновления"
+
+#: internal/update/update.c
+msgid "Cannot write update install request"
+msgstr "Не удалось записать запрос на установку обновления"
 
 #: internal/settings/timezones.c
 msgid "Cape Verde"
@@ -784,6 +918,10 @@ msgstr "Карта:"
 #: internal/retroarch/shader_strings.c
 msgid "Carries a Leaf local patch until upstream fixes its GLSL ES precision mismatch."
 msgstr "Содержит локальный патч Leaf, пока в оригинале не исправят несоответствие точности GLSL ES."
+
+#: cmd/jawaka-launcher/main.c
+msgid "Catalog version: %s"
+msgstr "Версия в каталоге: %s"
 
 #: internal/settings/timezones.c
 msgid "Central Europe"
@@ -801,9 +939,25 @@ msgstr "Проверить обновления"
 msgid "Check SD card"
 msgstr "Проверить SD-карту"
 
+#: internal/settings/settings.c
+msgid "Check for updates first"
+msgstr "Сначала проверьте обновления"
+
+#: internal/settings/settings.c
+msgid "Check releases first"
+msgstr "Сначала проверьте релизы"
+
+#: internal/update/update.c
+msgid "Checking for updates"
+msgstr "Проверка обновлений"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Checking your game's files..."
 msgstr "Проверка файлов вашей игры..."
+
+#: internal/settings/settings.c
+msgid "Checking..."
+msgstr "Проверка..."
 
 #: internal/settings/timezones.c
 msgid "China"
@@ -829,6 +983,14 @@ msgstr "Очистить завершённые"
 msgid "Clock"
 msgstr "Часы"
 
+#: internal/settings/settings.c
+msgid "Close Apps"
+msgstr "Закройте приложения"
+
+#: internal/update/update.c
+msgid "Close running games or apps before installing"
+msgstr "Перед установкой закройте запущенные игры и приложения"
+
 #: internal/settings/storage_ui.c
 msgid "Close the game or app first, then try again."
 msgstr "Сначала закройте игру или приложение, затем попробуйте снова."
@@ -845,8 +1007,8 @@ msgstr "Цвет"
 msgid "Color Scheme"
 msgstr "Цветовая схема"
 
-#: internal/settings/settings.c
 # Display warmth/coolness slider, not a palette selector.
+#: internal/settings/settings.c
 msgid "Color Temperature"
 msgstr "Цветовая температура"
 
@@ -878,9 +1040,17 @@ msgstr "Команда: %s"
 msgid "Commodore 64"
 msgstr "Commodore 64"
 
+#: internal/settings/settings.c
+msgid "Compatible releases"
+msgstr "Совместимые релизы"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Confirm"
 msgstr "Подтвердить"
+
+#: internal/store/pakrat.c
+msgid "Confirmed uninstall could not be completed"
+msgstr "Подтверждённое удаление не удалось завершить"
 
 #: internal/settings/storage_ui.c
 msgid "Connect to power or charge the battery to at least 30 percent and try again."
@@ -893,6 +1063,10 @@ msgstr "Для восстановления карты подключите ко
 #: internal/settings/settings.c
 msgid "Connected"
 msgstr "Подключено"
+
+#: internal/settings/settings.c
+msgid "Connected: %s"
+msgstr "Подключено: %s"
 
 #: cmd/jawaka-menu/main.c
 msgid "Continue"
@@ -910,9 +1084,33 @@ msgstr "Не удалось настроить контроллер. Перез�
 msgid "Core"
 msgstr "Ядро"
 
+#: internal/store/pakrat.c
+msgid "Could not build package mutation request"
+msgstr "Не удалось подготовить запрос на изменение пакета"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Could not hide this game"
 msgstr "Не удалось скрыть эту игру"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Could not inspect retained data for %.100s"
+msgstr "Не удалось проверить сохранённые данные: %.100s"
+
+#: internal/store/pakrat.c
+msgid "Could not read the Themes folder"
+msgstr "Не удалось прочитать папку Themes"
+
+#: internal/store/pakrat.c
+msgid "Could not read the bundled theme list for %s"
+msgstr "Не удалось прочитать список встроенных тем для %s"
+
+#: internal/store/pakrat.c
+msgid "Could not record confirmed uninstall intent"
+msgstr "Не удалось записать подтверждение удаления"
+
+#: internal/store/pakrat.c
+msgid "Could not reload confirmed uninstall intent"
+msgstr "Не удалось перечитать подтверждение удаления"
 
 #: internal/settings/settings.c
 msgid "Could not save"
@@ -969,6 +1167,10 @@ msgstr "Крестовина: Значение/Позиция   B: Назад   
 #: cmd/jawaka-menu/main.c
 msgid "DMC"
 msgstr "DMC"
+
+#: internal/scrape/scrape_worker.c
+msgid "Daily quota exhausted (%d/%d)"
+msgstr "Дневной лимит исчерпан (%d/%d)"
 
 #: internal/settings/timezones.c
 msgid "Darwin"
@@ -1071,6 +1273,30 @@ msgid "Download"
 msgstr "Скачать"
 
 #: internal/settings/settings.c
+msgid "Download First"
+msgstr "Сначала скачайте"
+
+#: internal/settings/settings.c
+msgid "Download update first"
+msgstr "Сначала скачайте обновление"
+
+#: internal/settings/settings.c
+msgid "Downloaded"
+msgstr "Скачано"
+
+#: internal/update/update.c
+msgid "Downloaded update SHA-256 does not match metadata"
+msgstr "SHA-256 скачанного обновления не совпадает с метаданными"
+
+#: internal/update/update.c
+msgid "Downloaded update artifact is missing"
+msgstr "Скачанный файл обновления отсутствует"
+
+#: internal/update/update.c
+msgid "Downloaded update size does not match metadata"
+msgstr "Размер скачанного обновления не совпадает с метаданными"
+
+#: internal/settings/settings.c
 msgid "Downloading"
 msgstr "Загрузка"
 
@@ -1134,6 +1360,18 @@ msgstr "Огромный"
 msgid "Failed"
 msgstr "Ошибка"
 
+#: internal/scrape/ss_client.c
+msgid "Failed to finalize media file"
+msgstr "Не удалось завершить запись медиафайла"
+
+#: internal/scrape/ss_client.c
+msgid "Failed to parse ScreenScraper response"
+msgstr "Не удалось разобрать ответ ScreenScraper"
+
+#: internal/scrape/ss_client.c
+msgid "Failed to write media file"
+msgstr "Не удалось записать медиафайл"
+
 #: internal/launcher/system_names.c
 msgid "Famicom Disk System"
 msgstr "Famicom Disk System"
@@ -1157,6 +1395,10 @@ msgstr "Файлы"
 #: cmd/jawaka-launcher/main.c
 msgid "Filter"
 msgstr "Фильтр"
+
+#: internal/settings/settings.c
+msgid "Finish the current update before switching channels"
+msgstr "Завершите текущее обновление, прежде чем менять канал"
 
 #: internal/settings/settings.c
 msgid "Fixed"
@@ -1194,6 +1436,10 @@ msgstr "Забыть"
 msgid "Fountain"
 msgstr "Фонтан"
 
+#: internal/update/update.c
+msgid "Free space could not be checked; confirmation required"
+msgstr "Не удалось проверить свободное место; требуется подтверждение"
+
 #: internal/platform/platform_common.c
 msgid "Frontend"
 msgstr "Графический"
@@ -1210,7 +1456,7 @@ msgstr "Цвета GBC"
 msgid "GPU"
 msgstr "GPU"
 
-#: cmd/jawaka-menu/main.c
+#: cmd/jawaka-launcher/main.c
 msgid "Game"
 msgstr "Игра"
 
@@ -1334,8 +1580,8 @@ msgstr "Гарнитура"
 msgid "Hiccup"
 msgstr "Мигание"
 
-#: internal/settings/settings.c
 # Status bar value; the Show/Hide button has its own action entry.
+#: internal/settings/settings.c
 msgid "Hidden"
 msgstr "Скрыто"
 
@@ -1399,6 +1645,14 @@ msgstr "IPv6"
 msgid "Icon"
 msgstr "Значок"
 
+#: internal/settings/settings.c
+msgid "Idle"
+msgstr "Ожидание"
+
+#: internal/settings/settings.c
+msgid "Incompatible"
+msgstr "Несовместимо"
+
 #: internal/settings/timezones.c
 msgid "India"
 msgstr "Индия"
@@ -1411,13 +1665,29 @@ msgstr "Инфо"
 msgid "Install"
 msgstr "Установить"
 
+#: internal/settings/settings.c
+msgid "Install Again"
+msgstr "Установите снова"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Install cancelled: %.120s"
+msgstr "Установка отменена: %.120s"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Install cancelled: %s"
 msgstr "Установка отменена: %s"
 
+#: internal/settings/settings.c
+msgid "Install in progress"
+msgstr "Идёт установка"
+
 #: internal/settings/storage_ui.c
 msgid "Install the matching Leaf system update before checking this card on your device."
 msgstr "Перед проверкой этой карты на вашем устройстве установите соответствующее системное обновление Leaf."
+
+#: internal/settings/settings.c
+msgid "Install update even though checks are incomplete?"
+msgstr "Установить обновление, хотя не все проверки пройдены?"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installed"
@@ -1427,9 +1697,37 @@ msgstr "Установлено"
 msgid "Installed %s"
 msgstr "Установлено: %s"
 
+#: internal/store/pakrat.c
+msgid "Installed package metadata does not match ownership"
+msgstr "Метаданные установленного пакета не совпадают с владельцем"
+
+#: internal/store/pakrat.c
+msgid "Installed package metadata is corrupt or unavailable"
+msgstr "Метаданные установленного пакета повреждены или недоступны"
+
+#: internal/store/pakrat.c
+msgid "Installed package source is absent; uninstall will resume when it returns"
+msgstr "Источник установленного пакета отсутствует; удаление продолжится, когда он вернётся"
+
+#: internal/store/pakrat.c
+msgid "Installed package source is unavailable"
+msgstr "Источник установленного пакета недоступен"
+
+#: internal/store/pakrat.c
+msgid "Installed theme is not on the primary card"
+msgstr "Установленная тема находится не на основной SD-карте"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Installed version: %s"
 msgstr "Установленная версия: %s"
+
+#: internal/settings/settings.c
+msgid "Installing"
+msgstr "Установка"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Installing Pak Rat app"
+msgstr "Установка приложения Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installing theme"
@@ -1446,6 +1744,18 @@ msgstr "Это фильтр масштабирования, а не имитац
 #: internal/settings/timezones.c
 msgid "Japan / Korea"
 msgstr "Япония / Корея"
+
+#: internal/store/pakrat.c
+msgid "Jawaka did not complete package quiescence"
+msgstr "Jawaka не смог остановить службы пакета"
+
+#: internal/store/pakrat.c
+msgid "Jawaka refused package mutation"
+msgstr "Jawaka отклонил изменение пакета"
+
+#: internal/store/pakrat.c
+msgid "Jawaka service supervisor is unavailable"
+msgstr "Диспетчер служб Jawaka недоступен"
 
 #: cmd/jawaka-menu/main.c
 msgid "Keep"
@@ -1504,6 +1814,10 @@ msgid "Last update: %s"
 msgstr "Обновлено: %s"
 
 #: internal/settings/settings.c
+msgid "Last: %s"
+msgstr "Последнее: %s"
+
+#: internal/settings/settings.c
 msgid "Later"
 msgstr "Позже"
 
@@ -1522,6 +1836,30 @@ msgstr "Запуск отменён"
 #: internal/settings/settings.c
 msgid "Leaf"
 msgstr "Leaf"
+
+#: internal/update/update.c
+msgid "Leaf %s downloaded and verified"
+msgstr "Leaf %s скачан и проверен"
+
+#: internal/update/update.c
+msgid "Leaf %s installed"
+msgstr "Leaf %s установлен"
+
+#: internal/update/update.c
+msgid "Leaf %s is already installed"
+msgstr "Leaf %s уже установлен"
+
+#: internal/update/update.c
+msgid "Leaf %s is available"
+msgstr "Доступен Leaf %s"
+
+#: internal/update/update.c
+msgid "Leaf %s is available; installed release is unknown"
+msgstr "Доступен Leaf %s; установленный релиз неизвестен"
+
+#: internal/update/update.c
+msgid "Leaf %s selected"
+msgstr "Выбран Leaf %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Leaf can't find %s in the Themes folder"
@@ -1550,6 +1888,14 @@ msgstr "Leaf не смог восстановить эту карту на ва�
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't safely check this card, so nothing was changed. Check the card on a computer."
 msgstr "Leaf не смог безопасно проверить эту карту, поэтому ничего не было изменено. Проверьте её на компьютере."
+
+#: internal/update/update.c
+msgid "Leaf releases response was not a JSON array"
+msgstr "Ответ со списком релизов Leaf не является массивом JSON"
+
+#: internal/settings/settings.c
+msgid "Leaf update"
+msgstr "Обновление Leaf"
 
 #: cmd/jawaka-menu/main.c
 msgid "Leaf's in-game picker supports GLSL presets (.glslp)."
@@ -1607,6 +1953,14 @@ msgstr "Загрузить состояние"
 msgid "Loading preview"
 msgstr "Загрузка превью"
 
+#: internal/settings/settings.c
+msgid "Loading releases..."
+msgstr "Загрузка релизов..."
+
+#: internal/update/update.c
+msgid "Local manifest artifact URL must use HTTPS"
+msgstr "URL файла в локальном манифесте должен использовать HTTPS"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Lock"
 msgstr "Блокировка"
@@ -1634,6 +1988,14 @@ msgstr "Вручную"
 #: internal/settings/timezones.c
 msgid "Marquesas Islands"
 msgstr "Маркизские острова"
+
+#: internal/scrape/ss_client.c
+msgid "Media download returned HTTP %d"
+msgstr "Загрузка медиа вернула HTTP %d"
+
+#: internal/scrape/ss_client.c
+msgid "Media download returned an empty body"
+msgstr "Загрузка медиа вернула пустой ответ"
 
 #: internal/settings/settings.c
 msgid "Memory free"
@@ -1719,8 +2081,8 @@ msgstr "Непал"
 msgid "Network: %s"
 msgstr "Сеть: %s"
 
-#: internal/settings/settings.c
 # Color temperature value at 6500 K: no correction. Keep the full word.
+#: internal/settings/settings.c
 msgid "Neutral"
 msgstr "Нейтральная"
 
@@ -1756,6 +2118,10 @@ msgstr "Nintendo DS"
 msgid "Nintendo Entertainment System"
 msgstr "Nintendo Entertainment System"
 
+#: internal/settings/settings.c
+msgid "No"
+msgstr "Нет"
+
 #: cmd/jawaka-launcher/main.c
 msgid "No BIOS file"
 msgstr "Нет файла BIOS"
@@ -1765,8 +2131,24 @@ msgid "No BIOS file selected"
 msgstr "Файл BIOS не выбран"
 
 #: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat app selected"
+msgstr "Приложение Pak Rat не выбрано"
+
+#: internal/scrape/ss_client.c
+msgid "No ScreenScraper username configured"
+msgstr "Имя пользователя ScreenScraper не задано"
+
+#: internal/settings/settings.c
+msgid "No Space"
+msgstr "Нет места"
+
+#: cmd/jawaka-launcher/main.c
 msgid "No apps found"
 msgstr "Приложения не найдены"
+
+#: internal/update/update.c
+msgid "No downloadable update artifact is selected"
+msgstr "Не выбран файл обновления для загрузки"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No favorites yet — open a game and press Y to add one"
@@ -1785,12 +2167,24 @@ msgid "No games found"
 msgstr "Игры не найдены"
 
 #: internal/settings/settings.c
+msgid "No games to scrape"
+msgstr "Нет игр для скрапинга"
+
+#: internal/settings/settings.c
 msgid "No hidden games."
 msgstr "Нет скрытых игр."
+
+#: internal/settings/settings.c
+msgid "No jobs match this filter."
+msgstr "Нет задач для этого фильтра."
 
 #: cmd/jawaka-launcher/main.c
 msgid "No lock"
 msgstr "Без блокировки"
+
+#: internal/settings/settings.c
+msgid "No missing artwork"
+msgstr "Нет недостающих картинок"
 
 #: internal/settings/settings.c
 msgid "No playtime recorded yet."
@@ -1803,6 +2197,10 @@ msgstr "Нет превью"
 #: cmd/jawaka-launcher/main.c
 msgid "No recent games yet — play something and it'll show up here"
 msgstr "Недавних игр пока нет — сыграйте во что-нибудь, и игра появится здесь"
+
+#: internal/settings/settings.c
+msgid "No releases available"
+msgstr "Нет доступных релизов"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No results"
@@ -1828,6 +2226,10 @@ msgstr "Нет сохранений для загрузки"
 msgid "No saves yet"
 msgstr "Сохранений пока нет"
 
+#: internal/settings/settings.c
+msgid "No scrape jobs."
+msgstr "Нет задач скрапинга."
+
 #: internal/retroarch/shader_strings.c
 msgid "No screen curvature; use CRT Curved for that."
 msgstr "Без кривизны экрана; для неё используйте CRT (кривизна)."
@@ -1844,6 +2246,22 @@ msgstr "Нет состояний"
 msgid "No themes in Pak Rat yet"
 msgstr "В Pak Rat пока нет тем"
 
+#: internal/update/update.c
+msgid "No update check has been run"
+msgstr "Проверка обновлений ещё не выполнялась"
+
+#: internal/update/update.c
+msgid "No update download is active"
+msgstr "Загрузка обновления не выполняется"
+
+#: internal/update/update.c
+msgid "No update manifest path was provided"
+msgstr "Не указан путь к манифесту обновления"
+
+#: internal/settings/settings.c
+msgid "No update release selected"
+msgstr "Релиз для обновления не выбран"
+
 #: cmd/jawaka-menu/main.c
 msgid "None"
 msgstr "Нет"
@@ -1853,12 +2271,24 @@ msgid "Not Found"
 msgstr "Не найдено"
 
 #: internal/settings/settings.c
+msgid "Not checked"
+msgstr "Не проверено"
+
+#: internal/settings/settings.c
 msgid "Not connected"
 msgstr "Не подключено"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Not deleted"
 msgstr "Не удалено"
+
+#: internal/update/update.c
+msgid "Not enough free space for update download"
+msgstr "Недостаточно места для загрузки обновления"
+
+#: internal/update/update.c
+msgid "Not enough free space to install update"
+msgstr "Недостаточно места для установки обновления"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Not enough memory to open the BIOS picker"
@@ -1897,6 +2327,10 @@ msgid "Offsets are standard time; regions adjust for DST"
 msgstr "Указано стандартное время; регионы сами учитывают летнее время"
 
 #: internal/settings/settings.c
+msgid "Older"
+msgstr "Более ранний"
+
+#: internal/settings/settings.c
 msgid "On"
 msgstr "Вкл"
 
@@ -1928,6 +2362,10 @@ msgstr "PIN"
 msgid "PINs did not match - try again"
 msgstr "PIN-коды не совпадают — попробуйте ещё раз"
 
+#: internal/store/pakrat.c
+msgid "Package was removed, but library refresh failed"
+msgstr "Пакет удалён, но обновить библиотеку не удалось"
+
 #: internal/settings/settings.c
 msgid "Paired"
 msgstr "Сопряжённые устройства"
@@ -1936,9 +2374,21 @@ msgstr "Сопряжённые устройства"
 msgid "Pak Rat"
 msgstr "Pak Rat"
 
+#: internal/store/pakrat.c
+msgid "Pak Rat Primary source is unavailable"
+msgstr "Основной источник Pak Rat недоступен"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat Themes"
 msgstr "Темы Pak Rat"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat action failed"
+msgstr "Действие Pak Rat не выполнено"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat runtime paths unavailable"
+msgstr "Пути среды Pak Rat недоступны"
 
 #: internal/settings/timezones.c
 msgid "Pakistan"
@@ -1956,7 +2406,7 @@ msgstr "Путь: Apps/%s"
 msgid "Percent"
 msgstr "Проценты"
 
-#: cmd/jawaka-menu/main.c
+#: cmd/jawaka-launcher/main.c
 msgid "Performance"
 msgstr "Производительность"
 
@@ -1984,8 +2434,12 @@ msgstr "Выбрать обновление"
 msgid "Pick another Saturn BIOS from the options menu."
 msgstr "Выберите другой BIOS Saturn в меню опций."
 
-#: internal/settings/settings.c
+#: internal/update/update.c
+msgid "Platform artifact metadata is incomplete"
+msgstr "Метаданные файла для платформы неполные"
+
 # Action that plays the test sound.
+#: internal/settings/settings.c
 msgid "Play"
 msgstr "Воспроизвести"
 
@@ -2045,6 +2499,10 @@ msgstr "Предпочтительнее «Резких пикселей», ес
 msgid "Preparing to save"
 msgstr "Подготовка к сохранению"
 
+#: internal/update/update.c
+msgid "Preparing update install"
+msgstr "Подготовка установки обновления"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Press MENU to exit"
 msgstr "Нажмите MENU для выхода"
@@ -2057,6 +2515,10 @@ msgstr "Нажмите Menu ещё раз"
 msgid "Previous page"
 msgstr "Предыдущая страница"
 
+#: internal/settings/settings.c
+msgid "Primary Slot"
+msgstr "Основной слот"
+
 #: cmd/jawaka-menu/main.c
 msgid "Profile"
 msgstr "Профиль"
@@ -2064,6 +2526,10 @@ msgstr "Профиль"
 #: cmd/jawaka-launcher/main.c
 msgid "Progress stored inside a writable game image is erased with that image."
 msgstr "Прогресс, хранящийся в записываемом образе игры, стирается вместе с ним."
+
+#: internal/settings/settings.c
+msgid "Queue full: queued %d of %d"
+msgstr "Очередь заполнена: добавлено %d из %d"
 
 #: internal/settings/settings.c
 msgid "Queued"
@@ -2092,6 +2558,10 @@ msgstr "Только для чтения"
 #: cmd/jawaka-launcher/main.c
 msgid "Reading folder..."
 msgstr "Чтение папки..."
+
+#: internal/settings/settings.c
+msgid "Ready Check"
+msgstr "Проверить готовность"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reboot"
@@ -2150,12 +2620,24 @@ msgid "Reinstall"
 msgstr "Переустановить"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Reinstall cancelled: %.120s"
+msgstr "Переустановка отменена: %.120s"
+
+#: cmd/jawaka-launcher/main.c
 msgid "Reinstalled %s"
 msgstr "Переустановлено: %s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reinstalling Pak Rat app"
+msgstr "Переустановка приложения Pak Rat"
 
 #: internal/settings/settings.c
 msgid "Release"
 msgstr "Релиз"
+
+#: internal/update/update.c
+msgid "Release %s requires a newer updater"
+msgstr "Релизу %s нужен более новый модуль обновления"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Release the power button"
@@ -2168,6 +2650,10 @@ msgstr "Путь, управляемый релизами"
 #: cmd/jawaka-launcher/main.c
 msgid "Releases"
 msgstr "Релизы"
+
+#: internal/settings/settings.c
+msgid "Releases are still loading"
+msgstr "Релизы ещё загружаются"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Remove"
@@ -2241,6 +2727,10 @@ msgstr "Сбросить переопределение"
 msgid "Reset RetroArch Config"
 msgstr "Сброс настроек RetroArch"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Reset System Overrides"
+msgstr "Сбросить переопределения системы"
+
 #: internal/settings/settings.c
 msgid "Reset shared RetroArch config to packaged defaults?"
 msgstr "Сбросить общую конфигурацию RetroArch к заводским настройкам?"
@@ -2248,6 +2738,10 @@ msgstr "Сбросить общую конфигурацию RetroArch к зав
 #: internal/settings/settings.c
 msgid "Restart"
 msgstr "Перезапуск"
+
+#: internal/settings/settings.c
+msgid "Restart Needed"
+msgstr "Нужен перезапуск"
 
 #: internal/settings/storage_ui.c
 msgid "Restart and check"
@@ -2258,8 +2752,28 @@ msgid "Restart and repair"
 msgstr "Перезапустить и восстановить"
 
 #: internal/settings/settings.c
+msgid "Restart canceled"
+msgstr "Перезапуск отменён"
+
+#: internal/settings/settings.c
+msgid "Restart failed"
+msgstr "Не удалось перезапустить"
+
+#: internal/settings/settings.c
+msgid "Restart needed"
+msgstr "Нужен перезапуск"
+
+#: internal/settings/settings.c
 msgid "Restart now to finish installing?"
 msgstr "Перезапустить сейчас, чтобы завершить установку?"
+
+#: internal/update/update.c
+msgid "Restart to finish installing"
+msgstr "Перезапустите, чтобы завершить установку"
+
+#: internal/settings/settings.c
+msgid "Restarting"
+msgstr "Перезапуск"
 
 #: internal/settings/storage_ui.c
 msgid "Restarting to check your SD card"
@@ -2268,6 +2782,18 @@ msgstr "Перезапуск для проверки SD-карты"
 #: cmd/jawaka-launcher/main.c
 msgid "Restarting to repair your SD card"
 msgstr "Перезапуск для восстановления SD-карты"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restore"
+msgstr "Восстановить"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restored %s"
+msgstr "Восстановлено: %s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restoring Pak Rat app"
+msgstr "Восстановление приложения Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Resume"
@@ -2390,6 +2916,18 @@ msgid "Save your edits in RetroArch before you leave."
 msgstr "Сохраните изменения в RetroArch перед выходом."
 
 #: internal/settings/settings.c
+msgid "Saved - could not verify: %s"
+msgstr "Сохранено, но проверить не удалось: %s"
+
+#: internal/settings/settings.c
+msgid "Saved: %s"
+msgstr "Сохранено: %s"
+
+#: internal/settings/settings.c
+msgid "Saved: %s (unverified)"
+msgstr "Сохранено: %s (не проверено)"
+
+#: internal/settings/settings.c
 msgid "Saved; active after restart"
 msgstr "Сохранено; вступит в силу после перезапуска"
 
@@ -2421,6 +2959,10 @@ msgstr "Сканлайны и апертурная маска с кривизн�
 msgid "Scanlines reduce brightness, especially when combined with BFI."
 msgstr "Сканлайны снижают яркость, особенно вместе со вставкой чёрных кадров."
 
+#: cmd/jawaka-launcher/main.c
+msgid "Scanned"
+msgstr "Из сканирования"
+
 #: internal/settings/settings.c
 msgid "Scanning"
 msgstr "Сканирование"
@@ -2441,7 +2983,7 @@ msgstr "Область"
 msgid "Scrape"
 msgstr "Скрапинг"
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Scrape Artwork"
 msgstr "Скрапинг картинки"
 
@@ -2461,9 +3003,21 @@ msgstr "Результат скрапинга"
 msgid "Scrape finished: %d found"
 msgstr "Скрапинг завершён: найдено %d"
 
+#: internal/settings/settings.c
+msgid "Scrape was cancelled before completion."
+msgstr "Скрапинг был отменён до завершения."
+
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s · %d/%d"
 msgstr "Скрапинг %s · %d/%d"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping %s: %d/%d - %.160s"
+msgstr "Скрапинг %s: %d/%d - %.160s"
+
+#: internal/scrape/ss_client.c
+msgid "Scraping is unavailable in this build (no API credentials)"
+msgstr "Скрапинг недоступен в этой сборке (нет ключей API)"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping paused: %.200s"
@@ -2472,6 +3026,26 @@ msgstr "Скрапинг приостановлен: %.200s"
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping: %d/%d"
 msgstr "Скрапинг: %d/%d"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper rejected the credentials"
+msgstr "ScreenScraper отклонил учётные данные"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper request failed"
+msgstr "Запрос к ScreenScraper не удался"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper returned HTTP %d"
+msgstr "ScreenScraper вернул HTTP %d"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper returned an empty response"
+msgstr "ScreenScraper вернул пустой ответ"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper validation failed"
+msgstr "Проверка в ScreenScraper не удалась"
 
 #: internal/settings/settings.c
 msgid "ScreenScraper.fr"
@@ -2496,6 +3070,22 @@ msgstr "Поиск"
 #: cmd/jawaka-launcher/main.c
 msgid "Search This System"
 msgstr "Поиск в этой системе"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s"
+msgstr "Поиск: %s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s  (%d results)"
+msgstr "Поиск: %s  (результатов: %d)"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s  (1 result)"
+msgstr "Поиск: %s  (1 результат)"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: (empty)"
+msgstr "Поиск: (пусто)"
 
 #: internal/settings/settings.c
 msgid "Searching"
@@ -2537,6 +3127,10 @@ msgstr "Sega Saturn"
 msgid "Select"
 msgstr "Выбрать"
 
+#: internal/settings/settings.c
+msgid "Selected"
+msgstr "Выбрано"
+
 #: internal/launcher/bios.c
 msgid "Selected BIOS card is not mounted"
 msgstr "Карта с выбранным BIOS не установлена"
@@ -2569,9 +3163,17 @@ msgstr "Выбранного файла BIOS больше нет в папке B
 msgid "Selected BIOS path is not usable"
 msgstr "Выбранный путь BIOS непригоден"
 
+#: internal/update/update.c
+msgid "Selected update is no longer available"
+msgstr "Выбранное обновление больше недоступно"
+
 #: internal/settings/settings.c
 msgid "Selection"
 msgstr "Выбор"
+
+#: cmd/jawakad/main.c
+msgid "Service supervisor unavailable; update not started"
+msgstr "Диспетчер служб недоступен; обновление не запущено"
 
 #: internal/settings/settings.c
 msgid "Services"
@@ -2613,8 +3215,8 @@ msgstr "Резкие пиксели"
 msgid "Sharp Shimmerless"
 msgstr "Резкие без мерцания"
 
-#: cmd/jawaka-launcher/main.c
 # A-button action when organizing Home Tabs; not the Visible/Hidden values.
+#: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"
 msgstr "Показать/Скрыть"
 
@@ -2678,6 +3280,10 @@ msgstr "Мягкий"
 msgid "Solomon Islands"
 msgstr "Соломоновы Острова"
 
+#: internal/update/update.c
+msgid "Some releases could not be loaded"
+msgstr "Некоторые релизы не удалось загрузить"
+
 #: internal/platform/platform_common.c
 msgid "Speaker"
 msgstr "Динамик"
@@ -2701,6 +3307,10 @@ msgstr "Квадратный"
 #: internal/settings/settings.c
 msgid "Stable"
 msgstr "Стабильный"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Stale"
+msgstr "Устарело"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start"
@@ -2734,7 +3344,7 @@ msgstr "Строка состояния"
 msgid "Status: %s"
 msgstr "Статус: %s"
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Stop"
 msgstr "Стоп"
 
@@ -2831,6 +3441,10 @@ msgid "System Icons"
 msgstr "Системные значки"
 
 #: cmd/jawaka-launcher/main.c
+msgid "System Options: %s"
+msgstr "Параметры системы: %s"
+
+#: cmd/jawaka-launcher/main.c
 msgid "System Update"
 msgstr "Обновление системы"
 
@@ -2886,6 +3500,10 @@ msgstr "Имя папки слишком длинное для открытия.
 msgid "The Themes folder already has %d themes, the most Leaf can list. Remove one to install this theme."
 msgstr "В папке Themes уже %d тем — максимум для показа. Удалите одну, чтобы установить эту."
 
+#: internal/store/pakrat.c
+msgid "The Themes folder already holds %d themes, the most Leaf lists"
+msgstr "В папке Themes уже тем: %d, это максимум для Leaf"
+
 #: internal/settings/storage_ui.c
 msgid "The card passed the check but couldn't be made writable. Restart your device, then try Check SD card."
 msgstr "Карта прошла проверку, но записать не удалось. Перезапустите устройство, затем попробуйте «Проверить SD-карту»."
@@ -2901,6 +3519,10 @@ msgstr "Последняя проверка или восстановление 
 #: internal/settings/storage_ui.c
 msgid "The last check took too long and stopped. Restart your device to check the card again before saving is enabled."
 msgstr "Последняя проверка заняла слишком много времени и была прервана. Перезагрузите устройство, чтобы снова проверить карту перед сохранением."
+
+#: internal/store/pakrat.c
+msgid "The launcher does not list the installed theme %s"
+msgstr "Лаунчер не показывает установленную тему %s"
 
 #: internal/settings/storage_ui.c
 msgid "The repair couldn't be started. Check the card on a computer instead."
@@ -3002,6 +3624,14 @@ msgstr "Тема"
 msgid "Theme colors"
 msgstr "Цвета темы"
 
+#: internal/store/pakrat.c
+msgid "Theme folder %s belongs to a theme Leaf ships"
+msgstr "Папка темы %s принадлежит теме, входящей в состав Leaf"
+
+#: internal/store/pakrat.c
+msgid "Theme package does not match the catalog entry"
+msgstr "Пакет темы не совпадает с записью в каталоге"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Themes"
 msgstr "Темы"
@@ -3065,6 +3695,10 @@ msgstr "Для восстановления выключите устройст�
 #: internal/settings/timezones.c
 msgid "Tonga"
 msgstr "Тонга"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Tools"
+msgstr "Инструменты"
 
 #: internal/settings/settings.c
 msgid "Total"
@@ -3155,8 +3789,20 @@ msgid "Uninstall %s?\n\nThis deletes Themes/%s from your SD card. It is your cur
 msgstr "Удалить %s?\n\nЭто удалит Themes/%s с SD-карты. Это текущая тема, поэтому Leaf включит тему по умолчанию."
 
 #: cmd/jawaka-launcher/main.c
+msgid "Uninstall cancelled: %.120s"
+msgstr "Удаление отменено: %.120s"
+
+#: cmd/jawaka-launcher/main.c
 msgid "Uninstall cancelled: %s"
 msgstr "Удаление отменено: %s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %.100s and removed retained data"
+msgstr "Удалено: %.100s, сохранённые данные тоже удалены"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %.100s; retained-data removal failed"
+msgstr "Удалено: %.100s; удалить сохранённые данные не удалось"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalled %s"
@@ -3165,6 +3811,10 @@ msgstr "Удалено: %s"
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalled %s. Switched to no theme."
 msgstr "%s удалена. Включена тема по умолчанию."
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalling Pak Rat app"
+msgstr "Удаление приложения Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalling theme"
@@ -3198,6 +3848,10 @@ msgstr "Не поддерживается"
 msgid "Up one level"
 msgstr "На уровень выше"
 
+#: internal/settings/settings.c
+msgid "Up to date"
+msgstr "Актуально"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Up/Down"
 msgstr "Вверх/вниз"
@@ -3211,12 +3865,152 @@ msgid "Update Channel"
 msgstr "Канал обновлений"
 
 #: internal/settings/settings.c
+msgid "Update already downloaded"
+msgstr "Обновление уже скачано"
+
+#: internal/update/update.c
+msgid "Update artifact has not been downloaded"
+msgstr "Файл обновления ещё не скачан"
+
+#: internal/settings/settings.c
+msgid "Update check failed"
+msgstr "Не удалось проверить обновления"
+
+#: internal/update/update.c
+msgid "Update download already in progress"
+msgstr "Загрузка обновления уже идёт"
+
+#: internal/update/update.c
+msgid "Update download cancelled"
+msgstr "Загрузка обновления отменена"
+
+#: internal/settings/settings.c
+msgid "Update download failed"
+msgstr "Не удалось скачать обновление"
+
+#: internal/update/update.c
+msgid "Update download is still in progress"
+msgstr "Загрузка обновления ещё идёт"
+
+#: internal/update/update.c
+msgid "Update download path is too long"
+msgstr "Слишком длинный путь загрузки обновления"
+
+#: internal/update/update.c
+msgid "Update download process disappeared"
+msgstr "Процесс загрузки обновления пропал"
+
+#: internal/settings/settings.c
+msgid "Update install blocked"
+msgstr "Установка обновления заблокирована"
+
+#: internal/settings/settings.c
+msgid "Update install canceled"
+msgstr "Установка обновления отменена"
+
+#: internal/update/update.c
+msgid "Update install could not be prepared"
+msgstr "Не удалось подготовить установку обновления"
+
+#: internal/settings/settings.c
+msgid "Update install failed"
+msgstr "Не удалось установить обновление"
+
+#: internal/update/update.c
+msgid "Update install is already in progress"
+msgstr "Установка обновления уже идёт"
+
+#: internal/update/update.c
+msgid "Update install state path is too long"
+msgstr "Слишком длинный путь состояния установки"
+
+#: internal/settings/settings.c
+msgid "Update is not ready to install"
+msgstr "Обновление не готово к установке"
+
+#: internal/update/update.c
+msgid "Update is ready to install"
+msgstr "Обновление готово к установке"
+
+#: internal/update/update.c
+msgid "Update manifest is missing platforms"
+msgstr "В манифесте обновления нет платформ"
+
+#: internal/update/update.c
+msgid "Update manifest is missing release_id"
+msgstr "В манифесте обновления нет release_id"
+
+#: internal/update/update.c
+msgid "Update manifest is missing schema"
+msgstr "В манифесте обновления нет схемы"
+
+#: internal/update/update.c
+msgid "Update manifest is not valid JSON"
+msgstr "Манифест обновления не является корректным JSON"
+
+#: internal/update/update.c
+msgid "Update manifest product is not leaf"
+msgstr "Продукт в манифесте обновления не leaf"
+
+#: internal/settings/settings.c
+msgid "Update ready check failed"
+msgstr "Проверка готовности обновления не удалась"
+
+#: internal/update/update.c
+msgid "Update runner did not write a result file"
+msgstr "Модуль обновления не записал файл результата"
+
+#: internal/update/update.c
+msgid "Update runner is not available"
+msgstr "Модуль обновления недоступен"
+
+#: internal/update/update.c
+msgid "Update runner process disappeared"
+msgstr "Процесс модуля обновления пропал"
+
+#: internal/update/update.c
+msgid "Update runner result was not valid JSON"
+msgstr "Результат модуля обновления не является корректным JSON"
+
+#: internal/settings/settings.c
+msgid "Update selection canceled"
+msgstr "Выбор обновления отменён"
+
+#: internal/settings/settings.c
+msgid "Update selection failed"
+msgstr "Не удалось выбрать обновление"
+
+#: internal/settings/settings.c
+msgid "Update service unavailable"
+msgstr "Служба обновлений недоступна"
+
+#: internal/settings/settings.c
+msgid "Update status refreshed"
+msgstr "Статус обновления обновлён"
+
+#: internal/settings/settings.c
 msgid "Update status unavailable"
 msgstr "Статус обновлений недоступен"
+
+#: internal/update/update.c
+msgid "Update temporary path is too long"
+msgstr "Слишком длинный временный путь обновления"
+
+#: internal/update/update.c
+msgid "Update was prepared on the other SD slot; install again"
+msgstr "Обновление подготовлено в другом слоте SD; установите его снова"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Updated %s"
+msgstr "Обновлено: %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Updated %s to version %s"
 msgstr "%s обновлено до версии %s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Updating Pak Rat app"
+msgstr "Обновление приложения Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Updating theme"
@@ -3254,6 +4048,18 @@ msgstr "Как в настройках системы"
 msgid "Vectrex"
 msgstr "Vectrex"
 
+#: internal/settings/settings.c
+msgid "Verified"
+msgstr "Проверено"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version %.40s is missing from catalog history"
+msgstr "Версии %.40s нет в истории каталога"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version %.40s requires Leaf v%.40s"
+msgstr "Версии %.40s нужен Leaf v%.40s"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Version %s needs Leaf %s or newer."
 msgstr "Для версии %s нужен Leaf %s или новее."
@@ -3266,14 +4072,18 @@ msgstr "Версия: %s"
 msgid "Virtual Boy"
 msgstr "Virtual Boy"
 
-#: internal/settings/settings.c
 # Status bar value; the Show/Hide button has its own action entry.
+#: internal/settings/settings.c
 msgid "Visible"
 msgstr "Показано"
 
 #: internal/settings/settings.c
 msgid "Volume"
 msgstr "Громкость"
+
+#: internal/settings/settings.c
+msgid "Wait for the release check to finish before switching channels"
+msgstr "Дождитесь окончания проверки релизов, прежде чем менять канал"
 
 #: internal/settings/settings.c
 msgid "Weak"
@@ -3302,6 +4112,10 @@ msgstr "X: Отпустить   Крестовина: Двигать"
 #: cmd/jawaka-launcher/main.c
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
 msgstr "X: Взять   Y: Убрать   B: Назад   A: Далее"
+
+#: internal/settings/settings.c
+msgid "Yes"
+msgstr "Да"
 
 #: internal/settings/storage_ui.c
 msgid "You can save files again."
@@ -3431,6 +4245,10 @@ msgstr "ошибка яркости"
 msgid "count|Systems"
 msgstr "Системы"
 
+#: internal/settings/settings.c
+msgid "daemon unavailable"
+msgstr "служба недоступна"
+
 #: cmd/jawaka-launcher/main.c
 msgid "daily quota exceeded"
 msgstr "дневная квота исчерпана"
@@ -3455,7 +4273,7 @@ msgstr "ошибка загрузки шрифта"
 msgid "just now"
 msgstr "только что"
 
-#: internal/settings/storage_ui.c
+#: cmd/jawaka-launcher/main.c
 msgid "launcher SD card"
 msgstr "SD-карта лаунчера"
 
@@ -3487,7 +4305,23 @@ msgstr "не удалось изменить частоту обновления
 msgid "refresh rate unavailable on this platform"
 msgstr "частота обновления недоступна на этой платформе"
 
-#: internal/settings/storage_ui.c
+#: cmd/jawaka-launcher/main.c
+msgid "scope|custom"
+msgstr "своё"
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|default"
+msgstr "по умолчанию"
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|game"
+msgstr "игра"
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|system"
+msgstr "система"
+
+#: cmd/jawaka-launcher/main.c
 msgid "second SD card"
 msgstr "Вторая SD-карта"
 
@@ -3510,6 +4344,10 @@ msgstr "не сохранено · %d из %d"
 #: cmd/jawaka-menu/main.c
 msgid "unsaved · %s · %d of %d"
 msgstr "не сохранено · %s · %d из %d"
+
+#: internal/settings/settings.c
+msgid "update|Missing"
+msgstr "Отсутствует"
 
 #: internal/settings/settings.c
 msgid "volume failed"
