@@ -373,8 +373,16 @@ msgid "ADB disable canceled"
 msgstr "ADB uitschakelen geannuleerd"
 
 #: internal/settings/settings.c
+msgid "ADB disable failed"
+msgstr "ADB uitschakelen mislukt"
+
+#: internal/settings/settings.c
 msgid "ADB enable canceled"
 msgstr "ADB inschakelen geannuleerd"
+
+#: internal/settings/settings.c
+msgid "ADB enable failed"
+msgstr "ADB inschakelen mislukt"
 
 #: internal/settings/settings.c
 msgid "ADB unavailable on this platform"
@@ -485,6 +493,10 @@ msgid "Already missing"
 msgstr "Ontbrak al"
 
 #: internal/settings/settings.c
+msgid "Already on the latest version"
+msgstr "U hebt al de nieuwste versie"
+
+#: internal/settings/settings.c
 msgid "Already used by %s"
 msgstr "Al in gebruik door %s"
 
@@ -539,6 +551,10 @@ msgstr "Ordenen"
 #: internal/settings/settings.c
 msgid "Artwork Priority"
 msgstr "Voorrang coverart"
+
+#: internal/settings/settings.c
+msgid "Artwork scrape failed."
+msgstr "Coverart downloaden mislukt."
 
 #: internal/launcher/system_names.c
 msgid "Atari 2600"
@@ -652,6 +668,14 @@ msgstr "Batterij bijna leeg"
 msgid "Battery Saver"
 msgstr "Batterijbesparing"
 
+#: internal/update/update.c
+msgid "Battery must be at least %d%% or charging"
+msgstr "De batterij moet minstens %d%% geladen zijn of aan het opladen zijn"
+
+#: internal/update/update.c
+msgid "Battery status is unknown; confirmation required"
+msgstr "Batterijstatus onbekend; bevestiging vereist"
+
 #: internal/retroarch/shader_strings.c
 msgid "Best at integer or near-integer scaling; the upstream shader can look uneven at arbitrary scales."
 msgstr "Het best bij gehele of bijna gehele schaling; de upstream-shader kan bij willekeurige schaling ongelijk ogen."
@@ -691,6 +715,14 @@ msgstr "Bluetooth"
 #: internal/settings/settings.c
 msgid "Bluetooth Name"
 msgstr "Bluetooth-naam"
+
+#: internal/settings/settings.c
+msgid "Bluetooth done"
+msgstr "Bluetooth klaar"
+
+#: internal/settings/settings.c
+msgid "Bluetooth failed"
+msgstr "Bluetooth mislukt"
 
 #: internal/settings/settings.c
 msgid "Board"
@@ -792,6 +824,42 @@ msgstr "Downloaden annuleren"
 msgid "Cancelled"
 msgstr "Geannuleerd"
 
+#: internal/update/update.c
+msgid "Cannot download update artifact"
+msgstr "Kan het updatebestand niet downloaden"
+
+#: internal/update/update.c
+msgid "Cannot fetch Leaf releases"
+msgstr "Kan de Leaf-releases niet ophalen"
+
+#: internal/settings/settings.c
+msgid "Cannot load releases"
+msgstr "Kan de releases niet laden"
+
+#: internal/update/update.c
+msgid "Cannot prepare update download directory"
+msgstr "Kan de downloadmap voor de update niet voorbereiden"
+
+#: internal/update/update.c
+msgid "Cannot prepare update state directory"
+msgstr "Kan de statusmap voor de update niet voorbereiden"
+
+#: internal/update/update.c
+msgid "Cannot read update manifest"
+msgstr "Kan het updatemanifest niet lezen"
+
+#: internal/update/update.c
+msgid "Cannot start update download"
+msgstr "Kan de updatedownload niet starten"
+
+#: internal/update/update.c
+msgid "Cannot verify update artifact"
+msgstr "Kan het updatebestand niet verifiëren"
+
+#: internal/update/update.c
+msgid "Cannot write update install request"
+msgstr "Kan de installatieaanvraag voor de update niet wegschrijven"
+
 #: internal/settings/timezones.c
 msgid "Cape Verde"
 msgstr "Kaapverdië"
@@ -825,8 +893,16 @@ msgid "Check SD card"
 msgstr "SD-kaart controleren"
 
 #: internal/settings/settings.c
+msgid "Check for updates first"
+msgstr "Controleer eerst op updates"
+
+#: internal/settings/settings.c
 msgid "Check releases first"
 msgstr "Bekijk eerst de releases"
+
+#: internal/update/update.c
+msgid "Checking for updates"
+msgstr "Bezig met zoeken naar updates"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Checking your game's files..."
@@ -863,6 +939,10 @@ msgstr "Klok"
 #: internal/settings/settings.c
 msgid "Close Apps"
 msgstr "Apps sluiten"
+
+#: internal/update/update.c
+msgid "Close running games or apps before installing"
+msgstr "Sluit actieve games of apps voordat u installeert"
 
 #: internal/settings/storage_ui.c
 msgid "Close the game or app first, then try again."
@@ -1121,8 +1201,24 @@ msgid "Download First"
 msgstr "Eerst downloaden"
 
 #: internal/settings/settings.c
+msgid "Download update first"
+msgstr "Download eerst de update"
+
+#: internal/settings/settings.c
 msgid "Downloaded"
 msgstr "Gedownload"
+
+#: internal/update/update.c
+msgid "Downloaded update SHA-256 does not match metadata"
+msgstr "SHA-256 van de gedownloade update komt niet overeen met de metadata"
+
+#: internal/update/update.c
+msgid "Downloaded update artifact is missing"
+msgstr "Het gedownloade updatebestand ontbreekt"
+
+#: internal/update/update.c
+msgid "Downloaded update size does not match metadata"
+msgstr "Grootte van de gedownloade update komt niet overeen met de metadata"
 
 #: internal/settings/settings.c
 msgid "Downloading"
@@ -1213,6 +1309,10 @@ msgid "Filter"
 msgstr "Filter"
 
 #: internal/settings/settings.c
+msgid "Finish the current update before switching channels"
+msgstr "Voltooi eerst de huidige update voordat u van kanaal wisselt"
+
+#: internal/settings/settings.c
 msgid "Fixed"
 msgstr "Vast"
 
@@ -1247,6 +1347,10 @@ msgstr "Vergeten"
 #: internal/settings/settings.c
 msgid "Fountain"
 msgstr "Fontein"
+
+#: internal/update/update.c
+msgid "Free space could not be checked; confirmation required"
+msgstr "Vrije ruimte kon niet worden gecontroleerd; bevestiging vereist"
 
 #: internal/platform/platform_common.c
 msgid "Frontend"
@@ -1484,9 +1588,17 @@ msgstr "Installatie geannuleerd: %.120s"
 msgid "Install cancelled: %s"
 msgstr "Installatie geannuleerd: %s"
 
+#: internal/settings/settings.c
+msgid "Install in progress"
+msgstr "Installatie bezig"
+
 #: internal/settings/storage_ui.c
 msgid "Install the matching Leaf system update before checking this card on your device."
 msgstr "Installeer de bijbehorende Leaf-systeemupdate voordat u deze kaart op uw toestel controleert."
+
+#: internal/settings/settings.c
+msgid "Install update even though checks are incomplete?"
+msgstr "Update toch installeren, hoewel niet alle controles voltooid zijn?"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installed"
@@ -1604,6 +1716,30 @@ msgstr "Starten geannuleerd"
 msgid "Leaf"
 msgstr "Leaf"
 
+#: internal/update/update.c
+msgid "Leaf %s downloaded and verified"
+msgstr "Leaf %s gedownload en geverifieerd"
+
+#: internal/update/update.c
+msgid "Leaf %s installed"
+msgstr "Leaf %s geïnstalleerd"
+
+#: internal/update/update.c
+msgid "Leaf %s is already installed"
+msgstr "Leaf %s is al geïnstalleerd"
+
+#: internal/update/update.c
+msgid "Leaf %s is available"
+msgstr "Leaf %s is beschikbaar"
+
+#: internal/update/update.c
+msgid "Leaf %s is available; installed release is unknown"
+msgstr "Leaf %s is beschikbaar; geïnstalleerde release is onbekend"
+
+#: internal/update/update.c
+msgid "Leaf %s selected"
+msgstr "Leaf %s geselecteerd"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Leaf can't find %s in the Themes folder"
 msgstr "Leaf vindt %s niet in de map Themes"
@@ -1631,6 +1767,10 @@ msgstr "Leaf kon deze kaart niet repareren op uw toestel. Schakel uw toestel uit
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't safely check this card, so nothing was changed. Check the card on a computer."
 msgstr "Leaf kon deze kaart niet veilig controleren, dus er is niets gewijzigd. Controleer de kaart op een computer."
+
+#: internal/update/update.c
+msgid "Leaf releases response was not a JSON array"
+msgstr "Het antwoord met Leaf-releases was geen JSON-array"
 
 #: internal/settings/settings.c
 msgid "Leaf update"
@@ -1695,6 +1835,10 @@ msgstr "Voorbeeld laden"
 #: internal/settings/settings.c
 msgid "Loading releases..."
 msgstr "Releases laden..."
+
+#: internal/update/update.c
+msgid "Local manifest artifact URL must use HTTPS"
+msgstr "De bestands-URL in het lokale manifest moet HTTPS gebruiken"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Lock"
@@ -1868,6 +2012,10 @@ msgstr "Geen ruimte"
 msgid "No apps found"
 msgstr "Geen apps gevonden"
 
+#: internal/update/update.c
+msgid "No downloadable update artifact is selected"
+msgstr "Er is geen downloadbaar updatebestand geselecteerd"
+
 #: cmd/jawaka-launcher/main.c
 msgid "No favorites yet — open a game and press Y to add one"
 msgstr "Nog geen favorieten. Open een game en druk op Y om er een toe te voegen"
@@ -1885,12 +2033,24 @@ msgid "No games found"
 msgstr "Geen games gevonden"
 
 #: internal/settings/settings.c
+msgid "No games to scrape"
+msgstr "Geen games om coverart voor te downloaden"
+
+#: internal/settings/settings.c
 msgid "No hidden games."
 msgstr "Geen verborgen games."
+
+#: internal/settings/settings.c
+msgid "No jobs match this filter."
+msgstr "Geen taken voor deze filter."
 
 #: cmd/jawaka-launcher/main.c
 msgid "No lock"
 msgstr "Geen vergrendeling"
+
+#: internal/settings/settings.c
+msgid "No missing artwork"
+msgstr "Geen ontbrekende coverart"
 
 #: internal/settings/settings.c
 msgid "No playtime recorded yet."
@@ -1903,6 +2063,10 @@ msgstr "Geen voorbeeld"
 #: cmd/jawaka-launcher/main.c
 msgid "No recent games yet — play something and it'll show up here"
 msgstr "Nog geen recente games. Speel iets en het verschijnt hier"
+
+#: internal/settings/settings.c
+msgid "No releases available"
+msgstr "Geen releases beschikbaar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No results"
@@ -1928,6 +2092,10 @@ msgstr "Geen opslag om te laden"
 msgid "No saves yet"
 msgstr "Nog geen opslag"
 
+#: internal/settings/settings.c
+msgid "No scrape jobs."
+msgstr "Geen downloadtaken."
+
 #: internal/retroarch/shader_strings.c
 msgid "No screen curvature; use CRT Curved for that."
 msgstr "Geen kromming van het scherm; gebruik daarvoor “CRT gekromd”."
@@ -1943,6 +2111,22 @@ msgstr "Geen savestates"
 #: cmd/jawaka-launcher/main.c
 msgid "No themes in Pak Rat yet"
 msgstr "Nog geen thema's in Pak Rat"
+
+#: internal/update/update.c
+msgid "No update check has been run"
+msgstr "Er is nog niet op updates gecontroleerd"
+
+#: internal/update/update.c
+msgid "No update download is active"
+msgstr "Er is geen updatedownload bezig"
+
+#: internal/update/update.c
+msgid "No update manifest path was provided"
+msgstr "Er is geen pad naar een updatemanifest opgegeven"
+
+#: internal/settings/settings.c
+msgid "No update release selected"
+msgstr "Geen update-release geselecteerd"
 
 #: cmd/jawaka-menu/main.c
 msgid "None"
@@ -1963,6 +2147,14 @@ msgstr "Niet verbonden"
 #: cmd/jawaka-launcher/main.c
 msgid "Not deleted"
 msgstr "Niet verwijderd"
+
+#: internal/update/update.c
+msgid "Not enough free space for update download"
+msgstr "Onvoldoende vrije ruimte om de update te downloaden"
+
+#: internal/update/update.c
+msgid "Not enough free space to install update"
+msgstr "Onvoldoende vrije ruimte om de update te installeren"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Not enough memory to open the BIOS picker"
@@ -2100,6 +2292,10 @@ msgstr "Update kiezen"
 msgid "Pick another Saturn BIOS from the options menu."
 msgstr "Kies een andere Saturn-BIOS in het optiemenu."
 
+#: internal/update/update.c
+msgid "Platform artifact metadata is incomplete"
+msgstr "De metadata van het platformbestand is onvolledig"
+
 #: internal/settings/settings.c
 msgid "Play"
 msgstr "Afspelen"
@@ -2159,6 +2355,10 @@ msgstr "Kies dit in plaats van “Scherpe pixels” als scrollen bij niet-gehele
 #: cmd/jawaka-osd/game_launch.c
 msgid "Preparing to save"
 msgstr "Opslaan voorbereiden"
+
+#: internal/update/update.c
+msgid "Preparing update install"
+msgstr "Installatie van de update voorbereiden"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Press MENU to exit"
@@ -2292,6 +2492,10 @@ msgstr "Pak Rat-app wordt opnieuw geïnstalleerd"
 msgid "Release"
 msgstr "Release"
 
+#: internal/update/update.c
+msgid "Release %s requires a newer updater"
+msgstr "Release %s vereist een nieuwere updater"
+
 #: cmd/jawaka-osd/game_launch.c
 msgid "Release the power button"
 msgstr "Laat de aan/uit-knop los"
@@ -2303,6 +2507,10 @@ msgstr "Pad beheerd door release"
 #: cmd/jawaka-launcher/main.c
 msgid "Releases"
 msgstr "Releases"
+
+#: internal/settings/settings.c
+msgid "Releases are still loading"
+msgstr "Releases worden nog geladen"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Remove"
@@ -2401,12 +2609,28 @@ msgid "Restart and repair"
 msgstr "Herstarten en repareren"
 
 #: internal/settings/settings.c
+msgid "Restart canceled"
+msgstr "Herstarten geannuleerd"
+
+#: internal/settings/settings.c
+msgid "Restart failed"
+msgstr "Herstarten mislukt"
+
+#: internal/settings/settings.c
 msgid "Restart needed"
 msgstr "Herstart nodig"
 
 #: internal/settings/settings.c
 msgid "Restart now to finish installing?"
 msgstr "Nu herstarten om de installatie te voltooien?"
+
+#: internal/update/update.c
+msgid "Restart to finish installing"
+msgstr "Herstart om de installatie te voltooien"
+
+#: internal/settings/settings.c
+msgid "Restarting"
+msgstr "Bezig met herstarten"
 
 #: internal/settings/storage_ui.c
 msgid "Restarting to check your SD card"
@@ -2632,6 +2856,10 @@ msgstr "Downloadresultaat"
 msgid "Scrape finished: %d found"
 msgstr "Downloaden voltooid: %d gevonden"
 
+#: internal/settings/settings.c
+msgid "Scrape was cancelled before completion."
+msgstr "Downloaden werd geannuleerd voordat het klaar was."
+
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s · %d/%d"
 msgstr "Downloaden %s · %d/%d"
@@ -2760,6 +2988,10 @@ msgstr "Het gekozen BIOS-bestand staat niet meer in de BIOS-map"
 msgid "Selected BIOS path is not usable"
 msgstr "Het gekozen BIOS-pad is niet bruikbaar"
 
+#: internal/update/update.c
+msgid "Selected update is no longer available"
+msgstr "De gekozen update is niet meer beschikbaar"
+
 #: internal/settings/settings.c
 msgid "Selection"
 msgstr "Selectie"
@@ -2867,6 +3099,10 @@ msgstr "Zacht"
 #: internal/settings/timezones.c
 msgid "Solomon Islands"
 msgstr "Salomonseilanden"
+
+#: internal/update/update.c
+msgid "Some releases could not be loaded"
+msgstr "Sommige releases konden niet worden geladen"
 
 #: internal/platform/platform_common.c
 msgid "Speaker"
@@ -3433,8 +3669,140 @@ msgid "Update Channel"
 msgstr "Updatekanaal"
 
 #: internal/settings/settings.c
+msgid "Update already downloaded"
+msgstr "Update al gedownload"
+
+#: internal/update/update.c
+msgid "Update artifact has not been downloaded"
+msgstr "Het updatebestand is nog niet gedownload"
+
+#: internal/settings/settings.c
+msgid "Update check failed"
+msgstr "Zoeken naar updates mislukt"
+
+#: internal/update/update.c
+msgid "Update download already in progress"
+msgstr "Updatedownload is al bezig"
+
+#: internal/update/update.c
+msgid "Update download cancelled"
+msgstr "Updatedownload geannuleerd"
+
+#: internal/settings/settings.c
+msgid "Update download failed"
+msgstr "Updatedownload mislukt"
+
+#: internal/update/update.c
+msgid "Update download is still in progress"
+msgstr "Updatedownload is nog bezig"
+
+#: internal/update/update.c
+msgid "Update download path is too long"
+msgstr "Downloadpad voor de update is te lang"
+
+#: internal/update/update.c
+msgid "Update download process disappeared"
+msgstr "Downloadproces van de update is verdwenen"
+
+#: internal/settings/settings.c
+msgid "Update install blocked"
+msgstr "Installatie van de update geblokkeerd"
+
+#: internal/settings/settings.c
+msgid "Update install canceled"
+msgstr "Installatie van de update geannuleerd"
+
+#: internal/update/update.c
+msgid "Update install could not be prepared"
+msgstr "Installatie van de update kon niet worden voorbereid"
+
+#: internal/settings/settings.c
+msgid "Update install failed"
+msgstr "Installatie van de update mislukt"
+
+#: internal/update/update.c
+msgid "Update install is already in progress"
+msgstr "Installatie van de update is al bezig"
+
+#: internal/update/update.c
+msgid "Update install state path is too long"
+msgstr "Statuspad voor de installatie is te lang"
+
+#: internal/settings/settings.c
+msgid "Update is not ready to install"
+msgstr "Update is niet klaar om te installeren"
+
+#: internal/update/update.c
+msgid "Update is ready to install"
+msgstr "Update is klaar om te installeren"
+
+#: internal/update/update.c
+msgid "Update manifest is missing platforms"
+msgstr "Updatemanifest mist platformen"
+
+#: internal/update/update.c
+msgid "Update manifest is missing release_id"
+msgstr "Updatemanifest mist release_id"
+
+#: internal/update/update.c
+msgid "Update manifest is missing schema"
+msgstr "Updatemanifest mist het schema"
+
+#: internal/update/update.c
+msgid "Update manifest is not valid JSON"
+msgstr "Updatemanifest is geen geldige JSON"
+
+#: internal/update/update.c
+msgid "Update manifest product is not leaf"
+msgstr "Product in het updatemanifest is niet leaf"
+
+#: internal/settings/settings.c
+msgid "Update ready check failed"
+msgstr "Gereedheidscontrole van de update mislukt"
+
+#: internal/update/update.c
+msgid "Update runner did not write a result file"
+msgstr "Update-runner schreef geen resultaatbestand"
+
+#: internal/update/update.c
+msgid "Update runner is not available"
+msgstr "Update-runner is niet beschikbaar"
+
+#: internal/update/update.c
+msgid "Update runner process disappeared"
+msgstr "Proces van de update-runner is verdwenen"
+
+#: internal/update/update.c
+msgid "Update runner result was not valid JSON"
+msgstr "Resultaat van de update-runner was geen geldige JSON"
+
+#: internal/settings/settings.c
+msgid "Update selection canceled"
+msgstr "Updatekeuze geannuleerd"
+
+#: internal/settings/settings.c
+msgid "Update selection failed"
+msgstr "Updatekeuze mislukt"
+
+#: internal/settings/settings.c
+msgid "Update service unavailable"
+msgstr "Updatedienst niet beschikbaar"
+
+#: internal/settings/settings.c
+msgid "Update status refreshed"
+msgstr "Updatestatus vernieuwd"
+
+#: internal/settings/settings.c
 msgid "Update status unavailable"
 msgstr "Updatestatus niet beschikbaar"
+
+#: internal/update/update.c
+msgid "Update temporary path is too long"
+msgstr "Tijdelijk pad voor de update is te lang"
+
+#: internal/update/update.c
+msgid "Update was prepared on the other SD slot; install again"
+msgstr "De update is voorbereid op de andere SD-sleuf; installeer opnieuw"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Updated %s"
@@ -3515,6 +3883,10 @@ msgstr "Zichtbaar"
 #: internal/settings/settings.c
 msgid "Volume"
 msgstr "Volume"
+
+#: internal/settings/settings.c
+msgid "Wait for the release check to finish before switching channels"
+msgstr "Wacht tot de releasecontrole klaar is voordat u van kanaal wisselt"
 
 #: internal/settings/settings.c
 msgid "Weak"
