@@ -78,6 +78,28 @@ int main(int argc, char **argv) {
 
     expect_str("null in", jw_i18n(NULL) == NULL ? "ok" : "bad", "ok");
 
+    /* ── Runtime messages from processes with no table ────────────────── */
+    char msg[256];
+    const char *release[] = { "v0.13.0" };
+    jw_i18n_message("Settings", NULL, 0, msg, sizeof(msg));
+    expect_str("message whole key", msg, "设置");
+    jw_i18n_message("Leaf v0.13.0 is already installed", release, 1, msg, sizeof(msg));
+    expect_str("message value swapped", msg, "Leaf v0.13.0 已安装");
+    jw_i18n_message("Leaf v9.9.9 is already installed", release, 1, msg, sizeof(msg));
+    expect_str("message unknown value kept", msg, "Leaf v9.9.9 is already installed");
+    jw_i18n_message("Daily quota exhausted (20000/20000)", NULL, 0, msg, sizeof(msg));
+    expect_str("message two numbers", msg, "每日配额已用尽（20000/20000）");
+    jw_i18n_message("Battery must be at least 30% or charging", NULL, 0, msg, sizeof(msg));
+    expect_str("message number beside percent", msg, "电量至少 30% 或正在充电");
+    jw_i18n_message("request failed: Couldn't resolve host", NULL, 0, msg, sizeof(msg));
+    expect_str("message unknown kept", msg, "request failed: Couldn't resolve host");
+    jw_i18n_message("verb|Open", NULL, 0, msg, sizeof(msg));
+    expect_str("message with pipe passed through", msg, "verb|Open");
+    jw_i18n_message("1 2 3 4", NULL, 0, msg, sizeof(msg));
+    expect_str("message too many numbers kept", msg, "1 2 3 4");
+    jw_i18n_message(NULL, NULL, 0, msg, sizeof(msg));
+    expect_str("message null", msg, "");
+
     /* ── Live TSV override wins over the compiled table ───────────────── */
     snprintf(path, sizeof(path), "%s/i18n", userdata);
     mkdir(userdata, 0755);

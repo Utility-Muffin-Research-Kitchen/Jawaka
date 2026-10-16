@@ -1,4 +1,5 @@
 #include "internal/scrape/scrape_worker.h"
+#include "internal/i18n/i18n.h"   /* JW_UI only: the UI translates these */
 #include "internal/scrape/scrape_identity.h"
 #include "internal/scrape/scrape_systems.h"
 #include "internal/scrape/ss_client.h"
@@ -764,7 +765,7 @@ static jw__scrape_item_result jw__process_item(jw__scrape_item *item,
             return reconciled;
         }
         pthread_mutex_lock(&jw__w.mu);
-        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_DONE, "Artwork saved");
+        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_DONE, JW_UI("Artwork saved"));
         pthread_mutex_unlock(&jw__w.mu);
         return JW__SCRAPE_ITEM_DONE;
     }
@@ -837,7 +838,7 @@ static jw__scrape_item_result jw__process_item(jw__scrape_item *item,
         }
 
         pthread_mutex_lock(&jw__w.mu);
-        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_DONE, "Artwork saved");
+        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_DONE, JW_UI("Artwork saved"));
         jw__scrape_row *row = jw__row_find_locked(item->row_id);
         jw__eta_record_done_locked(row);
         /* Follow the account's thread allowance, capped by the pool. */
@@ -859,7 +860,7 @@ static jw__scrape_item_result jw__process_item(jw__scrape_item *item,
             result.requests_today >= result.max_requests) {
             jw__w.paused_quota = true;
             snprintf(jw__w.message, sizeof(jw__w.message),
-                     "Daily quota exhausted (%d/%d)",
+                     JW_UI("Daily quota exhausted (%d/%d)"),
                      result.requests_today, result.max_requests);
         }
         pthread_mutex_unlock(&jw__w.mu);

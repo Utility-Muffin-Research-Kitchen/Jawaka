@@ -4406,13 +4406,15 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
     if (animating) cat_request_frame();
 
     /* Error/cancel note below the info. */
+    char reason[256];   /* the ScreenScraper client's English, translated */
+    jw_i18n_message(row->message, NULL, 0, reason, sizeof(reason));
     const char *desc = NULL;
     if (row->state == JW_IPC_SCRAPE_ROW_NOT_FOUND)
         desc = T("Not found in the ScreenScraper.fr database.");
     else if (row->state == JW_IPC_SCRAPE_ROW_ERROR)
-        desc = row->message[0] ? row->message : T("Artwork scrape failed.");
+        desc = row->message[0] ? reason : T("Artwork scrape failed.");
     else if (row->state == JW_IPC_SCRAPE_ROW_CANCELLED)
-        desc = row->message[0] ? row->message : T("Scrape was cancelled before completion.");
+        desc = row->message[0] ? reason : T("Scrape was cancelled before completion.");
     if (desc) {
         ly += cat_scale(4);
         cat_draw_text_ellipsized(small, desc, c.x, ly, theme->hint, c.w);
@@ -5763,77 +5765,14 @@ static void jw__format_update_size(long long bytes, char *out, size_t out_size) 
     }
 }
 
-/* Turn the span [at, at + len) of msg into spec and double every other '%',
-   giving the printf template msg was made from. */
-static bool jw__update_template(const char *msg, const char *at, size_t len,
-                                const char *spec, char *key, size_t key_size) {
-    size_t k = 0;
-    for (const char *p = msg; *p; ) {
-        const char *add = NULL;
-        char one[2] = { *p, '\0' };
-        if (p == at) {
-            add = spec;
-            p += len;
-        } else if (*p == '%') {
-            add = "%%";
-            p++;
-        } else {
-            add = one;
-            p++;
-        }
-        size_t n = strlen(add);
-        if (k + n >= key_size) return false;
-        memcpy(key + k, add, n);
-        k += n;
-    }
-    key[k] = '\0';
-    return true;
-}
-
-/* Update messages arrive as English sentences: jawakad composes them, and the
-   JW_UI marks in update.c put them in leaf.pot. Translate a fixed sentence
-   directly, and one naming a release or carrying one number by turning that
-   value back into its %s or %d and looking the template up. */
+/* Update messages arrive as English sentences composed by jawakad (the JW_UI
+   marks in update.c put them in leaf.pot); one naming the status's release is
+   matched with that release turned back into its %s. */
 static void jw__update_text(const jw_ipc_update_status_info *u, const char *msg,
                             char *out, size_t out_size) {
-    if (!out || out_size == 0) return;
-    if (!msg) msg = "";
-    if (!msg[0] || strchr(msg, '|')) {
-        snprintf(out, out_size, "%s", msg);
-        return;
-    }
-    const char *t = T(msg);
-    if (t != msg) {
-        snprintf(out, out_size, "%s", t);
-        return;
-    }
-    char key[320];
-    const char *ids[3] = { u ? u->release_id : "", u ? u->current_release_id : "",
-                           u ? u->install_result_release_id : "" };
-    for (int i = 0; i < 3; i++) {
-        const char *at = ids[i][0] ? strstr(msg, ids[i]) : NULL;
-        if (!at || strstr(at + 1, ids[i])) continue;
-        if (jw__update_template(msg, at, strlen(ids[i]), "%s", key, sizeof(key))) {
-            const char *fmt = T(key);
-            if (fmt != key) {
-                snprintf(out, out_size, fmt, ids[i]);
-                return;
-            }
-        }
-    }
-    const char *d = strpbrk(msg, "0123456789");
-    if (d) {
-        size_t n = strspn(d, "0123456789");
-        if (n < 10 && !strpbrk(d + n, "0123456789") &&
-            jw__update_template(msg, d, n, "%d", key, sizeof(key))) {
-            const char *fmt = T(key);
-            if (fmt != key) {
-                snprintf(out, out_size, fmt, atoi(d));
-                return;
-            }
-        }
-    }
-    snprintf(out, out_size, "%s", msg);
+    const char *ids[3] = { u ? u->release_id : NULL, u ? u->current_release_id : NULL,
+                           u ? u->install_result_release_id : NULL };
+    jw_i18n_message(msg, ids, 3, out, out_size);
 }
 
 static const char *jw__update_state_label(const jw_ipc_update_status_info *u) {
@@ -6076,7 +6015,7 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
              : (ui->update_have_status && u->current_unknown ? T("Unknown") : "-"));
     if (ui->update_have_status && u->release_id[0]) {
         if (jw__update_is_current(u)) {
-            snprintf(candidate_value, sizeof(candidate_value), "%s (current)",
+            snprintf(candidate_value, sizeof(candidate_value), T("%s (current)"),
                      u->release_id);
         } else {
             jw__format_update_size(u->artifact_size, size_value, sizeof(size_value));
@@ -8268,10 +8207,12 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                         jw__persist(ui, "screenscraper_maxthreads", "");
                         jw__persist(ui, "screenscraper_requests_today", "");
                         jw__persist(ui, "screenscraper_max_requests", "");
+                        char why[256];
+                        jw_i18n_message(rc == 0 && info.message[0] ? info.message
+                                                                   : JW_UI("daemon unavailable"),
+                                        NULL, 0, why, sizeof(why));
                         snprintf(status_buf, status_size,
-                                 "Saved - could not verify: %s",
-                                 (rc == 0 && info.message[0]) ? info.message
-                                                              : "daemon unavailable");
+                                 T("Saved - could not verify: %s"), why);
                     }
                     break;
                 }

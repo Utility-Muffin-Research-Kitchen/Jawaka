@@ -74,6 +74,17 @@ void jw_i18n_shutdown(void);
 /* Never returns NULL for a non-NULL argument; returns `english` on any miss. */
 const char *jw_i18n(const char *english);
 
+/* Translate a message composed at runtime, typically by a process with no
+ * table of its own (jawakad, the ScreenScraper client). Tries the whole
+ * message as a key; then each of `values` that appears in it exactly once,
+ * turned back into "%s"; then its digit runs, up to three, turned back into
+ * "%d". The first template with a translation is filled in again; otherwise
+ * `out` gets the message unchanged. A message holding '|' is passed through,
+ * since a lookup would treat what precedes it as a context prefix. The
+ * sources mark such messages with JW_UI() so they reach leaf.pot. */
+void jw_i18n_message(const char *msg, const char *const *values, size_t value_count,
+                     char *out, size_t out_size);
+
 /* The language actually loaded, "en" when none. Never NULL. */
 const char *jw_i18n_language(void);
 

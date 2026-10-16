@@ -1,4 +1,5 @@
 #include "internal/scrape/ss_client.h"
+#include "internal/i18n/i18n.h"   /* JW_UI only: the UI translates these */
 #include "internal/scrape/scrape_md5.h"
 #include "internal/core/scraped_text.h"
 
@@ -567,7 +568,7 @@ static jw_ss_search_status jw__search_request(
     }
     if (http_code < 0) {
         if (!jw_ss_last_error())
-            jw__ss_set_error("ScreenScraper request failed");
+            jw__ss_set_error(JW_UI("ScreenScraper request failed"));
         free(buf.data);
         return JW_SS_SEARCH_ERROR;
     }
@@ -580,12 +581,12 @@ static jw_ss_search_status jw__search_request(
         if (msg)
             jw__ss_set_error("%s", msg);
         else
-            jw__ss_set_error("ScreenScraper returned HTTP %d", http_code);
+            jw__ss_set_error(JW_UI("ScreenScraper returned HTTP %d"), http_code);
         free(buf.data);
         return JW_SS_SEARCH_ERROR;
     }
     if (!buf.data || buf.size == 0) {
-        jw__ss_set_error("ScreenScraper returned an empty response");
+        jw__ss_set_error(JW_UI("ScreenScraper returned an empty response"));
         free(buf.data);
         return JW_SS_SEARCH_ERROR;
     }
@@ -593,7 +594,7 @@ static jw_ss_search_status jw__search_request(
     cJSON *json = cJSON_Parse(buf.data);
     free(buf.data);
     if (!json) {
-        jw__ss_set_error("Failed to parse ScreenScraper response");
+        jw__ss_set_error(JW_UI("Failed to parse ScreenScraper response"));
         return JW_SS_SEARCH_ERROR;
     }
 
@@ -664,7 +665,7 @@ jw_ss_search_status jw_ss_search_rom_platforms(
         && !jw__test_search_request
 #endif
     ) {
-        jw__ss_set_error("Scraping is unavailable in this build (no API credentials)");
+        jw__ss_set_error(JW_UI("Scraping is unavailable in this build (no API credentials)"));
         return JW_SS_SEARCH_ERROR;
     }
     if (!system_ids || system_count == 0) {
@@ -732,11 +733,11 @@ int jw_ss_validate_user(const jw_ss_client *client, jw_ss_user *out) {
     memset(out, 0, sizeof(*out));
 
     if (!jw_ss_available()) {
-        jw__ss_set_error("Scraping is unavailable in this build (no API credentials)");
+        jw__ss_set_error(JW_UI("Scraping is unavailable in this build (no API credentials)"));
         return -1;
     }
     if (!client->username[0]) {
-        jw__ss_set_error("No ScreenScraper username configured");
+        jw__ss_set_error(JW_UI("No ScreenScraper username configured"));
         return 1;
     }
 
@@ -757,13 +758,13 @@ int jw_ss_validate_user(const jw_ss_client *client, jw_ss_user *out) {
         return -1;
     }
     if (http_code == 400 || http_code == 401 || http_code == 403) {
-        jw__ss_set_error("ScreenScraper rejected the credentials");
+        jw__ss_set_error(JW_UI("ScreenScraper rejected the credentials"));
         free(buf.data);
         return 1;
     }
     if (http_code >= 400) {
         const char *msg = jw__http_status_error(http_code);
-        jw__ss_set_error("%s", msg ? msg : "ScreenScraper validation failed");
+        jw__ss_set_error("%s", msg ? msg : JW_UI("ScreenScraper validation failed"));
         free(buf.data);
         return -1;
     }
@@ -771,7 +772,7 @@ int jw_ss_validate_user(const jw_ss_client *client, jw_ss_user *out) {
     cJSON *json = buf.data ? cJSON_Parse(buf.data) : NULL;
     free(buf.data);
     if (!json) {
-        jw__ss_set_error("Failed to parse ScreenScraper response");
+        jw__ss_set_error(JW_UI("Failed to parse ScreenScraper response"));
         return -1;
     }
 
@@ -780,7 +781,7 @@ int jw_ss_validate_user(const jw_ss_client *client, jw_ss_user *out) {
     cJSON *id = ssuser ? cJSON_GetObjectItem(ssuser, "id") : NULL;
     if (!ssuser || !cJSON_IsString(id) || id->valuestring[0] == '\0') {
         cJSON_Delete(json);
-        jw__ss_set_error("ScreenScraper rejected the credentials");
+        jw__ss_set_error(JW_UI("ScreenScraper rejected the credentials"));
         return 1;
     }
 
@@ -904,12 +905,12 @@ int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
         free(buf.data);
         if (http_code < 0 && jw_ss_last_error())
             return -1;
-        jw__ss_set_error("Media download returned HTTP %d", http_code);
+        jw__ss_set_error(JW_UI("Media download returned HTTP %d"), http_code);
         return -1;
     }
     if (!buf.data || buf.size == 0) {
         free(buf.data);
-        jw__ss_set_error("Media download returned an empty body");
+        jw__ss_set_error(JW_UI("Media download returned an empty body"));
         return -1;
     }
 
@@ -936,7 +937,7 @@ int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
         free(buf.data);
         if (rc != 0) {
             unlink(tmp_path);
-            jw__ss_set_error("Failed to write media file");
+            jw__ss_set_error(JW_UI("Failed to write media file"));
             return -1;
         }
     } else {
@@ -948,7 +949,7 @@ int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
             free(buf.data);
             if (rc != 0) {
                 unlink(tmp_path);
-                jw__ss_set_error("Failed to write media file");
+                jw__ss_set_error(JW_UI("Failed to write media file"));
                 return -1;
             }
         } else if (!pixels) {
@@ -993,7 +994,7 @@ int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
             mz_free(png_data);
             if (rc != 0) {
                 unlink(tmp_path);
-                jw__ss_set_error("Failed to write media file");
+                jw__ss_set_error(JW_UI("Failed to write media file"));
                 return -1;
             }
         }
@@ -1002,7 +1003,7 @@ int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
     if (rename(tmp_path, dest_path) != 0) {
         jw__ss_errno = errno ? errno : EIO;
         unlink(tmp_path);
-        jw__ss_set_error("Failed to finalize media file");
+        jw__ss_set_error(JW_UI("Failed to finalize media file"));
         return -1;
     }
 

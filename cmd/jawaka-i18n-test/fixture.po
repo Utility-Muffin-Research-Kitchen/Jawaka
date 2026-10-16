@@ -4,6 +4,10 @@
 #   verb|Open                   a context-qualified key resolves
 #   Refresh Rate                fuzzy, so the compiler drops it and it falls back
 #   Untranslated Thing          present with an empty msgstr, so it falls back
+#   Leaf %s is already installed, Daily quota exhausted (%d/%d),
+#   Battery must be at least %d%% or charging
+#                               jw_i18n_message() templates: a value, two
+#                               numbers, and a number beside a literal '%'
 # The test used to depend on a fixture that was never committed, so it could not
 # be run from the repo -- which is how a buffer overflow in it went unseen.
 msgid ""
@@ -24,3 +28,12 @@ msgstr "刷新率"
 
 msgid "Untranslated Thing"
 msgstr ""
+
+msgid "Leaf %s is already installed"
+msgstr "Leaf %s 已安装"
+
+msgid "Daily quota exhausted (%d/%d)"
+msgstr "每日配额已用尽（%d/%d）"
+
+msgid "Battery must be at least %d%% or charging"
+msgstr "电量至少 %d%% 或正在充电"

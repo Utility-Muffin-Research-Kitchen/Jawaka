@@ -2171,6 +2171,8 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
     pthread_mutex_lock(&P->scrape_mu);
     s = P->scrape;
     pthread_mutex_unlock(&P->scrape_mu);
+    char reason[256];   /* the ScreenScraper client's English, translated */
+    jw_i18n_message(s.message, NULL, 0, reason, sizeof(reason));
 
     bool paused_storage = strcmp(s.state, "paused-storage") == 0;
     bool active = strcmp(s.state, "running") == 0 ||
@@ -2180,10 +2182,10 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
         activity->completion.text[0] = '\0';
         if (paused_storage) {
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping paused: %.200s"),
-                     s.message[0] ? s.message : T("SD card is read-only"));
+                     s.message[0] ? reason : T("SD card is read-only"));
         } else if (strcmp(s.state, "paused-quota") == 0) {
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping paused: %.200s"),
-                     s.message[0] ? s.message : T("daily quota exceeded"));
+                     s.message[0] ? reason : T("daily quota exceeded"));
         } else if (s.current_system[0]) {
             int shown = s.done < s.total ? s.done + 1 : s.total;
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping %s · %d/%d"),
@@ -2205,20 +2207,20 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
         }
         if (paused_storage) {
             snprintf(state->status, sizeof(state->status),
-                     "Scraping paused: %.200s",
-                     s.message[0] ? s.message : "SD card is read-only");
+                     T("Scraping paused: %.200s"),
+                     s.message[0] ? reason : T("SD card is read-only"));
         } else if (strcmp(s.state, "paused-quota") == 0) {
             snprintf(state->status, sizeof(state->status),
-                     "Scraping paused: %.200s",
-                     s.message[0] ? s.message : "daily quota exceeded");
+                     T("Scraping paused: %.200s"),
+                     s.message[0] ? reason : T("daily quota exceeded"));
         } else if (item[0]) {
             int shown = s.done + 1 > s.total ? s.total : s.done + 1;
             snprintf(state->status, sizeof(state->status),
-                     "Scraping %s: %d/%d - %.160s",
+                     T("Scraping %s: %d/%d - %.160s"),
                      s.current_system, shown, s.total, item);
         } else {
             snprintf(state->status, sizeof(state->status),
-                     "Scraping: %d/%d", s.done, s.total);
+                     T("Scraping: %d/%d"), s.done, s.total);
         }
         cat_request_frame();
         was_active = true;
@@ -2234,11 +2236,11 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
             }
             if (s.failed > 0 && n > 0 && (size_t)n < cap) {
                 n += snprintf(state->status + n, cap - (size_t)n,
-                              ", %d failed", s.failed);
+                              T(", %d failed"), s.failed);
             }
             if (s.cancelled > 0 && n > 0 && (size_t)n < cap) {
                 snprintf(state->status + n, cap - (size_t)n,
-                         ", %d cancelled", s.cancelled);
+                         T(", %d cancelled"), s.cancelled);
             }
             jw_system_notice_set(&activity->completion, state->status, SDL_GetTicks());
             cat_request_frame();
@@ -10375,11 +10377,15 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
             state, T("Uninstalled %.100s; retained-data removal failed"), name);
     } else if (rc == 0) {
         jw__set_pakrat_message(state, jw__pakrat_done_format(&app, action), name);
+    } else if (job.error_message[0]) {
+        /* Pak Rat writes English; the pak's own names may sit in a sentence. */
+        const char *values[] = { app.package.name, app.package.id,
+                                 app.package.install_name, app.package.version };
+        char reason[256];
+        jw_i18n_message(job.error_message, values, 4, reason, sizeof(reason));
+        jw__set_pakrat_message(state, "%s", reason);
     } else {
-        jw__set_pakrat_message(
-            state, "%s",
-            job.error_message[0] ? job.error_message
-                                 : T("Pak Rat action failed"));
+        jw__set_pakrat_message(state, "%s", T("Pak Rat action failed"));
     }
     if (rc == 0 && reload_rc != 0) {
         jw__set_pakrat_message(state, T("%.120s changed; refresh failed"), name);

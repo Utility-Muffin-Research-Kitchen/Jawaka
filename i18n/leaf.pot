@@ -96,6 +96,10 @@ msgstr ""
 msgid "%ldm ago"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "%s (current)"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "%s can't be installed because Leaf could not read it as a theme.\n\nNothing was changed."
 msgstr ""
@@ -128,8 +132,16 @@ msgstr ""
 msgid "%s is already your theme"
 msgstr ""
 
+#: internal/store/pakrat.c
+msgid "%s is installed on Secondary. Uninstall it there first, then install the service pak on Primary."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "%s is installed.\n\nApply it now?"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "%s is no longer available in Pak Rat"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -182,6 +194,14 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "%zu files, %s, on your %s."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid ", %d cancelled"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid ", %d failed"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -550,6 +570,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Artwork Priority"
+msgstr ""
+
+#: internal/scrape/scrape_worker.c
+msgid "Artwork saved"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1000,6 +1024,10 @@ msgstr ""
 msgid "Confirm"
 msgstr ""
 
+#: internal/store/pakrat.c
+msgid "Confirmed uninstall could not be completed"
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid "Connect to power or charge the battery to at least 30 percent and try again."
 msgstr ""
@@ -1032,12 +1060,32 @@ msgstr ""
 msgid "Core"
 msgstr ""
 
+#: internal/store/pakrat.c
+msgid "Could not build package mutation request"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Could not hide this game"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Could not inspect retained data for %.100s"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Could not read the Themes folder"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Could not read the bundled theme list for %s"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Could not record confirmed uninstall intent"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Could not reload confirmed uninstall intent"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1094,6 +1142,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "DMC"
+msgstr ""
+
+#: internal/scrape/scrape_worker.c
+msgid "Daily quota exhausted (%d/%d)"
 msgstr ""
 
 #: internal/settings/timezones.c
@@ -1282,6 +1334,18 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Failed"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "Failed to finalize media file"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "Failed to parse ScreenScraper response"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "Failed to write media file"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -1608,6 +1672,26 @@ msgstr ""
 msgid "Installed %s"
 msgstr ""
 
+#: internal/store/pakrat.c
+msgid "Installed package metadata does not match ownership"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Installed package metadata is corrupt or unavailable"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Installed package source is absent; uninstall will resume when it returns"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Installed package source is unavailable"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Installed theme is not on the primary card"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Installed version: %s"
 msgstr ""
@@ -1634,6 +1718,18 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Japan / Korea"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Jawaka did not complete package quiescence"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Jawaka refused package mutation"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Jawaka service supervisor is unavailable"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1868,6 +1964,14 @@ msgstr ""
 msgid "Marquesas Islands"
 msgstr ""
 
+#: internal/scrape/ss_client.c
+msgid "Media download returned HTTP %d"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "Media download returned an empty body"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Memory free"
 msgstr ""
@@ -2002,6 +2106,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "No Pak Rat app selected"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "No ScreenScraper username configured"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2228,12 +2336,20 @@ msgstr ""
 msgid "PINs did not match - try again"
 msgstr ""
 
+#: internal/store/pakrat.c
+msgid "Package was removed, but library refresh failed"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Paired"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Pak Rat Primary source is unavailable"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2773,6 +2889,10 @@ msgid "Save your edits in RetroArch before you leave."
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Saved - could not verify: %s"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Saved: %s"
 msgstr ""
 
@@ -2865,11 +2985,39 @@ msgid "Scraping %s · %d/%d"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Scraping %s: %d/%d - %.160s"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "Scraping is unavailable in this build (no API credentials)"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Scraping paused: %.200s"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping: %d/%d"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper rejected the credentials"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper request failed"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper returned HTTP %d"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper returned an empty response"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper validation failed"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2994,6 +3142,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Selection"
+msgstr ""
+
+#: cmd/jawakad/main.c
+msgid "Service supervisor unavailable; update not started"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -3320,6 +3472,10 @@ msgstr ""
 msgid "The Themes folder already has %d themes, the most Leaf can list. Remove one to install this theme."
 msgstr ""
 
+#: internal/store/pakrat.c
+msgid "The Themes folder already holds %d themes, the most Leaf lists"
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid "The card passed the check but couldn't be made writable. Restart your device, then try Check SD card."
 msgstr ""
@@ -3334,6 +3490,10 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "The last check took too long and stopped. Restart your device to check the card again before saving is enabled."
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "The launcher does not list the installed theme %s"
 msgstr ""
 
 #: internal/settings/storage_ui.c
@@ -3434,6 +3594,14 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Theme colors"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Theme folder %s belongs to a theme Leaf ships"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Theme package does not match the catalog entry"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -4046,6 +4214,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "count|Systems"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "daemon unavailable"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

@@ -695,6 +695,99 @@ size_t jw_i18n_available(const char **out, size_t max) {
     return count;
 }
 
+/* Rebuild the template a message was formatted from: each span (in order,
+   not overlapping) becomes `spec`, and every other '%' is doubled. */
+static bool jw__i18n_template(const char *msg, const char *const *span,
+                              const size_t *span_len, size_t spans,
+                              const char *spec, char *key, size_t key_size) {
+    size_t k = 0, s = 0;
+    for (const char *p = msg; *p; ) {
+        const char *add;
+        size_t add_len;
+        char one = *p;
+        if (s < spans && p == span[s]) {
+            add = spec;
+            add_len = strlen(spec);
+            p += span_len[s++];
+        } else if (*p == '%') {
+            add = "%%";
+            add_len = 2;
+            p++;
+        } else {
+            add = &one;
+            add_len = 1;
+            p++;
+        }
+        if (k + add_len >= key_size) return false;
+        memcpy(key + k, add, add_len);
+        k += add_len;
+    }
+    key[k] = '\0';
+    return s == spans;
+}
+
+void jw_i18n_message(const char *msg, const char *const *values, size_t value_count,
+                     char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    if (!msg) msg = "";
+    if (!msg[0] || strchr(msg, '|')) {
+        snprintf(out, out_size, "%s", msg);
+        return;
+    }
+    const char *whole = jw_i18n(msg);
+    if (whole != msg) {
+        snprintf(out, out_size, "%s", whole);
+        return;
+    }
+
+    char key[512];
+    for (size_t i = 0; values && i < value_count; i++) {
+        const char *value = values[i];
+        if (!value || !value[0]) continue;
+        const char *found = strstr(msg, value);
+        if (!found || strstr(found + 1, value)) continue;
+        size_t len = strlen(value);
+        if (jw__i18n_template(msg, &found, &len, 1, "%s", key, sizeof(key))) {
+            const char *fmt = jw_i18n(key);
+            if (fmt != key) {
+                snprintf(out, out_size, fmt, value);
+                return;
+            }
+        }
+    }
+
+    const char *digits[3];
+    size_t digits_len[3];
+    int number[3];
+    size_t numbers = 0;
+    for (const char *p = msg; *p; ) {
+        if (*p < '0' || *p > '9') {
+            p++;
+            continue;
+        }
+        size_t len = strspn(p, "0123456789");
+        if (numbers == 3 || len > 9) {
+            numbers = 0;   /* too many numbers to be one of our templates */
+            break;
+        }
+        digits[numbers] = p;
+        digits_len[numbers] = len;
+        number[numbers++] = atoi(p);
+        p += len;
+    }
+    if (numbers > 0 &&
+        jw__i18n_template(msg, digits, digits_len, numbers, "%d", key, sizeof(key))) {
+        const char *fmt = jw_i18n(key);
+        if (fmt != key) {
+            if (numbers == 1) snprintf(out, out_size, fmt, number[0]);
+            else if (numbers == 2) snprintf(out, out_size, fmt, number[0], number[1]);
+            else snprintf(out, out_size, fmt, number[0], number[1], number[2]);
+            return;
+        }
+    }
+    snprintf(out, out_size, "%s", msg);
+}
+
 const char *jw_i18n_language(void) {
     return g_i18n.lang;
 }
