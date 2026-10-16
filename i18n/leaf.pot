@@ -9,6 +9,22 @@ msgid " Some damaged files were changed."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "%.120s changed; refresh failed"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s has no compatible install action"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s is not installed by Pak Rat"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s is release-managed"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d %s games"
 msgstr ""
 
@@ -628,12 +644,20 @@ msgstr ""
 msgid "Battery Level"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Battery Low"
+msgstr ""
+
 #: internal/platform/platform_common.c
 msgid "Battery Saver"
 msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "Best at integer or near-integer scaling; the upstream shader can look uneven at arbitrary scales."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Beta"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -654,6 +678,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Black Frame Insertion off"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Blocked"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -752,6 +780,10 @@ msgstr ""
 msgid "Cancel"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Cancel %d%%"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Cancel Scraping"
 msgstr ""
@@ -772,6 +804,10 @@ msgstr ""
 msgid "Carries a Leaf local patch until upstream fixes its GLSL ES precision mismatch."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Catalog version: %s"
+msgstr ""
+
 #: internal/settings/timezones.c
 msgid "Central Europe"
 msgstr ""
@@ -788,8 +824,16 @@ msgstr ""
 msgid "Check SD card"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Check releases first"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Checking your game's files..."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Checking..."
 msgstr ""
 
 #: internal/settings/timezones.c
@@ -814,6 +858,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Clock"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Close Apps"
 msgstr ""
 
 #: internal/settings/storage_ui.c
@@ -864,6 +912,10 @@ msgstr ""
 msgid "Commodore 64"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Compatible releases"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Confirm"
 msgstr ""
@@ -878,6 +930,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Connected"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Connected: %s"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -898,6 +954,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Could not hide this game"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Could not inspect retained data for %.100s"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1054,6 +1114,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Download"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Download First"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Downloaded"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1384,6 +1452,14 @@ msgstr ""
 msgid "Icon"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Idle"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Incompatible"
+msgstr ""
+
 #: internal/settings/timezones.c
 msgid "India"
 msgstr ""
@@ -1394,6 +1470,14 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Install"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Install Again"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Install cancelled: %.120s"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1414,6 +1498,14 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installed version: %s"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Installing"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Installing Pak Rat app"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1489,6 +1581,10 @@ msgid "Last update: %s"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Last: %s"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Later"
 msgstr ""
 
@@ -1534,6 +1630,10 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't safely check this card, so nothing was changed. Check the card on a computer."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Leaf update"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1590,6 +1690,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Loading preview"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Loading releases..."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1740,12 +1844,24 @@ msgstr ""
 msgid "Nintendo Entertainment System"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "No"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "No BIOS file"
 msgstr ""
 
 #: internal/launcher/bios.c
 msgid "No BIOS file selected"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat app selected"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "No Space"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1837,6 +1953,10 @@ msgid "Not Found"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Not checked"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Not connected"
 msgstr ""
 
@@ -1881,6 +2001,10 @@ msgid "Offsets are standard time; regions adjust for DST"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Older"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "On"
 msgstr ""
 
@@ -1922,6 +2046,14 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat Themes"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat action failed"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat runtime paths unavailable"
 msgstr ""
 
 #: internal/settings/timezones.c
@@ -2040,12 +2172,20 @@ msgstr ""
 msgid "Previous page"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Primary Slot"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Profile"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Progress stored inside a writable game image is erased with that image."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Queue full: queued %d of %d"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2074,6 +2214,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reading folder..."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Ready Check"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2133,7 +2277,15 @@ msgid "Reinstall"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Reinstall cancelled: %.120s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Reinstalled %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reinstalling Pak Rat app"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2236,12 +2388,20 @@ msgstr ""
 msgid "Restart"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Restart Needed"
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid "Restart and check"
 msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Restart and repair"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Restart needed"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2254,6 +2414,18 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Restarting to repair your SD card"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restore"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restored %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restoring Pak Rat app"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2374,6 +2546,14 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Save your edits in RetroArch before you leave."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Saved: %s"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Saved: %s (unverified)"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2544,6 +2724,10 @@ msgstr ""
 msgid "Select"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Selected"
+msgstr ""
+
 #: internal/launcher/bios.c
 msgid "Selected BIOS card is not mounted"
 msgstr ""
@@ -2706,6 +2890,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Stable"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Stale"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3076,6 +3264,10 @@ msgstr ""
 msgid "Tonga"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Tools"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Total"
 msgstr ""
@@ -3165,7 +3357,19 @@ msgid "Uninstall %s?\n\nThis deletes Themes/%s from your SD card. It is your cur
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Uninstall cancelled: %.120s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Uninstall cancelled: %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %.100s and removed retained data"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %.100s; retained-data removal failed"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3174,6 +3378,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalled %s. Switched to no theme."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalling Pak Rat app"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3208,6 +3416,10 @@ msgstr ""
 msgid "Up one level"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Up to date"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Up/Down"
 msgstr ""
@@ -3225,7 +3437,15 @@ msgid "Update status unavailable"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Updated %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Updated %s to version %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Updating Pak Rat app"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3262,6 +3482,18 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Vectrex"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Verified"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version %.40s is missing from catalog history"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version %.40s requires Leaf v%.40s"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3310,6 +3542,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Yes"
 msgstr ""
 
 #: internal/settings/storage_ui.c
@@ -3534,6 +3770,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "unsaved · %s · %d of %d"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "update|Missing"
 msgstr ""
 
 #: internal/settings/settings.c

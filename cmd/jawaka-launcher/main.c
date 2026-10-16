@@ -1355,12 +1355,12 @@ static const char *jw__flat_label(const jw_launcher_state *state, int idx) {
     if (idx < 0 || idx >= state->flat_count) return "";
     const jw_flat_item *it = &state->flat_items[idx];
     switch (it->kind) {
-        case JW_FLAT_RECENTLY_PLAYED: return "Recently Played";
-        case JW_FLAT_FAVORITES:       return "Favorites";
+        case JW_FLAT_RECENTLY_PLAYED: return T("Recently Played");
+        case JW_FLAT_FAVORITES:       return T("Favorites");
         case JW_FLAT_SYSTEM:          return state->systems[it->system_idx].display_name;
-        case JW_FLAT_APPS:            return "Apps";
-        case JW_FLAT_SETTINGS:        return "Settings";
-        case JW_FLAT_TOOLS:           return "Tools";
+        case JW_FLAT_APPS:            return T("Apps");
+        case JW_FLAT_SETTINGS:        return T("Settings");
+        case JW_FLAT_TOOLS:           return T("Tools");
         default:                      return "";
     }
 }
@@ -2692,35 +2692,35 @@ static void jw__draw_app_item(int idx, int ix, int iy, int iw, int ih,
 
 static const char *jw__pakrat_status_label(jw_pakrat_app_status status) {
     switch (status) {
-        case JW_PAKRAT_APP_AVAILABLE:        return "Available";
-        case JW_PAKRAT_APP_INSTALLED:        return "Installed";
-        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Update";
-        case JW_PAKRAT_APP_STALE:            return "Stale";
-        case JW_PAKRAT_APP_UNMANAGED:        return "Manual";
+        case JW_PAKRAT_APP_AVAILABLE:        return T("Available");
+        case JW_PAKRAT_APP_INSTALLED:        return T("Installed");
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return T("status|Update");
+        case JW_PAKRAT_APP_STALE:            return T("Stale");
+        case JW_PAKRAT_APP_UNMANAGED:        return T("Manual");
         default:                             return "";
     }
 }
 
 static const char *jw__pakrat_primary_action_label(const jw_pakrat_app_state *app) {
     if (!app) {
-        return "Select";
+        return JW_UI("Select");
     }
     if (app->managed) {
-        return "Blocked";
+        return JW_UI("Blocked");
     }
     if (jw_pakrat_primary_action_opens(app)) {
-        return "Open";
+        return JW_UI("Open");
     }
     if (!app->primary_action_allowed) {
-        return "Unavailable";
+        return JW_UI("Unavailable");
     }
     switch (app->status) {
-        case JW_PAKRAT_APP_AVAILABLE:        return "Install";
-        case JW_PAKRAT_APP_INSTALLED:        return "Reinstall";
-        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Update";
-        case JW_PAKRAT_APP_STALE:            return "Restore";
-        case JW_PAKRAT_APP_UNMANAGED:        return "Install";
-        default:                             return "Select";
+        case JW_PAKRAT_APP_AVAILABLE:        return JW_UI("Install");
+        case JW_PAKRAT_APP_INSTALLED:        return JW_UI("Reinstall");
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return JW_UI("Update");
+        case JW_PAKRAT_APP_STALE:            return JW_UI("Restore");
+        case JW_PAKRAT_APP_UNMANAGED:        return JW_UI("Install");
+        default:                             return JW_UI("Select");
     }
 }
 
@@ -3432,10 +3432,10 @@ static void jw__draw_pakrat_detail_content(int x, int y, int w, void *user) {
     }
 
     int row_h = TTF_FontHeight(c->small) + CAT_S(8);
-    snprintf(line, sizeof(line), "Catalog version: %s", app->package.version);
+    snprintf(line, sizeof(line), T("Catalog version: %s"), app->package.version);
     cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
     cy += row_h;
-    snprintf(line, sizeof(line), "Installed version: %s",
+    snprintf(line, sizeof(line), T("Installed version: %s"),
              app->installed_version[0] ? app->installed_version : "-");
     cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
     cy += row_h;
@@ -9884,32 +9884,33 @@ static bool jw__confirm_pakrat_adopt(const jw_pakrat_app_state *app) {
 static const char *jw__pakrat_running_label(const jw_pakrat_app_state *app,
                                             jw_pakrat_ui_action action) {
     if (action == JW_PAKRAT_UI_UNINSTALL) {
-        return "Uninstalling Pak Rat app";
+        return T("Uninstalling Pak Rat app");
     }
     if (!app) {
-        return "Installing Pak Rat app";
+        return T("Installing Pak Rat app");
     }
     switch (app->status) {
-        case JW_PAKRAT_APP_INSTALLED:        return "Reinstalling Pak Rat app";
-        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Updating Pak Rat app";
-        case JW_PAKRAT_APP_STALE:            return "Restoring Pak Rat app";
-        default:                             return "Installing Pak Rat app";
+        case JW_PAKRAT_APP_INSTALLED:        return T("Reinstalling Pak Rat app");
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return T("Updating Pak Rat app");
+        case JW_PAKRAT_APP_STALE:            return T("Restoring Pak Rat app");
+        default:                             return T("Installing Pak Rat app");
     }
 }
 
-static const char *jw__pakrat_done_label(const jw_pakrat_app_state *app,
-                                         jw_pakrat_ui_action action) {
+/* A whole sentence per result, so a translation can place the name. */
+static const char *jw__pakrat_done_format(const jw_pakrat_app_state *app,
+                                          jw_pakrat_ui_action action) {
     if (action == JW_PAKRAT_UI_UNINSTALL) {
-        return "Uninstalled";
+        return T("Uninstalled %s");
     }
     if (!app) {
-        return "Installed";
+        return T("Installed %s");
     }
     switch (app->status) {
-        case JW_PAKRAT_APP_INSTALLED:        return "Reinstalled";
-        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Updated";
-        case JW_PAKRAT_APP_STALE:            return "Restored";
-        default:                             return "Installed";
+        case JW_PAKRAT_APP_INSTALLED:        return T("Reinstalled %s");
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return T("Updated %s");
+        case JW_PAKRAT_APP_STALE:            return T("Restored %s");
+        default:                             return T("Installed %s");
     }
 }
 
@@ -10134,7 +10135,7 @@ static void jw__run_pakrat_theme_action(jw_launcher_state *state,
     jw_pakrat_ui_job job;
     memset(&job, 0, sizeof(job));
     if (jw__pakrat_context_from_state(state, &job.ctx) != 0) {
-        jw__set_pakrat_message(state, "%s", "Pak Rat runtime paths unavailable");
+        jw__set_pakrat_message(state, "%s", T("Pak Rat runtime paths unavailable"));
         return;
     }
     job.action = action;
@@ -10236,7 +10237,7 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
                                   jw_pakrat_ui_action action) {
     const jw_pakrat_app_state *selected = jw__pakrat_selected(state);
     if (!selected) {
-        jw__set_pakrat_message(state, "%s", "No Pak Rat app selected");
+        jw__set_pakrat_message(state, "%s", T("No Pak Rat app selected"));
         return;
     }
     if (selected->package.kind == JW_PAKRAT_KIND_THEME) {
@@ -10247,7 +10248,7 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
     jw_pakrat_app_state app = *selected;
     const char *name = app.package.name[0] ? app.package.name : app.package.id;
     if (app.managed) {
-        jw__set_pakrat_message(state, "%.120s is release-managed", name);
+        jw__set_pakrat_message(state, T("%.120s is release-managed"), name);
         return;
     }
     if (action != JW_PAKRAT_UI_UNINSTALL &&
@@ -10255,23 +10256,23 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
         if (app.installed_version_missing_from_history &&
             app.installed_version[0]) {
             jw__set_pakrat_message(
-                state, "Version %.40s is missing from catalog history",
+                state, T("Version %.40s is missing from catalog history"),
                 app.installed_version);
         } else if (app.gated_version[0] &&
                    app.gated_min_leaf_version[0]) {
             jw__set_pakrat_message(
-                state, "Version %.40s requires Leaf v%.40s",
+                state, T("Version %.40s requires Leaf v%.40s"),
                 app.gated_version, app.gated_min_leaf_version);
         } else {
             jw__set_pakrat_message(
-                state, "%.120s has no compatible install action", name);
+                state, T("%.120s has no compatible install action"), name);
         }
         return;
     }
 
     jw_pakrat_context ctx;
     if (jw__pakrat_context_from_state(state, &ctx) != 0) {
-        jw__set_pakrat_message(state, "%s", "Pak Rat runtime paths unavailable");
+        jw__set_pakrat_message(state, "%s", T("Pak Rat runtime paths unavailable"));
         return;
     }
 
@@ -10281,30 +10282,30 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
     bool allow_adopt = false;
     if (action == JW_PAKRAT_UI_UNINSTALL) {
         if (!jw__pakrat_can_uninstall(&app)) {
-            jw__set_pakrat_message(state, "%.120s is not installed by Pak Rat", name);
+            jw__set_pakrat_message(state, T("%.120s is not installed by Pak Rat"), name);
             return;
         }
         if (jw_pakrat_get_uninstall_info(
                 &ctx, app.package.id, &uninstall_info) != 0) {
             jw__set_pakrat_message(
-                state, "Could not inspect retained data for %.100s", name);
+                state, T("Could not inspect retained data for %.100s"), name);
             return;
         }
         uninstall_info_loaded = true;
         if (!jw__confirm_pakrat_uninstall(&app, &uninstall_info)) {
             jw_pakrat_free_uninstall_info(&uninstall_info);
-            jw__set_pakrat_message(state, "Uninstall cancelled: %.120s", name);
+            jw__set_pakrat_message(state, T("Uninstall cancelled: %.120s"), name);
             return;
         }
     } else if (app.status == JW_PAKRAT_APP_UNMANAGED) {
         if (!jw__confirm_pakrat_adopt(&app)) {
-            jw__set_pakrat_message(state, "Install cancelled: %.120s", name);
+            jw__set_pakrat_message(state, T("Install cancelled: %.120s"), name);
             return;
         }
         allow_adopt = true;
     } else if (app.status == JW_PAKRAT_APP_INSTALLED &&
                !jw__confirm_pakrat_reinstall(&app)) {
-        jw__set_pakrat_message(state, "Reinstall cancelled: %.120s", name);
+        jw__set_pakrat_message(state, T("Reinstall cancelled: %.120s"), name);
         return;
     }
 
@@ -10367,22 +10368,21 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
 
     if (rc == 0 && retained_rc == 0) {
         jw__set_pakrat_message(state,
-                               "Uninstalled %.100s and removed retained data",
+                               T("Uninstalled %.100s and removed retained data"),
                                name);
     } else if (rc == 0 && retained_rc != -2 && retained_rc != 0) {
         jw__set_pakrat_message(
-            state, "Uninstalled %.100s; retained-data removal failed", name);
+            state, T("Uninstalled %.100s; retained-data removal failed"), name);
     } else if (rc == 0) {
-        jw__set_pakrat_message(state, "%.80s %.120s",
-                               jw__pakrat_done_label(&app, action), name);
+        jw__set_pakrat_message(state, jw__pakrat_done_format(&app, action), name);
     } else {
         jw__set_pakrat_message(
             state, "%s",
             job.error_message[0] ? job.error_message
-                                 : "Pak Rat action failed");
+                                 : T("Pak Rat action failed"));
     }
     if (rc == 0 && reload_rc != 0) {
-        jw__set_pakrat_message(state, "%.120s changed; refresh failed", name);
+        jw__set_pakrat_message(state, T("%.120s changed; refresh failed"), name);
     }
     cat_request_frame();
 }
