@@ -1,4 +1,4 @@
-# Dutch (Belgium) -- drafted 2026-10-16 for review by a native speaker.
+# Dutch (Belgium) -- drafted 2026-10-16 and reviewed on an MLP1 by Helaas.
 # Formal "u"; terms: game(s), savestate, opslag, voorinstelling, core,
 # sneltoets, batterij, aankoppelen and uitwerpen. System names stay as sold.
 msgid ""
