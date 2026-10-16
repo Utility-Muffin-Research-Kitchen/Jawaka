@@ -9,6 +9,22 @@ msgid " Some damaged files were changed."
 msgstr " Sommige beschadigde bestanden zijn gewijzigd."
 
 #: cmd/jawaka-launcher/main.c
+msgid "%.120s changed; refresh failed"
+msgstr "%.120s gewijzigd; vernieuwen mislukt"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s has no compatible install action"
+msgstr "%.120s heeft geen compatibele installatieactie"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s is not installed by Pak Rat"
+msgstr "%.120s is niet door Pak Rat geïnstalleerd"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s is release-managed"
+msgstr "%.120s wordt beheerd door de release"
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d %s games"
 msgstr "%d games voor %s"
 
@@ -628,6 +644,10 @@ msgstr "Batterij"
 msgid "Battery Level"
 msgstr "Batterijniveau"
 
+#: internal/settings/settings.c
+msgid "Battery Low"
+msgstr "Batterij bijna leeg"
+
 #: internal/platform/platform_common.c
 msgid "Battery Saver"
 msgstr "Batterijbesparing"
@@ -635,6 +655,10 @@ msgstr "Batterijbesparing"
 #: internal/retroarch/shader_strings.c
 msgid "Best at integer or near-integer scaling; the upstream shader can look uneven at arbitrary scales."
 msgstr "Het best bij gehele of bijna gehele schaling; de upstream-shader kan bij willekeurige schaling ongelijk ogen."
+
+#: internal/settings/settings.c
+msgid "Beta"
+msgstr "Bèta"
 
 #: internal/settings/settings.c
 msgid "Beta builds are tester previews and may be unstable or lose data. Switch to the Beta update channel?"
@@ -655,6 +679,10 @@ msgstr "Zwarte frames invoegen vereist 100 of 120 Hz"
 #: internal/settings/settings.c
 msgid "Black Frame Insertion off"
 msgstr "Zwarte frames invoegen uit"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Blocked"
+msgstr "Geblokkeerd"
 
 #: internal/settings/settings.c
 msgid "Bluetooth"
@@ -752,6 +780,10 @@ msgstr "CRT-effecten verlagen de helderheid; de voorinstelling gebruikt een mild
 msgid "Cancel"
 msgstr "Annuleren"
 
+#: internal/settings/settings.c
+msgid "Cancel %d%%"
+msgstr "Annuleren %d%%"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Cancel Scraping"
 msgstr "Downloaden annuleren"
@@ -772,6 +804,10 @@ msgstr "Kaart:"
 msgid "Carries a Leaf local patch until upstream fixes its GLSL ES precision mismatch."
 msgstr "Bevat een lokale Leaf-patch tot upstream zijn GLSL ES-precisieverschil oplost."
 
+#: cmd/jawaka-launcher/main.c
+msgid "Catalog version: %s"
+msgstr "Catalogusversie: %s"
+
 #: internal/settings/timezones.c
 msgid "Central Europe"
 msgstr "Centraal-Europa"
@@ -788,9 +824,17 @@ msgstr "Releases bekijken"
 msgid "Check SD card"
 msgstr "SD-kaart controleren"
 
+#: internal/settings/settings.c
+msgid "Check releases first"
+msgstr "Bekijk eerst de releases"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Checking your game's files..."
 msgstr "Bestanden van uw game controleren..."
+
+#: internal/settings/settings.c
+msgid "Checking..."
+msgstr "Bezig met controleren..."
 
 #: internal/settings/timezones.c
 msgid "China"
@@ -815,6 +859,10 @@ msgstr "Voltooide wissen"
 #: internal/settings/settings.c
 msgid "Clock"
 msgstr "Klok"
+
+#: internal/settings/settings.c
+msgid "Close Apps"
+msgstr "Apps sluiten"
 
 #: internal/settings/storage_ui.c
 msgid "Close the game or app first, then try again."
@@ -864,6 +912,10 @@ msgstr "Opdracht: %s"
 msgid "Commodore 64"
 msgstr "Commodore 64"
 
+#: internal/settings/settings.c
+msgid "Compatible releases"
+msgstr "Compatibele releases"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Confirm"
 msgstr "Bevestigen"
@@ -879,6 +931,10 @@ msgstr "Sluit de voeding aan of laad de batterij op tot minstens 30 procent om d
 #: internal/settings/settings.c
 msgid "Connected"
 msgstr "Verbonden"
+
+#: internal/settings/settings.c
+msgid "Connected: %s"
+msgstr "Verbonden: %s"
 
 #: cmd/jawaka-menu/main.c
 msgid "Continue"
@@ -899,6 +955,10 @@ msgstr "Core"
 #: cmd/jawaka-launcher/main.c
 msgid "Could not hide this game"
 msgstr "Kon deze game niet verbergen"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Could not inspect retained data for %.100s"
+msgstr "Kon de bewaarde gegevens van %.100s niet controleren"
 
 #: internal/settings/settings.c
 msgid "Could not save"
@@ -1055,6 +1115,14 @@ msgstr "Klaar"
 #: internal/settings/settings.c
 msgid "Download"
 msgstr "Downloaden"
+
+#: internal/settings/settings.c
+msgid "Download First"
+msgstr "Eerst downloaden"
+
+#: internal/settings/settings.c
+msgid "Downloaded"
+msgstr "Gedownload"
 
 #: internal/settings/settings.c
 msgid "Downloading"
@@ -1384,6 +1452,14 @@ msgstr "IPv6"
 msgid "Icon"
 msgstr "Pictogram"
 
+#: internal/settings/settings.c
+msgid "Idle"
+msgstr "Inactief"
+
+#: internal/settings/settings.c
+msgid "Incompatible"
+msgstr "Niet compatibel"
+
 #: internal/settings/timezones.c
 msgid "India"
 msgstr "India"
@@ -1395,6 +1471,14 @@ msgstr "Info"
 #: cmd/jawaka-launcher/main.c
 msgid "Install"
 msgstr "Installeren"
+
+#: internal/settings/settings.c
+msgid "Install Again"
+msgstr "Opnieuw installeren"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Install cancelled: %.120s"
+msgstr "Installatie geannuleerd: %.120s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Install cancelled: %s"
@@ -1415,6 +1499,14 @@ msgstr "%s geïnstalleerd"
 #: cmd/jawaka-launcher/main.c
 msgid "Installed version: %s"
 msgstr "Geïnstalleerde versie: %s"
+
+#: internal/settings/settings.c
+msgid "Installing"
+msgstr "Bezig met installeren"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Installing Pak Rat app"
+msgstr "Pak Rat-app wordt geïnstalleerd"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installing theme"
@@ -1489,6 +1581,10 @@ msgid "Last update: %s"
 msgstr "Laatste update: %s"
 
 #: internal/settings/settings.c
+msgid "Last: %s"
+msgstr "Laatste: %s"
+
+#: internal/settings/settings.c
 msgid "Later"
 msgstr "Later"
 
@@ -1535,6 +1631,10 @@ msgstr "Leaf kon deze kaart niet repareren op uw toestel. Schakel uw toestel uit
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't safely check this card, so nothing was changed. Check the card on a computer."
 msgstr "Leaf kon deze kaart niet veilig controleren, dus er is niets gewijzigd. Controleer de kaart op een computer."
+
+#: internal/settings/settings.c
+msgid "Leaf update"
+msgstr "Leaf-update"
 
 #: cmd/jawaka-menu/main.c
 msgid "Leaf's in-game picker supports GLSL presets (.glslp)."
@@ -1591,6 +1691,10 @@ msgstr "Savestate laden"
 #: cmd/jawaka-launcher/main.c
 msgid "Loading preview"
 msgstr "Voorbeeld laden"
+
+#: internal/settings/settings.c
+msgid "Loading releases..."
+msgstr "Releases laden..."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Lock"
@@ -1740,6 +1844,10 @@ msgstr "Nintendo DS"
 msgid "Nintendo Entertainment System"
 msgstr "Nintendo Entertainment System"
 
+#: internal/settings/settings.c
+msgid "No"
+msgstr "Nee"
+
 #: cmd/jawaka-launcher/main.c
 msgid "No BIOS file"
 msgstr "Geen BIOS-bestand"
@@ -1747,6 +1855,14 @@ msgstr "Geen BIOS-bestand"
 #: internal/launcher/bios.c
 msgid "No BIOS file selected"
 msgstr "Geen BIOS-bestand geselecteerd"
+
+#: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat app selected"
+msgstr "Geen Pak Rat-app geselecteerd"
+
+#: internal/settings/settings.c
+msgid "No Space"
+msgstr "Geen ruimte"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No apps found"
@@ -1837,6 +1953,10 @@ msgid "Not Found"
 msgstr "Niet gevonden"
 
 #: internal/settings/settings.c
+msgid "Not checked"
+msgstr "Niet gecontroleerd"
+
+#: internal/settings/settings.c
 msgid "Not connected"
 msgstr "Niet verbonden"
 
@@ -1881,6 +2001,10 @@ msgid "Offsets are standard time; regions adjust for DST"
 msgstr "Afwijkingen gelden voor standaardtijd; regio's houden rekening met zomertijd"
 
 #: internal/settings/settings.c
+msgid "Older"
+msgstr "Ouder"
+
+#: internal/settings/settings.c
 msgid "On"
 msgstr "Aan"
 
@@ -1923,6 +2047,14 @@ msgstr "Pak Rat"
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat Themes"
 msgstr "Pak Rat-thema's"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat action failed"
+msgstr "Pak Rat-actie mislukt"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat runtime paths unavailable"
+msgstr "Runtimepaden van Pak Rat niet beschikbaar"
 
 #: internal/settings/timezones.c
 msgid "Pakistan"
@@ -2040,6 +2172,10 @@ msgstr "Druk nogmaals op Menu"
 msgid "Previous page"
 msgstr "Vorige pagina"
 
+#: internal/settings/settings.c
+msgid "Primary Slot"
+msgstr "Hoofdslot"
+
 #: cmd/jawaka-menu/main.c
 msgid "Profile"
 msgstr "Profiel"
@@ -2047,6 +2183,10 @@ msgstr "Profiel"
 #: cmd/jawaka-launcher/main.c
 msgid "Progress stored inside a writable game image is erased with that image."
 msgstr "Voortgang die in een beschrijfbare game-image staat, wordt samen met die image gewist."
+
+#: internal/settings/settings.c
+msgid "Queue full: queued %d of %d"
+msgstr "Wachtrij vol: %d van %d in de wachtrij"
 
 #: internal/settings/settings.c
 msgid "Queued"
@@ -2075,6 +2215,10 @@ msgstr "Alleen-lezen"
 #: cmd/jawaka-launcher/main.c
 msgid "Reading folder..."
 msgstr "Map wordt gelezen..."
+
+#: internal/settings/settings.c
+msgid "Ready Check"
+msgstr "Klaar voor controle"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reboot"
@@ -2133,8 +2277,16 @@ msgid "Reinstall"
 msgstr "Opnieuw installeren"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Reinstall cancelled: %.120s"
+msgstr "Herinstallatie geannuleerd: %.120s"
+
+#: cmd/jawaka-launcher/main.c
 msgid "Reinstalled %s"
 msgstr "%s opnieuw geïnstalleerd"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reinstalling Pak Rat app"
+msgstr "Pak Rat-app wordt opnieuw geïnstalleerd"
 
 #: internal/settings/settings.c
 msgid "Release"
@@ -2236,6 +2388,10 @@ msgstr "Gedeelde RetroArch-configuratie terugzetten naar de meegeleverde standaa
 msgid "Restart"
 msgstr "Opnieuw starten"
 
+#: internal/settings/settings.c
+msgid "Restart Needed"
+msgstr "Herstart nodig"
+
 #: internal/settings/storage_ui.c
 msgid "Restart and check"
 msgstr "Herstarten en controleren"
@@ -2243,6 +2399,10 @@ msgstr "Herstarten en controleren"
 #: internal/settings/storage_ui.c
 msgid "Restart and repair"
 msgstr "Herstarten en repareren"
+
+#: internal/settings/settings.c
+msgid "Restart needed"
+msgstr "Herstart nodig"
 
 #: internal/settings/settings.c
 msgid "Restart now to finish installing?"
@@ -2255,6 +2415,18 @@ msgstr "Herstarten om uw SD-kaart te controleren"
 #: cmd/jawaka-launcher/main.c
 msgid "Restarting to repair your SD card"
 msgstr "Herstarten om uw SD-kaart te repareren"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restore"
+msgstr "Herstellen"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restored %s"
+msgstr "%s hersteld"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restoring Pak Rat app"
+msgstr "Pak Rat-app wordt hersteld"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Resume"
@@ -2375,6 +2547,14 @@ msgstr "Globaal opslaan"
 #: cmd/jawaka-menu/main.c
 msgid "Save your edits in RetroArch before you leave."
 msgstr "Sla uw wijzigingen in RetroArch op voordat u het verlaat."
+
+#: internal/settings/settings.c
+msgid "Saved: %s"
+msgstr "Opgeslagen: %s"
+
+#: internal/settings/settings.c
+msgid "Saved: %s (unverified)"
+msgstr "Opgeslagen: %s (niet geverifieerd)"
 
 #: internal/settings/settings.c
 msgid "Saved; active after restart"
@@ -2544,6 +2724,10 @@ msgstr "Sega Saturn"
 msgid "Select"
 msgstr "Selecteren"
 
+#: internal/settings/settings.c
+msgid "Selected"
+msgstr "Geselecteerd"
+
 #: internal/launcher/bios.c
 msgid "Selected BIOS card is not mounted"
 msgstr "De kaart van de gekozen BIOS is niet aangekoppeld"
@@ -2707,6 +2891,10 @@ msgstr "Hoekig"
 #: internal/settings/settings.c
 msgid "Stable"
 msgstr "Stabiel"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Stale"
+msgstr "Verouderd"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start"
@@ -3076,6 +3264,10 @@ msgstr "Schakel uw toestel uit en controleer de kaart op een computer om ze te r
 msgid "Tonga"
 msgstr "Tonga"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Tools"
+msgstr "Hulpmiddelen"
+
 #: internal/settings/settings.c
 msgid "Total"
 msgstr "Totaal"
@@ -3165,8 +3357,20 @@ msgid "Uninstall %s?\n\nThis deletes Themes/%s from your SD card. It is your cur
 msgstr "%s deïnstalleren?\n\nDit verwijdert Themes/%s van uw SD-kaart. Het is uw huidige thema, dus Leaf gebruikt daarna geen thema."
 
 #: cmd/jawaka-launcher/main.c
+msgid "Uninstall cancelled: %.120s"
+msgstr "Deïnstallatie geannuleerd: %.120s"
+
+#: cmd/jawaka-launcher/main.c
 msgid "Uninstall cancelled: %s"
 msgstr "Deïnstallatie geannuleerd: %s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %.100s and removed retained data"
+msgstr "%.100s gedeïnstalleerd en bewaarde gegevens verwijderd"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %.100s; retained-data removal failed"
+msgstr "%.100s gedeïnstalleerd; bewaarde gegevens verwijderen mislukt"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalled %s"
@@ -3175,6 +3379,10 @@ msgstr "%s gedeïnstalleerd"
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalled %s. Switched to no theme."
 msgstr "%s gedeïnstalleerd. Geen thema meer actief."
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalling Pak Rat app"
+msgstr "Pak Rat-app wordt gedeïnstalleerd"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalling theme"
@@ -3208,6 +3416,10 @@ msgstr "Niet ondersteund"
 msgid "Up one level"
 msgstr "Eén niveau omhoog"
 
+#: internal/settings/settings.c
+msgid "Up to date"
+msgstr "Up-to-date"
+
 #: cmd/jawaka-launcher/main.c
 msgid "Up/Down"
 msgstr "Omhoog/Omlaag"
@@ -3225,8 +3437,16 @@ msgid "Update status unavailable"
 msgstr "Updatestatus niet beschikbaar"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Updated %s"
+msgstr "%s bijgewerkt"
+
+#: cmd/jawaka-launcher/main.c
 msgid "Updated %s to version %s"
 msgstr "%s bijgewerkt naar versie %s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Updating Pak Rat app"
+msgstr "Pak Rat-app wordt bijgewerkt"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Updating theme"
@@ -3263,6 +3483,18 @@ msgstr "Systeeminstelling gebruiken"
 #: internal/launcher/system_names.c
 msgid "Vectrex"
 msgstr "Vectrex"
+
+#: internal/settings/settings.c
+msgid "Verified"
+msgstr "Geverifieerd"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version %.40s is missing from catalog history"
+msgstr "Versie %.40s ontbreekt in de catalogusgeschiedenis"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version %.40s requires Leaf v%.40s"
+msgstr "Versie %.40s vereist Leaf v%.40s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Version %s needs Leaf %s or newer."
@@ -3311,6 +3543,10 @@ msgstr "X: Neerzetten   D-pad: Verplaatsen"
 #: cmd/jawaka-launcher/main.c
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
 msgstr "X: Pakken   Y: Verwijderen   B: Terug   A: Volgende"
+
+#: internal/settings/settings.c
+msgid "Yes"
+msgstr "Ja"
 
 #: internal/settings/storage_ui.c
 msgid "You can save files again."
@@ -3535,6 +3771,10 @@ msgstr "niet opgeslagen · %d van %d"
 #: cmd/jawaka-menu/main.c
 msgid "unsaved · %s · %d of %d"
 msgstr "niet opgeslagen · %s · %d van %d"
+
+#: internal/settings/settings.c
+msgid "update|Missing"
+msgstr "Ontbreekt"
 
 #: internal/settings/settings.c
 msgid "volume failed"
