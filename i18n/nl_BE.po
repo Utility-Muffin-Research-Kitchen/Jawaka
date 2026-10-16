@@ -382,7 +382,7 @@ msgstr "A: Kiezen   B: Terug"
 
 #: internal/settings/settings.c
 msgid "A: On/Off   X: Grab to reorder"
-msgstr "A: Aan/Uit   X: Pakken om te herschikken"
+msgstr "A: Aan/Uit   X: Verplaatsen"
 
 #: internal/settings/settings.c
 msgid "ADB"
@@ -4082,7 +4082,7 @@ msgstr "X: Neerzetten   D-pad: Verplaatsen"
 
 #: cmd/jawaka-launcher/main.c
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
-msgstr "X: Pakken   Y: Verwijderen   B: Terug   A: Volgende"
+msgstr "X: Verplaatsen   Y: Verwijderen   B: Terug   A: Volgende"
 
 #: internal/settings/settings.c
 msgid "Yes"
