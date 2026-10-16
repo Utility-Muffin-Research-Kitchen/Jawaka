@@ -484,6 +484,10 @@ msgstr ""
 msgid "An image in the theme is not a supported PNG or JPEG, or is too large."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "App"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Appearance"
 msgstr ""
@@ -556,7 +560,7 @@ msgstr ""
 msgid "Author: %s"
 msgstr ""
 
-#: internal/platform/platform_common.c
+#: cmd/jawaka-launcher/main.c
 msgid "Auto"
 msgstr ""
 
@@ -746,6 +750,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Cancel"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Cancel Scraping"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1188,7 +1196,7 @@ msgstr ""
 msgid "GPU"
 msgstr ""
 
-#: cmd/jawaka-menu/main.c
+#: cmd/jawaka-launcher/main.c
 msgid "Game"
 msgstr ""
 
@@ -1932,7 +1940,7 @@ msgstr ""
 msgid "Percent"
 msgstr ""
 
-#: cmd/jawaka-menu/main.c
+#: cmd/jawaka-launcher/main.c
 msgid "Performance"
 msgstr ""
 
@@ -2216,6 +2224,10 @@ msgstr ""
 msgid "Reset RetroArch Config"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Reset System Overrides"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Reset shared RetroArch config to packaged defaults?"
 msgstr ""
@@ -2396,6 +2408,10 @@ msgstr ""
 msgid "Scanlines reduce brightness, especially when combined with BFI."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Scanned"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Scanning"
 msgstr ""
@@ -2416,7 +2432,7 @@ msgstr ""
 msgid "Scrape"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Scrape Artwork"
 msgstr ""
 
@@ -2470,6 +2486,22 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Search This System"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s  (%d results)"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s  (1 result)"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: (empty)"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2708,7 +2740,7 @@ msgstr ""
 msgid "Status: %s"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Stop"
 msgstr ""
 
@@ -2802,6 +2834,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "System Icons"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "System Options: %s"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3458,6 +3494,22 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "refresh rate unavailable on this platform"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|custom"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|default"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|game"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|system"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

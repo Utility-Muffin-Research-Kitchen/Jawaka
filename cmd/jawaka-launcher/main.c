@@ -3010,7 +3010,7 @@ static void jw__draw_search_item(int idx, int ix, int iy, int iw, int ih,
     TTF_Font *small     = cat_get_font(CAT_FONT_SMALL);
 
     const jw_search_result *result = &ctx->results[idx];
-    const char *kind = result->kind == JW_SEARCH_APP ? "App" : "Game";
+    const char *kind = result->kind == JW_SEARCH_APP ? T("App") : T("Game");
     const char *meta = result->kind == JW_SEARCH_APP ? result->pak_dir : result->system;
 
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
@@ -6124,10 +6124,12 @@ static void jw__render_search(const jw_launcher_state *state) {
 
     char title[320];
     if (state->search_query[0])
-        snprintf(title, sizeof(title), "Search: %s  (%d %s)", state->search_query,
-                 state->search_count, state->search_count == 1 ? "result" : "results");
+        snprintf(title, sizeof(title),
+                 state->search_count == 1 ? T("Search: %s  (1 result)")
+                                          : T("Search: %s  (%d results)"),
+                 state->search_query, state->search_count);
     else
-        snprintf(title, sizeof(title), "%s", "Search: (empty)");
+        snprintf(title, sizeof(title), "%s", T("Search: (empty)"));
     cat_draw_text_ellipsized(large, title, margin, title_y, theme->text, sw - margin * 2);
 
     SDL_Rect list, image;
@@ -6500,9 +6502,9 @@ static void jw__render_search_cf(jw_launcher_state *state) {
 
     char hdr[320];
     if (state->search_query[0])
-        snprintf(hdr, sizeof(hdr), "Search: %s", state->search_query);
+        snprintf(hdr, sizeof(hdr), T("Search: %s"), state->search_query);
     else
-        snprintf(hdr, sizeof(hdr), "%s", "Search");
+        snprintf(hdr, sizeof(hdr), "%s", T("Search"));
     int maxhw = sw - CAT_S(40);
     int hw = cat_measure_text(small, hdr);
     int hx = (sw - (hw < maxhw ? hw : maxhw)) / 2;
@@ -6564,10 +6566,10 @@ static const char *jw__bios_basename(const char *rel_path) {
    effective value came from, not where the file is stored. */
 static const char *jw__bios_origin_suffix(jw_bios_origin origin) {
     switch (origin) {
-        case JW_BIOS_ORIGIN_GAME:   return "game";
-        case JW_BIOS_ORIGIN_SYSTEM: return "system";
+        case JW_BIOS_ORIGIN_GAME:   return T("scope|game");
+        case JW_BIOS_ORIGIN_SYSTEM: return T("scope|system");
         case JW_BIOS_ORIGIN_DEFAULT:
-        default:                    return "default";
+        default:                    return T("scope|default");
     }
 }
 
@@ -6601,23 +6603,23 @@ static void jw__action_row_strings(const jw_launcher_state *state,
     switch (row) {
         case JW_ACTION_ROW_SEARCH:
             snprintf(title, title_size, "%s", T("Search This System"));
-            snprintf(value, value_size, "%s", "Open");
+            snprintf(value, value_size, "%s", T("Open"));
             break;
         case JW_ACTION_ROW_DISPLAY_NAME: {
             snprintf(title, title_size, "%s", T("Display Name"));
             if (state->action_scope == JW_ACTION_SYSTEM) {
                 const char *label = state->action_system_display[0]
                     ? state->action_system_display
-                    : "Default";
+                    : T("Default");
                 if (state->action_system_display_override[0]) {
-                    snprintf(value, value_size, "%s (custom)", label);
+                    snprintf(value, value_size, "%s (%s)", label, T("scope|custom"));
                 } else {
                     snprintf(value, value_size, "%s", label);
                 }
             } else {
                 char name[256];
                 jw__clean_rom_name(state->action_game.name, name, sizeof(name));
-                jw__str_copy(value, value_size, name[0] ? name : "Scanned");
+                jw__str_copy(value, value_size, name[0] ? name : T("Scanned"));
             }
             break;
         }
@@ -6626,17 +6628,20 @@ static void jw__action_row_strings(const jw_launcher_state *state,
             if (state->action_scope == JW_ACTION_GAME &&
                 jw__action_find_core(
                     state, state->action_core_game_override) >= 0) {
-                snprintf(value, value_size, "%s (game)",
-                         jw__action_core_label(state, state->action_core_game_override));
+                snprintf(value, value_size, "%s (%s)",
+                         jw__action_core_label(state, state->action_core_game_override),
+                         T("scope|game"));
             } else if (jw__action_find_core(
                            state, state->action_core_system_override) >= 0) {
-                snprintf(value, value_size, "%s (system)",
-                         jw__action_core_label(state, state->action_core_system_override));
+                snprintf(value, value_size, "%s (%s)",
+                         jw__action_core_label(state, state->action_core_system_override),
+                         T("scope|system"));
             } else if (state->action_core_effective[0]) {
-                snprintf(value, value_size, "%s (default)",
-                         jw__action_core_label(state, state->action_core_effective));
+                snprintf(value, value_size, "%s (%s)",
+                         jw__action_core_label(state, state->action_core_effective),
+                         T("scope|default"));
             } else {
-                snprintf(value, value_size, "%s", "Unavailable");
+                snprintf(value, value_size, "%s", T("Unavailable"));
             }
             break;
         case JW_ACTION_ROW_BIOS:
@@ -6644,32 +6649,34 @@ static void jw__action_row_strings(const jw_launcher_state *state,
             jw__bios_row_value(state, value, value_size);
             break;
         case JW_ACTION_ROW_PERFORMANCE:
-            snprintf(title, title_size, "%s", "Performance");
+            snprintf(title, title_size, "%s", T("Performance"));
             if (state->action_scope == JW_ACTION_GAME &&
                 state->action_perf_game_override[0]) {
-                snprintf(value, value_size, "%s (game)",
-                         jw__action_perf_label(state->action_perf_game_override));
+                snprintf(value, value_size, "%s (%s)",
+                         jw__action_perf_label(state->action_perf_game_override),
+                         T("scope|game"));
             } else if (state->action_perf_system_override[0]) {
-                snprintf(value, value_size, "%s (system)",
-                         jw__action_perf_label(state->action_perf_system_override));
+                snprintf(value, value_size, "%s (%s)",
+                         jw__action_perf_label(state->action_perf_system_override),
+                         T("scope|system"));
             } else {
-                snprintf(value, value_size, "%s", "Auto");
+                snprintf(value, value_size, "%s", T("Auto"));
             }
             break;
         case JW_ACTION_ROW_SCRAPE:
-            snprintf(title, title_size, "%s", "Scrape Artwork");
-            snprintf(value, value_size, "%s", "Replace");
+            snprintf(title, title_size, "%s", T("Scrape Artwork"));
+            snprintf(value, value_size, "%s", T("Replace"));
             break;
         case JW_ACTION_ROW_SCRAPE_CANCEL:
-            snprintf(title, title_size, "%s", "Cancel Scraping");
-            snprintf(value, value_size, "%s", "Stop");
+            snprintf(title, title_size, "%s", T("Cancel Scraping"));
+            snprintf(value, value_size, "%s", T("Stop"));
             break;
         case JW_ACTION_ROW_RESET:
             snprintf(title, title_size, "%s",
                      state->action_scope == JW_ACTION_GAME
                          ? T("Reset Game Overrides")
-                         : "Reset System Overrides");
-            snprintf(value, value_size, "%s", "Clear");
+                         : T("Reset System Overrides"));
+            snprintf(value, value_size, "%s", T("Clear"));
             break;
         case JW_ACTION_ROW_HIDE:
             snprintf(title, title_size, "%s", T("Hide Game"));
@@ -6986,7 +6993,7 @@ static void jw__render_actions(const jw_launcher_state *state) {
         jw__clean_rom_name(state->action_game.name, name, sizeof(name));
         snprintf(title, sizeof(title), "%s", name);
     } else {
-        snprintf(title, sizeof(title), "System Options: %s",
+        snprintf(title, sizeof(title), T("System Options: %s"),
                  state->action_system_display);
     }
 
