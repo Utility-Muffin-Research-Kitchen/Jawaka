@@ -373,7 +373,15 @@ msgid "ADB disable canceled"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "ADB disable failed"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "ADB enable canceled"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "ADB enable failed"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -485,6 +493,10 @@ msgid "Already missing"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Already on the latest version"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Already used by %s"
 msgstr ""
 
@@ -538,6 +550,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Artwork Priority"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Artwork scrape failed."
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -652,6 +668,14 @@ msgstr ""
 msgid "Battery Saver"
 msgstr ""
 
+#: internal/update/update.c
+msgid "Battery must be at least %d%% or charging"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Battery status is unknown; confirmation required"
+msgstr ""
+
 #: internal/retroarch/shader_strings.c
 msgid "Best at integer or near-integer scaling; the upstream shader can look uneven at arbitrary scales."
 msgstr ""
@@ -690,6 +714,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Bluetooth Name"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Bluetooth done"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Bluetooth failed"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -792,6 +824,42 @@ msgstr ""
 msgid "Cancelled"
 msgstr ""
 
+#: internal/update/update.c
+msgid "Cannot download update artifact"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot fetch Leaf releases"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Cannot load releases"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot prepare update download directory"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot prepare update state directory"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot read update manifest"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot start update download"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot verify update artifact"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot write update install request"
+msgstr ""
+
 #: internal/settings/timezones.c
 msgid "Cape Verde"
 msgstr ""
@@ -825,7 +893,15 @@ msgid "Check SD card"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Check for updates first"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Check releases first"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Checking for updates"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -862,6 +938,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Close Apps"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Close running games or apps before installing"
 msgstr ""
 
 #: internal/settings/storage_ui.c
@@ -1121,7 +1201,23 @@ msgid "Download First"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Download update first"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Downloaded"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Downloaded update SHA-256 does not match metadata"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Downloaded update artifact is missing"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Downloaded update size does not match metadata"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1213,6 +1309,10 @@ msgid "Filter"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Finish the current update before switching channels"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Fixed"
 msgstr ""
 
@@ -1246,6 +1346,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Fountain"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Free space could not be checked; confirmation required"
 msgstr ""
 
 #: internal/platform/platform_common.c
@@ -1484,8 +1588,16 @@ msgstr ""
 msgid "Install cancelled: %s"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Install in progress"
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid "Install the matching Leaf system update before checking this card on your device."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Install update even though checks are incomplete?"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1604,6 +1716,30 @@ msgstr ""
 msgid "Leaf"
 msgstr ""
 
+#: internal/update/update.c
+msgid "Leaf %s downloaded and verified"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf %s installed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf %s is already installed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf %s is available"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf %s is available; installed release is unknown"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf %s selected"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Leaf can't find %s in the Themes folder"
 msgstr ""
@@ -1630,6 +1766,10 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't safely check this card, so nothing was changed. Check the card on a computer."
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf releases response was not a JSON array"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1694,6 +1834,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Loading releases..."
+msgstr ""
+
+#: internal/update/update.c
+msgid "Local manifest artifact URL must use HTTPS"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1868,6 +2012,10 @@ msgstr ""
 msgid "No apps found"
 msgstr ""
 
+#: internal/update/update.c
+msgid "No downloadable update artifact is selected"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "No favorites yet — open a game and press Y to add one"
 msgstr ""
@@ -1885,11 +2033,23 @@ msgid "No games found"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "No games to scrape"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "No hidden games."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "No jobs match this filter."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "No lock"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "No missing artwork"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1902,6 +2062,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "No recent games yet — play something and it'll show up here"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "No releases available"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1928,6 +2092,10 @@ msgstr ""
 msgid "No saves yet"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "No scrape jobs."
+msgstr ""
+
 #: internal/retroarch/shader_strings.c
 msgid "No screen curvature; use CRT Curved for that."
 msgstr ""
@@ -1942,6 +2110,22 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "No themes in Pak Rat yet"
+msgstr ""
+
+#: internal/update/update.c
+msgid "No update check has been run"
+msgstr ""
+
+#: internal/update/update.c
+msgid "No update download is active"
+msgstr ""
+
+#: internal/update/update.c
+msgid "No update manifest path was provided"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "No update release selected"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1962,6 +2146,14 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Not deleted"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Not enough free space for update download"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Not enough free space to install update"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2100,6 +2292,10 @@ msgstr ""
 msgid "Pick another Saturn BIOS from the options menu."
 msgstr ""
 
+#: internal/update/update.c
+msgid "Platform artifact metadata is incomplete"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Play"
 msgstr ""
@@ -2158,6 +2354,10 @@ msgstr ""
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Preparing to save"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Preparing update install"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2292,6 +2492,10 @@ msgstr ""
 msgid "Release"
 msgstr ""
 
+#: internal/update/update.c
+msgid "Release %s requires a newer updater"
+msgstr ""
+
 #: cmd/jawaka-osd/game_launch.c
 msgid "Release the power button"
 msgstr ""
@@ -2302,6 +2506,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Releases"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Releases are still loading"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2401,11 +2609,27 @@ msgid "Restart and repair"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Restart canceled"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Restart failed"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Restart needed"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Restart now to finish installing?"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Restart to finish installing"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Restarting"
 msgstr ""
 
 #: internal/settings/storage_ui.c
@@ -2632,6 +2856,10 @@ msgstr ""
 msgid "Scrape finished: %d found"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Scrape was cancelled before completion."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s · %d/%d"
 msgstr ""
@@ -2760,6 +2988,10 @@ msgstr ""
 msgid "Selected BIOS path is not usable"
 msgstr ""
 
+#: internal/update/update.c
+msgid "Selected update is no longer available"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Selection"
 msgstr ""
@@ -2866,6 +3098,10 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Solomon Islands"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Some releases could not be loaded"
 msgstr ""
 
 #: internal/platform/platform_common.c
@@ -3433,7 +3669,139 @@ msgid "Update Channel"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Update already downloaded"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update artifact has not been downloaded"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update check failed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update download already in progress"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update download cancelled"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update download failed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update download is still in progress"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update download path is too long"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update download process disappeared"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update install blocked"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update install canceled"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update install could not be prepared"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update install failed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update install is already in progress"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update install state path is too long"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update is not ready to install"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update is ready to install"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update manifest is missing platforms"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update manifest is missing release_id"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update manifest is missing schema"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update manifest is not valid JSON"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update manifest product is not leaf"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update ready check failed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update runner did not write a result file"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update runner is not available"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update runner process disappeared"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update runner result was not valid JSON"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update selection canceled"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update selection failed"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update service unavailable"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update status refreshed"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Update status unavailable"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update temporary path is too long"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update was prepared on the other SD slot; install again"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3514,6 +3882,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Volume"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Wait for the release check to finish before switching channels"
 msgstr ""
 
 #: internal/settings/settings.c

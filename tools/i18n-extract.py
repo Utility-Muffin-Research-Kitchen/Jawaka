@@ -57,6 +57,8 @@ FUNNELS = [
     "jw__about_push",
     "jw__fsetup_header",
     "jw__fsetup_footer",
+    "jw__update_msg",
+    "jw__copy_status",
 ]
 
 # A run of adjacent string literals -- C concatenates "a" "b" into one string,

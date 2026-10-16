@@ -1,6 +1,7 @@
 #include "internal/update/update.h"
 #include "internal/update/sha256.h"
 #include "internal/platform/leaf_version.h"
+#include "internal/i18n/i18n.h"   /* JW_UI only: Settings translates these */
 
 #include <ctype.h>
 #include <errno.h>
@@ -1149,7 +1150,7 @@ void jw_update_refresh_install_result(jw_update_status *status,
     if (armed_now_installed) {
         snprintf(status->install_result_message,
                  sizeof(status->install_result_message),
-                 "Leaf %s installed", release_id);
+                 JW_UI("Leaf %s installed"), release_id);
         status->install_armed = false;
         status->install_blocked = false;
     } else if (stock_trigger_present) {
@@ -1161,11 +1162,11 @@ void jw_update_refresh_install_result(jw_update_status *status,
         if (primary_stock_trigger_present) {
             snprintf(status->install_result_message,
                      sizeof(status->install_result_message),
-                     "%s", "Restart to finish installing");
+                     "%s", JW_UI("Restart to finish installing"));
         } else {
             snprintf(status->install_result_message,
                      sizeof(status->install_result_message),
-                     "%s", "Update was prepared on the other SD slot; install again");
+                     "%s", JW_UI("Update was prepared on the other SD slot; install again"));
         }
         jw__set_install_message(status,
                                 primary_stock_trigger_present ? "restart_needed" : "install_again",
@@ -1197,7 +1198,7 @@ void jw_update_status_init(jw_update_status *status,
     if (status->install_result_message[0]) {
         jw__set_message(status, "%s", status->install_result_message);
     } else {
-        jw__set_message(status, "%s", "No update check has been run");
+        jw__set_message(status, "%s", JW_UI("No update check has been run"));
     }
 }
 
@@ -1222,7 +1223,7 @@ static int jw__update_check_manifest_json(jw_update_status *status,
     }
     if (!root) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update manifest is not valid JSON");
+        jw__set_message(status, "%s", JW_UI("Update manifest is not valid JSON"));
         return -1;
     }
 
@@ -1233,17 +1234,17 @@ static int jw__update_check_manifest_json(jw_update_status *status,
     const cJSON *platforms = cJSON_GetObjectItemCaseSensitive(root, "platforms");
     if (!cJSON_IsNumber(schema) || schema->valueint < 1) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update manifest is missing schema");
+        jw__set_message(status, "%s", JW_UI("Update manifest is missing schema"));
         return -1;
     }
     if (!product || strcmp(product, "leaf") != 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update manifest product is not leaf");
+        jw__set_message(status, "%s", JW_UI("Update manifest product is not leaf"));
         return -1;
     }
     if (!release_id || !release_id[0]) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update manifest is missing release_id");
+        jw__set_message(status, "%s", JW_UI("Update manifest is missing release_id"));
         return -1;
     }
     if (!version || !version[0]) {
@@ -1251,7 +1252,7 @@ static int jw__update_check_manifest_json(jw_update_status *status,
     }
     if (!cJSON_IsObject(platforms)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update manifest is missing platforms");
+        jw__set_message(status, "%s", JW_UI("Update manifest is missing platforms"));
         return -1;
     }
 
@@ -1270,7 +1271,7 @@ static int jw__update_check_manifest_json(jw_update_status *status,
         status->status = JW_UPDATE_STATUS_INCOMPATIBLE;
         jw__copy_string(status->release_id, sizeof(status->release_id), release_id);
         jw__copy_string(status->version, sizeof(status->version), version);
-        jw__set_message(status, "Release %s requires a newer updater", release_id);
+        jw__set_message(status, JW_UI("Release %s requires a newer updater"), release_id);
         return 0;
     }
 
@@ -1292,12 +1293,12 @@ static int jw__update_check_manifest_json(jw_update_status *status,
         !jw__filename_safe(artifact_name) ||
         !jw__sha256_looks_valid(artifact_sha256)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Platform artifact metadata is incomplete");
+        jw__set_message(status, "%s", JW_UI("Platform artifact metadata is incomplete"));
         return -1;
     }
     if (artifact_url && !jw__https_url_safe(artifact_url)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Local manifest artifact URL must use HTTPS");
+        jw__set_message(status, "%s", JW_UI("Local manifest artifact URL must use HTTPS"));
         return -1;
     }
 
@@ -1354,15 +1355,15 @@ static int jw__update_check_manifest_json(jw_update_status *status,
         strcmp(status->current_release_id, status->release_id) == 0) {
         status->status = JW_UPDATE_STATUS_UP_TO_DATE;
         status->has_update = false;
-        jw__set_message(status, "Leaf %s is already installed", status->release_id);
+        jw__set_message(status, JW_UI("Leaf %s is already installed"), status->release_id);
     } else {
         status->status = JW_UPDATE_STATUS_AVAILABLE;
         status->has_update = true;
         if (status->current_unknown) {
-            jw__set_message(status, "Leaf %s is available; installed release is unknown",
+            jw__set_message(status, JW_UI("Leaf %s is available; installed release is unknown"),
                             status->release_id);
         } else {
-            jw__set_message(status, "Leaf %s is available", status->release_id);
+            jw__set_message(status, JW_UI("Leaf %s is available"), status->release_id);
         }
     }
 
@@ -1381,7 +1382,7 @@ static int jw__update_check_local_manifest_artifact(jw_update_status *status,
 
     if (!manifest_path || !manifest_path[0]) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "No update manifest path was provided");
+        jw__set_message(status, "%s", JW_UI("No update manifest path was provided"));
         return -1;
     }
     jw__copy_string(status->source_manifest, sizeof(status->source_manifest),
@@ -1391,7 +1392,7 @@ static int jw__update_check_local_manifest_artifact(jw_update_status *status,
     char *text = jw__read_text_file(manifest_path, error, sizeof(error));
     if (!text) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", error[0] ? error : "Cannot read update manifest");
+        jw__set_message(status, "%s", error[0] ? error : JW_UI("Cannot read update manifest"));
         return -1;
     }
 
@@ -1491,7 +1492,7 @@ int jw_update_select_option(jw_update_status *status, int option_index) {
         option_index >= JW_UPDATE_MAX_OPTIONS) {
         if (status) {
             status->status = JW_UPDATE_STATUS_ERROR;
-            jw__set_message(status, "%s", "Selected update is no longer available");
+            jw__set_message(status, "%s", JW_UI("Selected update is no longer available"));
         }
         return -1;
     }
@@ -1537,12 +1538,12 @@ int jw_update_select_option(jw_update_status *status, int option_index) {
     if (option.installed) {
         status->status = JW_UPDATE_STATUS_UP_TO_DATE;
         status->has_update = false;
-        jw__set_message(status, "Leaf %s is already installed",
+        jw__set_message(status, JW_UI("Leaf %s is already installed"),
                         status->release_id);
     } else {
         status->status = JW_UPDATE_STATUS_AVAILABLE;
         status->has_update = true;
-        jw__set_message(status, "Leaf %s selected", status->release_id);
+        jw__set_message(status, JW_UI("Leaf %s selected"), status->release_id);
     }
     return 0;
 }
@@ -1675,7 +1676,7 @@ int jw_update_check_releases(jw_update_status *status,
     char update_dir[PATH_MAX];
     if (!jw__update_dir(update_dir, sizeof(update_dir), state_dir)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Cannot prepare update state directory");
+        jw__set_message(status, "%s", JW_UI("Cannot prepare update state directory"));
         return -1;
     }
 
@@ -1683,7 +1684,7 @@ int jw_update_check_releases(jw_update_status *status,
     jw__fetcher fetcher;
     if (jw__fetcher_open(&fetcher, update_dir, error, sizeof(error)) != 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", error[0] ? error : "Cannot fetch Leaf releases");
+        jw__set_message(status, "%s", error[0] ? error : JW_UI("Cannot fetch Leaf releases"));
         return -1;
     }
 
@@ -1695,7 +1696,7 @@ int jw_update_check_releases(jw_update_status *status,
         jw__fetcher_close(&fetcher);
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s",
-                        list.error[0] ? list.error : "Cannot fetch Leaf releases");
+                        list.error[0] ? list.error : JW_UI("Cannot fetch Leaf releases"));
         return -1;
     }
 
@@ -1707,7 +1708,7 @@ int jw_update_check_releases(jw_update_status *status,
         }
         jw__fetcher_close(&fetcher);
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Leaf releases response was not a JSON array");
+        jw__set_message(status, "%s", JW_UI("Leaf releases response was not a JSON array"));
         return -1;
     }
 
@@ -1808,14 +1809,14 @@ int jw_update_download_candidate(jw_update_status *status,
         !jw__filename_safe(status->artifact_name) ||
         !jw__sha256_looks_valid(status->artifact_sha256)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "No downloadable update artifact is selected");
+        jw__set_message(status, "%s", JW_UI("No downloadable update artifact is selected"));
         return -1;
     }
 
     char update_dir[PATH_MAX];
     if (!jw__update_dir(update_dir, sizeof(update_dir), state_dir)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Cannot prepare update state directory");
+        jw__set_message(status, "%s", JW_UI("Cannot prepare update state directory"));
         return -1;
     }
 
@@ -1824,7 +1825,7 @@ int jw_update_download_candidate(jw_update_status *status,
                        update_dir, "downloads") ||
         jw__mkdir_p(downloads_dir, 0755) != 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Cannot prepare update download directory");
+        jw__set_message(status, "%s", JW_UI("Cannot prepare update download directory"));
         return -1;
     }
 
@@ -1835,7 +1836,7 @@ int jw_update_download_candidate(jw_update_status *status,
             long long required = status->artifact_size + JW_UPDATE_MIN_DOWNLOAD_FREE_BYTES;
             if (available < required) {
                 status->status = JW_UPDATE_STATUS_ERROR;
-                jw__set_message(status, "%s", "Not enough free space for update download");
+                jw__set_message(status, "%s", JW_UI("Not enough free space for update download"));
                 return -1;
             }
         }
@@ -1845,7 +1846,7 @@ int jw_update_download_candidate(jw_update_status *status,
     if (!jw__join_path(out_path, sizeof(out_path),
                        downloads_dir, status->artifact_name)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update download path is too long");
+        jw__set_message(status, "%s", JW_UI("Update download path is too long"));
         return -1;
     }
 
@@ -1854,7 +1855,7 @@ int jw_update_download_candidate(jw_update_status *status,
                                 "application/octet-stream", 0,
                                 error, sizeof(error)) != 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", error[0] ? error : "Cannot download update artifact");
+        jw__set_message(status, "%s", error[0] ? error : JW_UI("Cannot download update artifact"));
         return -1;
     }
 
@@ -1863,7 +1864,7 @@ int jw_update_download_candidate(jw_update_status *status,
         if (stat(out_path, &st) != 0 || st.st_size != status->artifact_size) {
             unlink(out_path);
             status->status = JW_UPDATE_STATUS_ERROR;
-            jw__set_message(status, "%s", "Downloaded update size does not match metadata");
+            jw__set_message(status, "%s", JW_UI("Downloaded update size does not match metadata"));
             return -1;
         }
         status->download_received = st.st_size;
@@ -1873,13 +1874,13 @@ int jw_update_download_candidate(jw_update_status *status,
     if (jw_sha256_file_hex(out_path, actual_sha, error, sizeof(error)) != 0) {
         unlink(out_path);
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", error[0] ? error : "Cannot verify update artifact");
+        jw__set_message(status, "%s", error[0] ? error : JW_UI("Cannot verify update artifact"));
         return -1;
     }
     if (!jw__ascii_equal_ci(actual_sha, status->artifact_sha256)) {
         unlink(out_path);
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Downloaded update SHA-256 does not match metadata");
+        jw__set_message(status, "%s", JW_UI("Downloaded update SHA-256 does not match metadata"));
         return -1;
     }
 
@@ -1890,7 +1891,7 @@ int jw_update_download_candidate(jw_update_status *status,
     }
     status->status = JW_UPDATE_STATUS_DOWNLOADED;
     jw__copy_string(status->download_path, sizeof(status->download_path), out_path);
-    jw__set_message(status, "Leaf %s downloaded and verified",
+    jw__set_message(status, JW_UI("Leaf %s downloaded and verified"),
                     status->release_id[0] ? status->release_id : "update");
     return 0;
 }
@@ -1940,7 +1941,7 @@ static void jw__finish_download_job(jw_update_status *status,
         unlink(job->tmp_path);
         status->downloaded = false;
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update download failed");
+        jw__set_message(status, "%s", JW_UI("Update download failed"));
         return;
     }
 
@@ -1950,7 +1951,7 @@ static void jw__finish_download_job(jw_update_status *status,
             unlink(job->tmp_path);
             status->downloaded = false;
             status->status = JW_UPDATE_STATUS_ERROR;
-            jw__set_message(status, "%s", "Downloaded update size does not match metadata");
+            jw__set_message(status, "%s", JW_UI("Downloaded update size does not match metadata"));
             return;
         }
         status->download_received = st.st_size;
@@ -1971,14 +1972,14 @@ static void jw__finish_download_job(jw_update_status *status,
         unlink(job->out_path);
         status->downloaded = false;
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", error[0] ? error : "Cannot verify update artifact");
+        jw__set_message(status, "%s", error[0] ? error : JW_UI("Cannot verify update artifact"));
         return;
     }
     if (!jw__ascii_equal_ci(actual_sha, job->expected_sha256)) {
         unlink(job->out_path);
         status->downloaded = false;
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Downloaded update SHA-256 does not match metadata");
+        jw__set_message(status, "%s", JW_UI("Downloaded update SHA-256 does not match metadata"));
         return;
     }
 
@@ -1994,7 +1995,7 @@ static void jw__finish_download_job(jw_update_status *status,
     status->status = JW_UPDATE_STATUS_DOWNLOADED;
     jw__copy_string(status->download_path, sizeof(status->download_path),
                     job->out_path);
-    jw__set_message(status, "Leaf %s downloaded and verified",
+    jw__set_message(status, JW_UI("Leaf %s downloaded and verified"),
                     status->release_id[0] ? status->release_id : "update");
 }
 
@@ -2006,7 +2007,7 @@ int jw_update_download_start(jw_update_status *status,
     }
     if (job->active) {
         jw__update_download_progress(status, job);
-        jw__set_message(status, "%s", "Update download already in progress");
+        jw__set_message(status, "%s", JW_UI("Update download already in progress"));
         return 0;
     }
 
@@ -2021,14 +2022,14 @@ int jw_update_download_start(jw_update_status *status,
         !jw__filename_safe(status->artifact_name) ||
         !jw__sha256_looks_valid(status->artifact_sha256)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "No downloadable update artifact is selected");
+        jw__set_message(status, "%s", JW_UI("No downloadable update artifact is selected"));
         return -1;
     }
 
     char update_dir[PATH_MAX];
     if (!jw__update_dir(update_dir, sizeof(update_dir), state_dir)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Cannot prepare update state directory");
+        jw__set_message(status, "%s", JW_UI("Cannot prepare update state directory"));
         return -1;
     }
 
@@ -2037,7 +2038,7 @@ int jw_update_download_start(jw_update_status *status,
                        update_dir, "downloads") ||
         jw__mkdir_p(downloads_dir, 0755) != 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Cannot prepare update download directory");
+        jw__set_message(status, "%s", JW_UI("Cannot prepare update download directory"));
         return -1;
     }
 
@@ -2048,7 +2049,7 @@ int jw_update_download_start(jw_update_status *status,
             long long required = status->artifact_size + JW_UPDATE_MIN_DOWNLOAD_FREE_BYTES;
             if (available < required) {
                 status->status = JW_UPDATE_STATUS_ERROR;
-                jw__set_message(status, "%s", "Not enough free space for update download");
+                jw__set_message(status, "%s", JW_UI("Not enough free space for update download"));
                 return -1;
             }
         }
@@ -2058,7 +2059,7 @@ int jw_update_download_start(jw_update_status *status,
     if (!jw__join_path(out_path, sizeof(out_path),
                        downloads_dir, status->artifact_name)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update download path is too long");
+        jw__set_message(status, "%s", JW_UI("Update download path is too long"));
         return -1;
     }
 
@@ -2067,7 +2068,7 @@ int jw_update_download_start(jw_update_status *status,
                           downloads_dir, status->artifact_name, (long)getpid());
     if (needed < 0 || needed >= (int)sizeof(tmp_path)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update temporary path is too long");
+        jw__set_message(status, "%s", JW_UI("Update temporary path is too long"));
         return -1;
     }
     unlink(tmp_path);
@@ -2078,7 +2079,7 @@ int jw_update_download_start(jw_update_status *status,
                                         error, sizeof(error));
     if (pid < 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", error[0] ? error : "Cannot start update download");
+        jw__set_message(status, "%s", error[0] ? error : JW_UI("Cannot start update download"));
         return -1;
     }
 
@@ -2120,7 +2121,7 @@ void jw_update_download_poll(jw_update_status *status,
             status->download_active = false;
             status->downloaded = false;
             status->status = JW_UPDATE_STATUS_ERROR;
-            jw__set_message(status, "%s", "Update download process disappeared");
+            jw__set_message(status, "%s", JW_UI("Update download process disappeared"));
         }
         return;
     }
@@ -2159,7 +2160,7 @@ static void jw__finish_check_job(jw_update_status *status,
     status->option_count = job->scratch.option_count;
     status->options_complete = job->scratch.options_complete;
     if (!status->options_complete) {
-        jw__set_message(status, "%s", "Some releases could not be loaded");
+        jw__set_message(status, "%s", JW_UI("Some releases could not be loaded"));
     }
     status->selected_option = -1;
     for (int i = 0; i < status->option_count; i++) {
@@ -2231,7 +2232,7 @@ int jw_update_check_start(jw_update_status *status,
            it lands, don't let the picker take the previous list as complete:
            asking for the full list now has to queue a load behind this check. */
         status->options_complete = false;
-        jw__set_message(status, "%s", "Checking for updates");
+        jw__set_message(status, "%s", JW_UI("Checking for updates"));
     }
     return 0;
 }
@@ -2272,7 +2273,7 @@ int jw_update_download_cancel(jw_update_status *status,
                               jw_update_download_job *job) {
     if (!status || !job || !job->active || job->pid <= 0) {
         if (status) {
-            jw__set_message(status, "%s", "No update download is active");
+            jw__set_message(status, "%s", JW_UI("No update download is active"));
         }
         return -1;
     }
@@ -2296,7 +2297,7 @@ int jw_update_download_cancel(jw_update_status *status,
     status->download_active = false;
     status->downloaded = false;
     status->status = JW_UPDATE_STATUS_CANCELLED;
-    jw__set_message(status, "%s", "Update download cancelled");
+    jw__set_message(status, "%s", JW_UI("Update download cancelled"));
     return 0;
 }
 
@@ -2438,7 +2439,7 @@ static void jw__read_install_result(jw_update_status *status,
                         sizeof(status->install_result_message),
                         "Update runner did not write a result file");
         jw__set_install_message(status, "result_missing",
-                                "%s", "Update runner did not write a result file");
+                                "%s", JW_UI("Update runner did not write a result file"));
         jw__set_message(status, "%s", status->install_message);
         return;
     }
@@ -2458,7 +2459,7 @@ static void jw__read_install_result(jw_update_status *status,
                         sizeof(status->install_result_message),
                         "Update runner result was not valid JSON");
         jw__set_install_message(status, "result_invalid",
-                                "%s", "Update runner result was not valid JSON");
+                                "%s", JW_UI("Update runner result was not valid JSON"));
         jw__set_message(status, "%s", status->install_message);
         return;
     }
@@ -2488,13 +2489,13 @@ static void jw__read_install_result(jw_update_status *status,
         status->status = JW_UPDATE_STATUS_ARMED;
         status->install_armed = true;
         jw__set_install_message(status, state, "%s",
-                                message[0] ? message : "Restart to finish installing");
+                                message[0] ? message : JW_UI("Restart to finish installing"));
         jw__set_message(status, "%s", status->install_message);
     } else {
         status->status = JW_UPDATE_STATUS_ERROR;
         status->install_armed = false;
         jw__set_install_message(status, state, "%s",
-                                message[0] ? message : "Update install could not be prepared");
+                                message[0] ? message : JW_UI("Update install could not be prepared"));
         jw__set_message(status, "%s", status->install_message);
     }
 
@@ -2561,24 +2562,24 @@ int jw_update_install_start(jw_update_status *status,
         return -1;
     }
     if (job->active) {
-        jw__set_message(status, "%s", "Update install is already in progress");
+        jw__set_message(status, "%s", JW_UI("Update install is already in progress"));
         return 0;
     }
     if (!status->install_ready) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update is not ready to install");
+        jw__set_message(status, "%s", JW_UI("Update is not ready to install"));
         return -1;
     }
     if (!runner_path || !runner_path[0] || access(runner_path, X_OK) != 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update runner is not available");
+        jw__set_message(status, "%s", JW_UI("Update runner is not available"));
         return -1;
     }
 
     char update_dir[PATH_MAX];
     if (!jw__update_dir(update_dir, sizeof(update_dir), state_dir)) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Cannot prepare update state directory");
+        jw__set_message(status, "%s", JW_UI("Cannot prepare update state directory"));
         return -1;
     }
 
@@ -2589,7 +2590,7 @@ int jw_update_install_start(jw_update_status *status,
         !jw__join_path(result_path, sizeof(result_path),
                        update_dir, "install-result.json")) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update install state path is too long");
+        jw__set_message(status, "%s", JW_UI("Update install state path is too long"));
         return -1;
     }
 
@@ -2597,7 +2598,7 @@ int jw_update_install_start(jw_update_status *status,
     if (jw__write_install_request(status, state_dir, sdcard_root,
                                   request_path, result_path) != 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Cannot write update install request");
+        jw__set_message(status, "%s", JW_UI("Cannot write update install request"));
         return -1;
     }
     jw__write_install_result_file(result_path, "starting",
@@ -2638,7 +2639,7 @@ int jw_update_install_start(jw_update_status *status,
     status->install_armed = false;
     status->status = JW_UPDATE_STATUS_INSTALLING;
     jw__set_install_message(status, "installing",
-                            "%s", "Preparing update install");
+                            "%s", JW_UI("Preparing update install"));
     jw__set_message(status, "%s", status->install_message);
     return 0;
 }
@@ -2671,7 +2672,7 @@ void jw_update_install_poll(jw_update_status *status,
                             sizeof(status->install_result_message),
                             "Update runner process disappeared");
             jw__set_install_message(status, "runner_missing",
-                                    "%s", "Update runner process disappeared");
+                                    "%s", JW_UI("Update runner process disappeared"));
             jw__set_message(status, "%s", status->install_message);
         }
         return;
@@ -2722,28 +2723,28 @@ int jw_update_install_preflight(jw_update_status *status,
     if (status->install_active) {
         status->install_blocked = true;
         jw__set_install_message(status, "install_active",
-                                "%s", "Update install is already in progress");
+                                "%s", JW_UI("Update install is already in progress"));
         return 0;
     }
 
     if (status->install_armed) {
         status->install_blocked = true;
         jw__set_install_message(status, "restart_needed",
-                                "%s", "Restart to finish installing");
+                                "%s", JW_UI("Restart to finish installing"));
         return 0;
     }
 
     if (status->download_active) {
         status->install_blocked = true;
         jw__set_install_message(status, "download_active",
-                                "%s", "Update download is still in progress");
+                                "%s", JW_UI("Update download is still in progress"));
         return 0;
     }
 
     if (!status->downloaded || !status->download_path[0]) {
         status->install_blocked = true;
         jw__set_install_message(status, "not_downloaded",
-                                "%s", "Update artifact has not been downloaded");
+                                "%s", JW_UI("Update artifact has not been downloaded"));
         return 0;
     }
 
@@ -2752,7 +2753,7 @@ int jw_update_install_preflight(jw_update_status *status,
         !S_ISREG(downloaded_st.st_mode)) {
         status->install_blocked = true;
         jw__set_install_message(status, "download_missing",
-                                "%s", "Downloaded update artifact is missing");
+                                "%s", JW_UI("Downloaded update artifact is missing"));
         return 0;
     }
 
@@ -2795,7 +2796,7 @@ int jw_update_install_preflight(jw_update_status *status,
     if (!device_idle) {
         status->install_blocked = true;
         jw__set_install_message(status, "not_idle",
-                                "%s", "Close running games or apps before installing");
+                                "%s", JW_UI("Close running games or apps before installing"));
         return 0;
     }
 
@@ -2803,14 +2804,14 @@ int jw_update_install_preflight(jw_update_status *status,
         if (!confirm_unknown_battery) {
             status->install_needs_confirmation = true;
             jw__set_install_message(status, "battery_unknown",
-                                    "%s", "Battery status is unknown; confirmation required");
+                                    "%s", JW_UI("Battery status is unknown; confirmation required"));
             return 0;
         }
     } else if (battery_percent < JW_UPDATE_MIN_INSTALL_BATTERY_PERCENT &&
                charging != 1) {
         status->install_blocked = true;
         jw__set_install_message(status, "battery_low",
-                                "Battery must be at least %d%% or charging",
+                                JW_UI("Battery must be at least %d%% or charging"),
                                 JW_UPDATE_MIN_INSTALL_BATTERY_PERCENT);
         return 0;
     }
@@ -2820,19 +2821,19 @@ int jw_update_install_preflight(jw_update_status *status,
         status->install_available_free < required) {
         status->install_blocked = true;
         jw__set_install_message(status, "space_low",
-                                "%s", "Not enough free space to install update");
+                                "%s", JW_UI("Not enough free space to install update"));
         return 0;
     }
 
     if (status->install_available_free < 0) {
         status->install_needs_confirmation = true;
         jw__set_install_message(status, "space_unknown",
-                                "%s", "Free space could not be checked; confirmation required");
+                                "%s", JW_UI("Free space could not be checked; confirmation required"));
         return 0;
     }
 
     status->install_ready = true;
-    jw__set_install_message(status, "ready", "%s", "Update is ready to install");
+    jw__set_install_message(status, "ready", "%s", JW_UI("Update is ready to install"));
     return 0;
 }
 

@@ -1182,7 +1182,7 @@ void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui) {
             bool quiet_auto_scan = (ui->bt_op == JW_BT_OP_SCAN && !ui->bt_op_manual);
             if (!quiet_auto_scan) {
                 jw__bt_msg(ui, "%s", message[0] ? message :
-                           (st == JW_BT_OP_OK ? "Bluetooth done" : "Bluetooth failed"));
+                           (st == JW_BT_OP_OK ? T("Bluetooth done") : T("Bluetooth failed")));
             }
             ui->bt_op = JW_BT_OP_NONE;
             ui->bt_op_manual = false;
@@ -4286,7 +4286,7 @@ static void jw__scrape_start_status(const jw_ipc_scrape_start_info *info,
         snprintf(buf, buf_size, "%s", "No missing artwork");
     } else if (info->requested == 0) {
         snprintf(buf, buf_size, "%s",
-                 missing_only ? "No missing artwork" : "No games to scrape");
+                 missing_only ? T("No missing artwork") : T("No games to scrape"));
     } else {
         snprintf(buf, buf_size, "%s", "No new scrape jobs");
     }
@@ -4410,9 +4410,9 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
     if (row->state == JW_IPC_SCRAPE_ROW_NOT_FOUND)
         desc = T("Not found in the ScreenScraper.fr database.");
     else if (row->state == JW_IPC_SCRAPE_ROW_ERROR)
-        desc = row->message[0] ? row->message : "Artwork scrape failed.";
+        desc = row->message[0] ? row->message : T("Artwork scrape failed.");
     else if (row->state == JW_IPC_SCRAPE_ROW_CANCELLED)
-        desc = row->message[0] ? row->message : "Scrape was cancelled before completion.";
+        desc = row->message[0] ? row->message : T("Scrape was cancelled before completion.");
     if (desc) {
         ly += cat_scale(4);
         cat_draw_text_ellipsized(small, desc, c.x, ly, theme->hint, c.w);
@@ -4484,8 +4484,8 @@ static void jw__render_scrape_queue(const jw_settings_ui *ui,
     if (list->cursor >= count) list->cursor = count > 0 ? count - 1 : 0;
 
     if (count == 0) {
-        const char *msg = (q && q->total > 0) ? "No jobs match this filter."
-                                              : "No scrape jobs.";
+        const char *msg = (q && q->total > 0) ? T("No jobs match this filter.")
+                                              : T("No scrape jobs.");
         int tw = cat_measure_text(body, msg);
         cat_draw_text(body, msg, c.x + (c.w - tw) / 2,
                       c.y + (c.h - TTF_FontHeight(body)) / 2, theme->hint);
@@ -5763,6 +5763,79 @@ static void jw__format_update_size(long long bytes, char *out, size_t out_size) 
     }
 }
 
+/* Turn the span [at, at + len) of msg into spec and double every other '%',
+   giving the printf template msg was made from. */
+static bool jw__update_template(const char *msg, const char *at, size_t len,
+                                const char *spec, char *key, size_t key_size) {
+    size_t k = 0;
+    for (const char *p = msg; *p; ) {
+        const char *add = NULL;
+        char one[2] = { *p, '\0' };
+        if (p == at) {
+            add = spec;
+            p += len;
+        } else if (*p == '%') {
+            add = "%%";
+            p++;
+        } else {
+            add = one;
+            p++;
+        }
+        size_t n = strlen(add);
+        if (k + n >= key_size) return false;
+        memcpy(key + k, add, n);
+        k += n;
+    }
+    key[k] = '\0';
+    return true;
+}
+
+/* Update messages arrive as English sentences: jawakad composes them, and the
+   JW_UI marks in update.c put them in leaf.pot. Translate a fixed sentence
+   directly, and one naming a release or carrying one number by turning that
+   value back into its %s or %d and looking the template up. */
+static void jw__update_text(const jw_ipc_update_status_info *u, const char *msg,
+                            char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    if (!msg) msg = "";
+    if (!msg[0] || strchr(msg, '|')) {
+        snprintf(out, out_size, "%s", msg);
+        return;
+    }
+    const char *t = T(msg);
+    if (t != msg) {
+        snprintf(out, out_size, "%s", t);
+        return;
+    }
+    char key[320];
+    const char *ids[3] = { u ? u->release_id : "", u ? u->current_release_id : "",
+                           u ? u->install_result_release_id : "" };
+    for (int i = 0; i < 3; i++) {
+        const char *at = ids[i][0] ? strstr(msg, ids[i]) : NULL;
+        if (!at || strstr(at + 1, ids[i])) continue;
+        if (jw__update_template(msg, at, strlen(ids[i]), "%s", key, sizeof(key))) {
+            const char *fmt = T(key);
+            if (fmt != key) {
+                snprintf(out, out_size, fmt, ids[i]);
+                return;
+            }
+        }
+    }
+    const char *d = strpbrk(msg, "0123456789");
+    if (d) {
+        size_t n = strspn(d, "0123456789");
+        if (n < 10 && !strpbrk(d + n, "0123456789") &&
+            jw__update_template(msg, d, n, "%d", key, sizeof(key))) {
+            const char *fmt = T(key);
+            if (fmt != key) {
+                snprintf(out, out_size, fmt, atoi(d));
+                return;
+            }
+        }
+    }
+    snprintf(out, out_size, "%s", msg);
+}
+
 static const char *jw__update_state_label(const jw_ipc_update_status_info *u) {
     if (!u || !u->state[0]) {
         return T("Idle");
@@ -5947,20 +6020,21 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
     bool checking = ui->update_have_status && strcmp(u->state, "checking") == 0;
     char message[320];
     if (ui->update_have_status && u->install_active && u->install_message[0]) {
-        snprintf(message, sizeof(message), "%s", T(u->install_message));
+        jw__update_text(u, u->install_message, message, sizeof(message));
     } else if (ui->update_msg[0]) {
-        snprintf(message, sizeof(message), "%s", ui->update_msg);
+        jw__update_text(u, ui->update_msg, message, sizeof(message));
     } else if (ui->update_have_status) {
         if (u->install_message[0] &&
             (u->install_active || u->install_armed ||
              u->install_blocked || u->install_needs_confirmation ||
              u->install_ready)) {
-            snprintf(message, sizeof(message), "%s", T(u->install_message));
+            jw__update_text(u, u->install_message, message, sizeof(message));
         } else if (u->message[0]) {
-            snprintf(message, sizeof(message), "%s", u->message);
+            jw__update_text(u, u->message, message, sizeof(message));
         } else if (u->install_result_message[0]) {
-            snprintf(message, sizeof(message), T("Last update: %s"),
-                     T(u->install_result_message));
+            char result[256];
+            jw__update_text(u, u->install_result_message, result, sizeof(result));
+            snprintf(message, sizeof(message), T("Last update: %s"), result);
         } else {
             snprintf(message, sizeof(message), "%s", jw__update_state_label(u));
         }
@@ -6144,7 +6218,9 @@ static void jw__render_update_picker(const jw_settings_ui *ui,
     } else if (count <= 0) {
         message = T("Check releases first");
     } else if (!ui->update.options_complete && ui->update.message[0]) {
-        message = ui->update.message;   /* the list load failed; say why */
+        static char failed[256];   /* the list load failed; say why */
+        jw__update_text(&ui->update, ui->update.message, failed, sizeof(failed));
+        message = failed;
     }
     cat_draw_text_ellipsized(small, message, x + cat_scale(12), dy,
                              theme->hint, w - cat_scale(24));
@@ -6615,7 +6691,7 @@ static bool jw__confirm_update_unknown_preflight(const char *message) {
     cat_message_opts opts = {
         .message = message && message[0]
                    ? message
-                   : "Install update even though checks are incomplete?",
+                   : JW_UI("Install update even though checks are incomplete?"),
         .footer = footer,
         .footer_count = 2,
     };
@@ -6656,7 +6732,9 @@ static bool jw__confirm_bt_unpair(const char *name) {
 static void jw__copy_status(char *status_buf, size_t status_size,
                             const char *value) {
     if (status_buf && status_size > 0) {
-        snprintf(status_buf, status_size, "%s", value ? value : "");
+        /* A "|" would make T() drop text it does not know, so pass it as is. */
+        const char *shown = value && !strchr(value, '|') ? T(value) : value;
+        snprintf(status_buf, status_size, "%s", shown ? shown : "");
     }
 }
 
@@ -6966,7 +7044,7 @@ static void jw__update_install_or_reboot(jw_settings_ui *ui,
     if (ui->update.install_blocked) {
         const char *msg = ui->update.install_message[0]
             ? ui->update.install_message
-            : "Update install blocked";
+            : JW_UI("Update install blocked");
         jw__copy_status(status_buf, status_size, msg);
         jw__update_msg(ui, "%s", msg);
         return;
@@ -6994,7 +7072,7 @@ static void jw__update_install_or_reboot(jw_settings_ui *ui,
     if (ui->update.install_blocked) {
         const char *msg = ui->update.install_message[0]
             ? ui->update.install_message
-            : "Update install blocked";
+            : JW_UI("Update install blocked");
         jw__copy_status(status_buf, status_size, msg);
         jw__update_msg(ui, "%s", msg);
         return;
@@ -7004,7 +7082,7 @@ static void jw__update_install_or_reboot(jw_settings_ui *ui,
     if (ui->update.install_needs_confirmation) {
         const char *msg = ui->update.install_message[0]
             ? ui->update.install_message
-            : "Install update even though checks are incomplete?";
+            : JW_UI("Install update even though checks are incomplete?");
         if (!jw__confirm_update_unknown_preflight(msg)) {
             jw__copy_status(status_buf, status_size, "Update install canceled");
             jw__update_msg(ui, "Update install canceled");
@@ -7064,7 +7142,7 @@ static void jw__set_adb(jw_settings_ui *ui, bool enabled,
                        status_buf, (int)status_size) != 0 &&
         !status_buf[0]) {
         snprintf(status_buf, status_size, "%s",
-                 enabled ? "ADB enable failed" : "ADB disable failed");
+                 enabled ? T("ADB enable failed") : T("ADB disable failed"));
     }
     jw__refresh_adb(ui);
 }
