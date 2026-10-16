@@ -5502,6 +5502,7 @@ static const char *jw__language_label(const char *code) {
     if (strcmp(code, "zh_CN") == 0) return "中文";
     if (strcmp(code, "de_DE") == 0) return "Deutsch";
     if (strcmp(code, "fr_FR") == 0) return "Français";
+    if (strcmp(code, "nl_BE") == 0) return "Nederlands (België)";
     if (strcmp(code, "es_MX") == 0) return "Español (México)";
     if (strcmp(code, "vi_VN") == 0) return "Tiếng Việt";
     if (strcmp(code, "ru_RU") == 0) return "Русский";
