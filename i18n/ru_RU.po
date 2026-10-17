@@ -31,7 +31,7 @@ msgstr " Некоторые повреждённые файлы были изм�
 
 #: cmd/jawaka-launcher/main.c
 msgid "%.120s changed; refresh failed"
-msgstr "Изменено: %.120s, но обновить список не удалось"
+msgstr "Изменено: %.120s; обновление не выполнено"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%.120s has no compatible install action"
@@ -155,7 +155,7 @@ msgstr "%s уже ваша тема"
 
 #: internal/store/pakrat.c
 msgid "%s is installed on Secondary. Uninstall it there first, then install the service pak on Primary."
-msgstr "%s установлено на второй SD-карте. Сначала удалите его там, затем установите пак со службой на основную SD-карту."
+msgstr "%s установлено на второй SD-карте. Сначала удалите его там, затем установите сервисный пакет на основную SD-карту."
 
 #: cmd/jawaka-launcher/main.c
 msgid "%s is installed.\n\nApply it now?"
@@ -601,7 +601,7 @@ msgstr "Картинка сохранена"
 
 #: internal/settings/settings.c
 msgid "Artwork scrape failed."
-msgstr "Не удалось скачать картинку."
+msgstr "Не удалось скрапировать картинку."
 
 #: internal/launcher/system_names.c
 msgid "Atari 2600"
@@ -709,7 +709,7 @@ msgstr "Уровень заряда"
 
 #: internal/settings/settings.c
 msgid "Battery Low"
-msgstr "Низкий заряд"
+msgstr "Низкий уровень заряда"
 
 #: internal/platform/platform_common.c
 msgid "Battery Saver"
@@ -717,11 +717,11 @@ msgstr "Энергосбережение"
 
 #: internal/update/update.c
 msgid "Battery must be at least %d%% or charging"
-msgstr "Заряд должен быть не ниже %d%% или подключите зарядку"
+msgstr "Уровень заряда должен быть не ниже %d%% или подключите зарядное устройство"
 
 #: internal/update/update.c
 msgid "Battery status is unknown; confirmation required"
-msgstr "Заряд батареи неизвестен; требуется подтверждение"
+msgstr "Уровень заряда неизвестен; требуется подтверждение"
 
 #: internal/retroarch/shader_strings.c
 msgid "Best at integer or near-integer scaling; the upstream shader can look uneven at arbitrary scales."
@@ -1050,7 +1050,7 @@ msgstr "Подтвердить"
 
 #: internal/store/pakrat.c
 msgid "Confirmed uninstall could not be completed"
-msgstr "Подтверждённое удаление не удалось завершить"
+msgstr "Не удалось завершить подтверждённое удаление"
 
 #: internal/settings/storage_ui.c
 msgid "Connect to power or charge the battery to at least 30 percent and try again."
@@ -1098,7 +1098,7 @@ msgstr "Не удалось проверить сохранённые данны
 
 #: internal/store/pakrat.c
 msgid "Could not read the Themes folder"
-msgstr "Не удалось прочитать папку Themes"
+msgstr "Не удалось прочитать папку «Themes»"
 
 #: internal/store/pakrat.c
 msgid "Could not read the bundled theme list for %s"
@@ -1110,7 +1110,7 @@ msgstr "Не удалось записать подтверждение удал
 
 #: internal/store/pakrat.c
 msgid "Could not reload confirmed uninstall intent"
-msgstr "Не удалось перечитать подтверждение удаления"
+msgstr "Не удалось перезагрузить подтверждение удаления"
 
 #: internal/settings/settings.c
 msgid "Could not save"
@@ -1438,7 +1438,7 @@ msgstr "Фонтан"
 
 #: internal/update/update.c
 msgid "Free space could not be checked; confirmation required"
-msgstr "Не удалось проверить свободное место; требуется подтверждение"
+msgstr "Не удалось проверить наличие свободного места; требуется подтверждение"
 
 #: internal/platform/platform_common.c
 msgid "Frontend"
@@ -1687,7 +1687,7 @@ msgstr "Перед проверкой этой карты на вашем уст
 
 #: internal/settings/settings.c
 msgid "Install update even though checks are incomplete?"
-msgstr "Установить обновление, хотя не все проверки пройдены?"
+msgstr "Установить обновление не дожидаясь завершения проверки?"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installed"
@@ -2529,7 +2529,7 @@ msgstr "Прогресс, хранящийся в записываемом об�
 
 #: internal/settings/settings.c
 msgid "Queue full: queued %d of %d"
-msgstr "Очередь заполнена: добавлено %d из %d"
+msgstr "Очередь заполнена: в очереди %d из %d"
 
 #: internal/settings/settings.c
 msgid "Queued"
@@ -2961,7 +2961,7 @@ msgstr "Сканлайны снижают яркость, особенно вм�
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scanned"
-msgstr "Из сканирования"
+msgstr "Отсканировано"
 
 #: internal/settings/settings.c
 msgid "Scanning"
@@ -3033,7 +3033,7 @@ msgstr "ScreenScraper отклонил учётные данные"
 
 #: internal/scrape/ss_client.c
 msgid "ScreenScraper request failed"
-msgstr "Запрос к ScreenScraper не удался"
+msgstr "Не удалось выполнить запрос к ScreenScraper"
 
 #: internal/scrape/ss_client.c
 msgid "ScreenScraper returned HTTP %d"
@@ -3045,7 +3045,7 @@ msgstr "ScreenScraper вернул пустой ответ"
 
 #: internal/scrape/ss_client.c
 msgid "ScreenScraper validation failed"
-msgstr "Проверка в ScreenScraper не удалась"
+msgstr "Не удалось выполнить проверку в ScreenScraper"
 
 #: internal/settings/settings.c
 msgid "ScreenScraper.fr"
@@ -3502,7 +3502,7 @@ msgstr "В папке Themes уже %d тем — максимум для пок
 
 #: internal/store/pakrat.c
 msgid "The Themes folder already holds %d themes, the most Leaf lists"
-msgstr "В папке Themes уже тем: %d, это максимум для Leaf"
+msgstr "В папке «Themes» уже %d тем, это максимум для Leaf"
 
 #: internal/settings/storage_ui.c
 msgid "The card passed the check but couldn't be made writable. Restart your device, then try Check SD card."
@@ -3626,7 +3626,7 @@ msgstr "Цвета темы"
 
 #: internal/store/pakrat.c
 msgid "Theme folder %s belongs to a theme Leaf ships"
-msgstr "Папка темы %s принадлежит теме, входящей в состав Leaf"
+msgstr "Папка темы %s принадлежит теме из состава Leaf"
 
 #: internal/store/pakrat.c
 msgid "Theme package does not match the catalog entry"
@@ -3950,11 +3950,11 @@ msgstr "Манифест обновления не является коррек
 
 #: internal/update/update.c
 msgid "Update manifest product is not leaf"
-msgstr "Продукт в манифесте обновления не leaf"
+msgstr "Продукт в манифесте обновления не является leaf"
 
 #: internal/settings/settings.c
 msgid "Update ready check failed"
-msgstr "Проверка готовности обновления не удалась"
+msgstr "Не удалось выполнить проверку готовности обновления"
 
 #: internal/update/update.c
 msgid "Update runner did not write a result file"
