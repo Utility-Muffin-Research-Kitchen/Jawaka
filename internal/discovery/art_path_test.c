@@ -378,6 +378,62 @@ static void test_stem_for_rom(void) {
     assert(strcmp(out, "Sonic.md") == 0);
 }
 
+/* EasyRPG folder games: every game's marker is RPG_RT.ldb, so the folder
+   names the game, and art kept under the marker's name is the fallback. */
+static void test_folder_games(void) {
+    char *exts[] = { "easyrpg", "ldb" };
+    char *markers[] = { "RPG_RT.ldb" };
+    jw_ra_system system;
+    memset(&system, 0, sizeof(system));
+    system.extensions.items = exts;
+    system.extensions.count = 2;
+    system.file_names.items = markers;
+    system.file_names.count = 1;
+    system.image_root = "Images/EASYRPG";
+
+    char out[PATH_MAX];
+    jw_art_stem_for_game(&system, "Folder Game", "RPG_RT.ldb", out, sizeof(out));
+    assert(strcmp(out, "Folder Game") == 0);
+    /* The innermost folder, kept whole even with a dot in it. */
+    jw_art_stem_for_game(&system, "Series/Yume 2kki 0.123", "rpg_rt.LDB", out, sizeof(out));
+    assert(strcmp(out, "Yume 2kki 0.123") == 0);
+    /* At the system folder's root a marker is just a file. */
+    assert(!jw_art_is_folder_marker(&system, "", "RPG_RT.ldb"));
+    jw_art_stem_for_game(&system, "", "RPG_RT.ldb", out, sizeof(out));
+    assert(strcmp(out, "RPG_RT") == 0);
+    jw_art_stem_for_game(&system, "Folder Game", "Packaged.easyrpg", out, sizeof(out));
+    assert(strcmp(out, "Packaged") == 0);
+    jw_art_stem_for_game(NULL, "Folder Game", "RPG_RT.ldb", out, sizeof(out));
+    assert(strcmp(out, "RPG_RT") == 0);
+
+    jw_storage_source source;
+    memset(&source, 0, sizeof(source));
+    char base[PATH_MAX], path[PATH_MAX], abs[PATH_MAX], rel[PATH_MAX];
+    make_fresh_dir("folder-games", base, sizeof(base));
+    snprintf(source.root, sizeof(source.root), "%s", base);
+    snprintf(source.images_path, sizeof(source.images_path), "%s/Images", base);
+    snprintf(source.roms_path, sizeof(source.roms_path), "%s/Roms", base);
+    snprintf(path, sizeof(path), "%s/Images", base);
+    assert(mkdir(path, 0755) == 0);
+    snprintf(path, sizeof(path), "%s/Images/EASYRPG", base);
+    assert(mkdir(path, 0755) == 0);
+
+    assert(jw_art_find_for_game(NULL, &source, &system, "EASYRPG", "Folder Game",
+                                "RPG_RT.ldb", abs, sizeof(abs), rel, sizeof(rel)) == 1);
+    touch(path, "RPG_RT.png");
+    assert(jw_art_find_for_game(NULL, &source, &system, "EASYRPG", "Folder Game",
+                                "RPG_RT.ldb", abs, sizeof(abs), rel, sizeof(rel)) == 0);
+    assert(strcmp(rel, "Images/EASYRPG/RPG_RT.png") == 0);
+    /* The folder's own art wins, even as a JPEG against a PNG. */
+    touch(path, "Folder Game.jpg");
+    assert(jw_art_find_for_game(NULL, &source, &system, "EASYRPG", "Folder Game",
+                                "RPG_RT.ldb", abs, sizeof(abs), rel, sizeof(rel)) == 0);
+    assert(strcmp(rel, "Images/EASYRPG/Folder Game.jpg") == 0);
+    /* A file that is not a folder marker never borrows the marker's art. */
+    assert(jw_art_find_for_game(NULL, &source, &system, "EASYRPG", "",
+                                "Packaged.easyrpg", abs, sizeof(abs), rel, sizeof(rel)) == 1);
+}
+
 int main(void) {
     const char *base = getenv("ART_PATH_TEST_DIR");
     if (!base || !base[0]) base = getenv("TMPDIR");
@@ -398,6 +454,7 @@ int main(void) {
     test_index_keeps_its_snapshot();
     test_locations_order();
     test_stem_for_rom();
+    test_folder_games();
 
     remove_tree(g_root);
     printf("art-path-test: ok (%d skipped)\n", g_skipped);

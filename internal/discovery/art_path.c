@@ -315,6 +315,25 @@ void jw_art_stem_for_rom(const jw_ra_system *system, const char *filename,
     }
 }
 
+bool jw_art_is_folder_marker(const jw_ra_system *system, const char *rel_subpath,
+                             const char *filename) {
+    return system && rel_subpath && rel_subpath[0] && filename &&
+           jw_ra_string_list_contains_casefold(&system->file_names, filename);
+}
+
+void jw_art_stem_for_game(const jw_ra_system *system, const char *rel_subpath,
+                          const char *filename, char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return;
+    }
+    if (jw_art_is_folder_marker(system, rel_subpath, filename)) {
+        const char *folder = strrchr(rel_subpath, '/');
+        snprintf(out, out_size, "%s", folder ? folder + 1 : rel_subpath);
+        return;
+    }
+    jw_art_stem_for_rom(system, filename, out, out_size);
+}
+
 static int jw__art_find_in(jw_art_index *index, const char *dir, const char *rel_dir,
                            const char *stem,
                            char *image_abs, size_t image_abs_size,
@@ -380,4 +399,25 @@ int jw_art_find_for_rom(jw_art_index *index,
     }
 
     return 1;
+}
+
+int jw_art_find_for_game(jw_art_index *index,
+                         const jw_storage_source *source,
+                         const jw_ra_system *system,
+                         const char *physical_folder,
+                         const char *rel_subpath,
+                         const char *filename,
+                         char *image_abs, size_t image_abs_size,
+                         char *image_rel, size_t image_rel_size) {
+    const char *image_root = system ? system->image_root : NULL;
+    char stem[1024];
+    jw_art_stem_for_game(system, rel_subpath, filename, stem, sizeof(stem));
+    int rc = jw_art_find_for_rom(index, source, image_root, physical_folder, stem,
+                                 image_abs, image_abs_size, image_rel, image_rel_size);
+    if (rc == 0 || !jw_art_is_folder_marker(system, rel_subpath, filename)) {
+        return rc;
+    }
+    jw_art_stem_for_rom(system, filename, stem, sizeof(stem));
+    return jw_art_find_for_rom(index, source, image_root, physical_folder, stem,
+                               image_abs, image_abs_size, image_rel, image_rel_size);
 }

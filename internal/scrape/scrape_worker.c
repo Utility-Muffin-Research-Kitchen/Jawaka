@@ -43,6 +43,12 @@ typedef struct {
     char lookup_extension[17];
     char effective_title[256];
     char rom_path[512];
+    /* Stem of the PNG this scrape writes, resolved at enqueue like image_dir.
+       A folder game (Roms/EASYRPG/Folder Game/RPG_RT.ldb) uses its folder's
+       name, and is searched by it too: every such game's marker has the same
+       filename. */
+    char dest_stem[256];
+    bool folder_game;
     /* Requeued after a storage failure: a second storage failure while the
        card reports writable is a real error, not another pause. */
     bool storage_requeued;
@@ -186,8 +192,8 @@ static void jw__prefs_free(jw__scrape_prefs *prefs) {
 
 /* ── Path resolution ─────────────────────────────────────────────────── */
 
-/* Strip the extension from a rom filename to get the art basename
-   (matches discovery's jw__title_from_filename). */
+/* Strip the last extension from a rom filename: the stem of the PNG a scrape
+   writes (matches discovery's jw__title_from_filename). */
 static void jw__art_base(const char *rom_name, char *out, size_t out_size) {
     snprintf(out, out_size, "%s", rom_name);
     char *dot = strrchr(out, '.');
@@ -214,15 +220,6 @@ static bool jw__row_state_is_busy(jw_scrape_row_state state) {
            state == JW_SCRAPE_ROW_SEARCH ||
            state == JW_SCRAPE_ROW_DOWNLOAD ||
            state == JW_SCRAPE_ROW_SAVE;
-}
-
-static void jw__display_name_from_rom_path(const char *rom_path,
-                                           char *out, size_t out_size) {
-    char copy[512];
-    snprintf(copy, sizeof(copy), "%s", rom_path ? rom_path : "");
-    char base[256];
-    jw__art_base(basename(copy), base, sizeof(base));
-    snprintf(out, out_size, "%s", base[0] ? base : (rom_path ? rom_path : ""));
 }
 
 static jw__scrape_row *jw__row_find_locked(unsigned row_id) {
@@ -423,6 +420,78 @@ static void jw__log_scrape_policy(const char *system) {
     }
 }
 
+/* The catalog entry for a system, or NULL. Catalog-thread only, like
+   jw__image_dir_for_system. */
+static const jw_ra_system *jw__catalog_system(const char *system) {
+    char error[256];
+    const jw_ra_catalog *catalog =
+        jw_ra_catalog_get(jw__w.sdcard_root, error, sizeof(error));
+    return catalog && system ? jw_ra_catalog_find_system(catalog, system) : NULL;
+}
+
+/* Where a ROM sits on its storage source: the Roms/ folder it is in ("FC" for
+   Roms/FC/Hacks/Mario.nes), the folders between that one and the file
+   ("Hacks", "" for none) and the filename. */
+typedef struct {
+    const jw_storage_source *source;
+    char rom_abs[PATH_MAX];
+    char folder[256];        /* "" when the ROM is outside roms_path */
+    char subpath[PATH_MAX];
+    char filename[256];
+} jw__rom_location;
+
+/* Returns -1 when the path does not resolve to a source; filename is set
+   either way. */
+static int jw__locate_rom(const jw_storage_source_list *sources, const char *rom_path,
+                          jw__rom_location *out) {
+    out->source = NULL;
+    out->rom_abs[0] = out->folder[0] = out->subpath[0] = '\0';
+    const char *name = strrchr(rom_path, '/');
+    snprintf(out->filename, sizeof(out->filename), "%s", name ? name + 1 : rom_path);
+    if (!sources ||
+        jw_storage_resolve_path(sources, rom_path, out->rom_abs, sizeof(out->rom_abs)) != 0) {
+        return -1;
+    }
+    out->source = jw_storage_sources_find_for_path(sources, out->rom_abs);
+    if (!out->source) out->source = jw_storage_sources_primary(sources);
+    if (!out->source) return -1;
+
+    const char *rest = NULL;
+    size_t roms_len = strlen(out->source->roms_path);
+    if (roms_len > 0 && strncmp(out->rom_abs, out->source->roms_path, roms_len) == 0 &&
+        out->rom_abs[roms_len] == '/') {
+        rest = out->rom_abs + roms_len + 1;
+    } else if (strncmp(rom_path, "Roms/", 5) == 0) {
+        rest = rom_path + 5;
+    }
+    const char *slash = rest ? strchr(rest, '/') : NULL;
+    if (!slash || slash == rest || (size_t)(slash - rest) >= sizeof(out->folder)) {
+        return 0;
+    }
+    memcpy(out->folder, rest, (size_t)(slash - rest));
+    out->folder[slash - rest] = '\0';
+    const char *last = strrchr(slash, '/');
+    size_t sub_len = (size_t)(last - slash);
+    if (last > slash && sub_len < sizeof(out->subpath)) {
+        memcpy(out->subpath, slash + 1, sub_len - 1);
+        out->subpath[sub_len - 1] = '\0';
+    }
+    return 0;
+}
+
+/* The stem of the PNG a scrape writes for a ROM: its filename without the
+   last extension, or a folder game's folder name, the title the scan gives
+   it. Returns true for a folder game. */
+static bool jw__scrape_dest_stem(const jw_ra_system *sys, const jw__rom_location *loc,
+                                 char *out, size_t out_size) {
+    if (jw_art_is_folder_marker(sys, loc->subpath, loc->filename)) {
+        jw_art_stem_for_game(sys, loc->subpath, loc->filename, out, out_size);
+        return true;
+    }
+    jw__art_base(loc->filename, out, out_size);
+    return false;
+}
+
 static int jw__resolve_paths(const jw__scrape_item *item,
                              char *rom_abs, size_t rom_abs_size,
                              char *rom_name, size_t rom_name_size,
@@ -440,10 +509,8 @@ static int jw__resolve_paths(const jw__scrape_item *item,
 
     char rom_copy[512];
     snprintf(rom_copy, sizeof(rom_copy), "%s", item->rom_path);
-    snprintf(rom_name, rom_name_size, "%s", basename(rom_copy));
-
-    char base[256];
-    jw__art_base(rom_name, base, sizeof(base));
+    snprintf(rom_name, rom_name_size, "%s",
+             item->folder_game ? item->dest_stem : basename(rom_copy));
 
     const jw_storage_source *source =
         jw_storage_sources_find_for_path(&sources, rom_abs);
@@ -452,12 +519,12 @@ static int jw__resolve_paths(const jw__scrape_item *item,
 
     const char *image_dir = item->image_dir[0] ? item->image_dir : item->system;
     int n = snprintf(dest_abs, dest_abs_size, "%s/%s/%s.png",
-                     source->images_path, image_dir, base);
+                     source->images_path, image_dir, item->dest_stem);
     if (n <= 0 || n >= (int)dest_abs_size) return -1;
 
     char image_rel[512];
     snprintf(image_rel, sizeof(image_rel), "Images/%s/%s.png",
-             image_dir, base);
+             image_dir, item->dest_stem);
     return jw_storage_db_path_for_source(source, image_rel, dest_abs,
                                          image_db, image_db_size);
 }
@@ -478,7 +545,9 @@ static bool jw__pending_contains_locked(const char *system, const char *rom_path
     return false;
 }
 
-static int jw__queue_push(const char *system, const char *rom_path) {
+/* sources may be NULL; the item then keeps the ROM filename's stem. */
+static int jw__queue_push(const jw_storage_source_list *sources,
+                          const char *system, const char *rom_path) {
     if (jw__w.count == 0 && jw__w.active_count == 0 && !jw__w.paused_quota) {
         /* New batch from idle: terminal rows remain readable until this point. */
         jw__clear_finished_batch_locked();
@@ -503,11 +572,16 @@ static int jw__queue_push(const char *system, const char *rom_path) {
     row->state = JW_SCRAPE_ROW_QUEUED;
     snprintf(row->system, sizeof(row->system), "%s", system);
     snprintf(row->rom_path, sizeof(row->rom_path), "%s", rom_path);
+    char dest_stem[256];
+    jw__rom_location loc;
+    (void)jw__locate_rom(sources, rom_path, &loc);
+    bool folder_game = jw__scrape_dest_stem(jw__catalog_system(system), &loc,
+                                            dest_stem, sizeof(dest_stem));
     jw_game_entry game;
     if (!jw__w.db_path[0] ||
         jw_db_get_game_by_rom_path(jw__w.db_path, rom_path, &game) != 0) {
-        jw__display_name_from_rom_path(rom_path, row->display_name,
-                                       sizeof(row->display_name));
+        snprintf(row->display_name, sizeof(row->display_name), "%s",
+                 dest_stem[0] ? dest_stem : rom_path);
     } else {
         snprintf(row->display_name, sizeof(row->display_name), "%s", game.name);
     }
@@ -525,6 +599,8 @@ static int jw__queue_push(const char *system, const char *rom_path) {
     snprintf(slot->effective_title, sizeof(slot->effective_title), "%s",
              row->display_name);
     snprintf(slot->rom_path, sizeof(slot->rom_path), "%s", rom_path);
+    snprintf(slot->dest_stem, sizeof(slot->dest_stem), "%s", dest_stem);
+    slot->folder_game = folder_game;
     jw__w.count++;
     return 1;
 }
@@ -803,10 +879,17 @@ static jw__scrape_item_result jw__process_item(jw__scrape_item *item,
 
     jw_ss_result result;
     jw_ss_search_status search_status;
-    if (item->name_source == JW_RA_SCRAPE_NAME_DESCRIPTOR) {
+    if (item->folder_game || item->name_source == JW_RA_SCRAPE_NAME_DESCRIPTOR) {
         jw_scrape_identity_candidates candidates;
-        jw_scrape_identity_build(rom_abs, rom_name, item->effective_title,
-                                 item->lookup_extension, &candidates);
+        if (item->folder_game) {
+            /* By name alone. When measured (2026-10) a marker's hash
+               identified no game on ScreenScraper, and a folder name often
+               matched only without its version suffix ("v1.2"). */
+            jw_scrape_identity_build_folder(rom_name, &candidates);
+        } else {
+            jw_scrape_identity_build(rom_abs, rom_name, item->effective_title,
+                                     item->lookup_extension, &candidates);
+        }
         search_status = JW_SS_SEARCH_NOT_FOUND;
         for (size_t i = 0; i < candidates.count; i++) {
             search_status = jw_ss_search_rom_platforms(
@@ -1081,13 +1164,17 @@ int jw_scrape_enqueue_game(const char *system, const char *rom_path,
         return -1;
     }
 
+    jw_storage_source_list sources;
+    bool have_sources = jw_storage_sources_resolve(jw__w.sdcard_root, &sources) == 0 &&
+                        sources.count > 0;
+
     pthread_mutex_lock(&jw__w.mu);
     if (!jw__w.running) {
         pthread_mutex_unlock(&jw__w.mu);
         if (error) *error = "scrape worker not running";
         return -1;
     }
-    int rc = jw__queue_push(system, rom_path);
+    int rc = jw__queue_push(have_sources ? &sources : NULL, system, rom_path);
     if (rc > 0) pthread_cond_broadcast(&jw__w.cv);
     pthread_mutex_unlock(&jw__w.mu);
     if (rc < 0) {
@@ -1098,31 +1185,10 @@ int jw_scrape_enqueue_game(const char *system, const char *rom_path,
     return rc;
 }
 
-/* The Roms/ folder a ROM physically sits in ("FC" for Roms/FC/Mario.nes, also
-   for nested Roms/FC/Hacks/Mario.nes), or "" when it is outside roms_path. */
-static void jw__rom_physical_folder(const jw_storage_source *source,
-                                    const char *rom_abs, const char *rom_path,
-                                    char *out, size_t out_size) {
-    out[0] = '\0';
-    const char *rest = NULL;
-    size_t roms_len = strlen(source->roms_path);
-    if (roms_len > 0 && strncmp(rom_abs, source->roms_path, roms_len) == 0 &&
-        rom_abs[roms_len] == '/') {
-        rest = rom_abs + roms_len + 1;
-    } else if (strncmp(rom_path, "Roms/", 5) == 0) {
-        rest = rom_path + 5;
-    }
-    const char *slash = rest ? strchr(rest, '/') : NULL;
-    if (!slash || slash == rest || (size_t)(slash - rest) >= out_size) {
-        return;
-    }
-    memcpy(out, rest, (size_t)(slash - rest));
-    out[slash - rest] = '\0';
-}
-
 /* True if the game already has art on disk, wherever the library scan would
    find it (canonical image root, Images/<folder>, Roms/<folder>/Imgs, in any
-   accepted format) or where a scrape would write it. Checked on disk so art
+   accepted format, and for a folder game under its folder's name before the
+   marker's) or where a scrape would write it. Checked on disk so art
    that landed without a rescan still counts. Shared by the enqueue and the
    missing-count paths; runs on the calling thread, like the image-dir lookup. */
 /* An SD repair can truncate damaged artwork to 0 bytes. The file is still
@@ -1135,40 +1201,26 @@ static bool jw__art_file_has_content(const char *path) {
 static bool jw__game_art_exists(const jw_storage_source_list *sources,
                                 jw_art_index *art_index,
                                 const char *system, const char *rom_path) {
-    char rom_abs[PATH_MAX];
-    if (jw_storage_resolve_path(sources, rom_path, rom_abs, sizeof(rom_abs)) != 0)
+    jw__rom_location loc;
+    if (jw__locate_rom(sources, rom_path, &loc) != 0)
         return false;
-    const jw_storage_source *source =
-        jw_storage_sources_find_for_path(sources, rom_abs);
-    if (!source) source = jw_storage_sources_primary(sources);
-    if (!source) return false;
+    const jw_ra_system *sys = jw__catalog_system(system);
 
-    char rom_copy[512];
-    snprintf(rom_copy, sizeof(rom_copy), "%s", rom_path);
-    const char *rom_name = basename(rom_copy);
-
-    char error[256];
-    const jw_ra_catalog *catalog =
-        jw_ra_catalog_get(jw__w.sdcard_root, error, sizeof(error));
-    const jw_ra_system *sys =
-        catalog ? jw_ra_catalog_find_system(catalog, system) : NULL;
-
-    char folder[256], stem[256], art_abs[PATH_MAX], art_rel[PATH_MAX];
-    jw__rom_physical_folder(source, rom_abs, rom_path, folder, sizeof(folder));
-    jw_art_stem_for_rom(sys, rom_name, stem, sizeof(stem));
-    if (jw_art_find_for_rom(art_index, source, sys ? sys->image_root : NULL, folder, stem,
-                            art_abs, sizeof(art_abs),
-                            art_rel, sizeof(art_rel)) == 0 &&
+    char art_abs[PATH_MAX], art_rel[PATH_MAX];
+    if (jw_art_find_for_game(art_index, loc.source, sys, loc.folder, loc.subpath,
+                             loc.filename, art_abs, sizeof(art_abs),
+                             art_rel, sizeof(art_rel)) == 0 &&
         jw__art_file_has_content(art_abs)) {
         return true;
     }
 
-    /* The scrape destination keeps only the last extension off the stem. */
+    /* The scrape destination takes only the last extension off a ROM
+       filename ("Sonic.md" for Sonic.md.zip). */
     char base[256], image_dir[64], dir[PATH_MAX], name[PATH_MAX], found[PATH_MAX];
-    jw__art_base(rom_name, base, sizeof(base));
+    jw__scrape_dest_stem(sys, &loc, base, sizeof(base));
     jw__image_dir_for_system(system, image_dir, sizeof(image_dir));
     if (snprintf(dir, sizeof(dir), "%s/%s",
-                 source->images_path, image_dir) >= (int)sizeof(dir) ||
+                 loc.source->images_path, image_dir) >= (int)sizeof(dir) ||
         jw_art_find(art_index, dir, base, name, sizeof(name)) != 0) {
         return false;
     }
@@ -1370,13 +1422,12 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
 
     jw_storage_source_list sources;
     bool have_sources =
-        missing_only &&
         jw_storage_sources_resolve(jw__w.sdcard_root, &sources) == 0 &&
         sources.count > 0;
 
     /* One pass over the system: read each art folder once, before taking
        the queue lock. */
-    jw_art_index *art_index = have_sources ? jw_art_index_new() : NULL;
+    jw_art_index *art_index = missing_only && have_sources ? jw_art_index_new() : NULL;
     bool queue_full = false;
     pthread_mutex_lock(&jw__w.mu);
     if (!jw__w.running) {
@@ -1396,7 +1447,8 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
         if (queue_full) {
             continue;   /* keep counting remaining selected games */
         }
-        int rc = jw__queue_push(system, games[i].rom_path);
+        int rc = jw__queue_push(have_sources ? &sources : NULL, system,
+                                games[i].rom_path);
         if (rc < 0) {
             queue_full = true;   /* queue full: enqueue what fit */
             out->queue_full = true;
@@ -1472,11 +1524,8 @@ void jw_scrape_status(jw_scrape_status_info *out) {
                           &out->cancelled, &out->queued, &out->active);
     for (int i = 0; i < JW__SCRAPE_MAX_WORKERS; i++) {
         if (jw__w.active[i].used) {
-            char rom_copy[512];
-            snprintf(rom_copy, sizeof(rom_copy), "%s",
-                     jw__w.active[i].item.rom_path);
             snprintf(out->current_name, sizeof(out->current_name), "%s",
-                     basename(rom_copy));
+                     jw__w.active[i].item.effective_title);
             snprintf(out->current_system, sizeof(out->current_system), "%s",
                      jw__w.active[i].item.system);
             break;
