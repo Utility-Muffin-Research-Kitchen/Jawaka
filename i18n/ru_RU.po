@@ -20,8 +20,9 @@
 # Resume notices by Atanvaron (GitHub, Jawaka#212), 2026-10-14, which fit
 # now that a long notice wraps onto two lines; Removed reads "Удалено", as
 # LVD14 agreed.
-# The 209 strings added with Jawaka#244 (2026-10-16) are drafts by Claude,
-# awaiting review in Jawaka#212.
+# The 209 strings added with Jawaka#244 were drafted by Claude (2026-10-16)
+# and reviewed by Atanvaron and LVD14 (GitHub, Jawaka#212), 2026-10-17; the
+# Themes-limit messages now give the count without a plural.
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
@@ -143,7 +144,7 @@ msgstr "%s нельзя установить.\n\nПапку с именем %s �
 
 #: cmd/jawaka-launcher/main.c
 msgid "%s can't be installed.\n\nThe Themes folder already has %d themes, the most Leaf can list. Uninstall or remove a theme to make room."
-msgstr "%s нельзя установить.\n\nВ папке Themes уже %d тем — максимум для отображения. Удалите одну, чтобы освободить место."
+msgstr "%s нельзя установить.\n\nЧисло тем в папке «Themes» достигло %d — это максимум для показа в Leaf. Удалите одну, чтобы освободить место."
 
 #: internal/settings/settings.c
 msgid "%s first"
@@ -717,7 +718,7 @@ msgstr "Энергосбережение"
 
 #: internal/update/update.c
 msgid "Battery must be at least %d%% or charging"
-msgstr "Уровень заряда должен быть не ниже %d%% или подключите зарядное устройство"
+msgstr "Уровень заряда должен быть не менее %d%%, либо устройство должно заряжаться"
 
 #: internal/update/update.c
 msgid "Battery status is unknown; confirmation required"
@@ -1687,7 +1688,7 @@ msgstr "Перед проверкой этой карты на вашем уст
 
 #: internal/settings/settings.c
 msgid "Install update even though checks are incomplete?"
-msgstr "Установить обновление не дожидаясь завершения проверки?"
+msgstr "Не все проверки удалось выполнить. Всё равно установить обновление?"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installed"
@@ -1863,7 +1864,7 @@ msgstr "Выбран Leaf %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Leaf can't find %s in the Themes folder"
-msgstr "Leaf не может найти %s в папке Themes"
+msgstr "Leaf не может найти %s в папке «Themes»"
 
 #: internal/settings/storage_ui.c
 msgid "Leaf checked this card and found file system errors, usually left by a shutdown that didn't finish saving. To keep your files safe, you can't save to this card until it's repaired."
@@ -3498,11 +3499,11 @@ msgstr "Имя папки слишком длинное для открытия.
 
 #: cmd/jawaka-launcher/main.c
 msgid "The Themes folder already has %d themes, the most Leaf can list. Remove one to install this theme."
-msgstr "В папке Themes уже %d тем — максимум для показа. Удалите одну, чтобы установить эту."
+msgstr "Число тем в папке «Themes» достигло %d — это максимум для показа в Leaf. Удалите одну, чтобы установить эту."
 
 #: internal/store/pakrat.c
 msgid "The Themes folder already holds %d themes, the most Leaf lists"
-msgstr "В папке «Themes» уже %d тем, это максимум для Leaf"
+msgstr "Число тем в папке «Themes» достигло %d — это максимум для показа в Leaf"
 
 #: internal/settings/storage_ui.c
 msgid "The card passed the check but couldn't be made writable. Restart your device, then try Check SD card."
