@@ -259,6 +259,12 @@ int  jw_db_remove_recent(const char *db_path, const char *kind, int target_id);
    normally be deleted by callers rather than stored. */
 int  jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,
                                 jw_game_entry *out);
+/* jw_db_get_game_by_rom_path that also returns the game's own Options >
+   Display Name, "" when it has none. out->name cannot tell that apart from an
+   imported or scanned name. Same single query. */
+int  jw_db_get_game_with_manual_name(const char *db_path, const char *rom_path,
+                                     jw_game_entry *out,
+                                     char *manual_name, size_t manual_size);
 /* The row a card's scan keyed by (source_id, rom_relpath). Unlike rom_path,
    which holds a second card's mount path from its last scan, this still finds
    the game after the two MLP1 cards swap mount points. 0 when found. */

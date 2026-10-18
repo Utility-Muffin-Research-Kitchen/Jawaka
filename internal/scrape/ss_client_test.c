@@ -13,6 +13,7 @@ typedef struct {
     int systems[8];
     char hashes[8][33];
     long sizes[8];
+    const char *name;   /* the rom_name every request must carry; NULL = game.zip */
 } request_trace;
 
 static jw_ss_search_status fake_search(
@@ -20,7 +21,7 @@ static jw_ss_search_status fake_search(
     long file_size, int system_id, jw_ss_result *result, void *userdata) {
     request_trace *trace = userdata;
     int call = trace->call_count++;
-    assert(strcmp(rom_name, "game.zip") == 0);
+    assert(strcmp(rom_name, trace->name ? trace->name : "game.zip") == 0);
     assert(call < trace->outcome_count);
     assert(result->game_name[0] == '\0');
     trace->systems[call] = system_id;
@@ -156,12 +157,52 @@ static void test_no_media_aggregates_across_platforms(void) {
     assert(trace.systems[2] == 230);
 }
 
+/* The scrape worker's Display Name lookup passes no path: one name-only
+   request per declared platform, nothing hashed, and the name sent as given. */
+static void test_name_only_lookup_is_one_request_per_platform(void) {
+    request_trace trace = {
+        .outcomes = {
+            JW_SS_SEARCH_NOT_FOUND, JW_SS_SEARCH_NOT_FOUND,
+            JW_SS_SEARCH_NOT_FOUND,
+        },
+        .outcome_count = 3,
+        .name = "Super Mario Bros.nes",
+    };
+    int systems[] = {3, 4, 5};
+    jw_ss_result result;
+    jw_ss_test_set_search_request(fake_search, &trace);
+
+    assert(jw_ss_search_rom_platforms(
+               NULL, "Super Mario Bros.nes", NULL, systems, 3,
+               NULL, 0, NULL, 0, &result) == JW_SS_SEARCH_NOT_FOUND);
+    assert(trace.call_count == 3);
+    for (int i = 0; i < 3; i++) {
+        assert(trace.systems[i] == systems[i]);
+        assert(trace.hashes[i][0] == '\0');
+        assert(trace.sizes[i] == 0);
+    }
+
+    request_trace hit = {
+        .outcomes = {JW_SS_SEARCH_NOT_FOUND, JW_SS_SEARCH_FOUND},
+        .outcome_count = 2,
+        .name = "Renamed RPG",
+    };
+    jw_ss_test_set_search_request(fake_search, &hit);
+    assert(jw_ss_search_rom_platforms(
+               NULL, "Renamed RPG", NULL, systems, 3,
+               NULL, 0, NULL, 0, &result) == JW_SS_SEARCH_FOUND);
+    assert(hit.call_count == 2);
+    assert(hit.hashes[0][0] == '\0' && hit.hashes[1][0] == '\0');
+    assert(strcmp(result.game_name, "Found") == 0);
+}
+
 int main(void) {
     test_ordered_hash_and_name_search();
     test_unhashable_path_and_terminal_results();
     test_invalid_platform_list();
     test_no_media_keeps_same_identity_recovery();
     test_no_media_aggregates_across_platforms();
+    test_name_only_lookup_is_one_request_per_platform();
     jw_ss_test_set_search_request(NULL, NULL);
     puts("ss_client_test: ok");
     return 0;

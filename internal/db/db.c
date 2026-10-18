@@ -3131,14 +3131,18 @@ done:
     return rc;
 }
 
-/* where_sql binds `rom_path` (or `game_id`) as ?1 and, when given, `text2` as ?2. */
+/* where_sql binds `rom_path` (or `game_id`) as ?1 and, when given, `text2` as ?2.
+   manual_name, when given, receives the game's own display_name setting. */
 static int jw__get_game(const char *db_path, const char *where_sql,
                         const char *rom_path, const char *text2, int game_id,
-                        jw_game_entry *out) {
+                        jw_game_entry *out, char *manual_name, size_t manual_size) {
     if (!db_path || !where_sql || !out) {
         return -1;
     }
     memset(out, 0, sizeof(*out));
+    if (manual_name && manual_size > 0) {
+        manual_name[0] = '\0';
+    }
     sqlite3 *db = NULL;
     if (jw_db_open(db_path, &db) != 0) {
         return -1;
@@ -3153,7 +3157,7 @@ static int jw__get_game(const char *db_path, const char *where_sql,
         "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
         "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''), "
         "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id), "
-        "COALESCE(g.last_played,0), g.playtime_s "
+        "COALESCE(g.last_played,0), g.playtime_s, COALESCE(gs.value, '') "
         "FROM games g "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' ";
@@ -3177,6 +3181,9 @@ static int jw__get_game(const char *db_path, const char *where_sql,
     int rc = -1;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         jw__fill_game_entry(stmt, out);
+        if (manual_name && manual_size > 0) {
+            jw__pakrat_copy_column(stmt, 12, manual_name, manual_size);
+        }
         rc = 0;
     }
 
@@ -3188,7 +3195,16 @@ static int jw__get_game(const char *db_path, const char *where_sql,
 int jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,
                                jw_game_entry *out) {
     return (rom_path && rom_path[0])
-        ? jw__get_game(db_path, "WHERE g.rom_path = ?", rom_path, NULL, 0, out)
+        ? jw__get_game(db_path, "WHERE g.rom_path = ?", rom_path, NULL, 0, out, NULL, 0)
+        : -1;
+}
+
+int jw_db_get_game_with_manual_name(const char *db_path, const char *rom_path,
+                                    jw_game_entry *out,
+                                    char *manual_name, size_t manual_size) {
+    return (rom_path && rom_path[0])
+        ? jw__get_game(db_path, "WHERE g.rom_path = ?", rom_path, NULL, 0, out,
+                       manual_name, manual_size)
         : -1;
 }
 
@@ -3196,13 +3212,13 @@ int jw_db_get_game_by_source_relpath(const char *db_path, const char *source_id,
                                      const char *rom_relpath, jw_game_entry *out) {
     return (source_id && source_id[0] && rom_relpath && rom_relpath[0])
         ? jw__get_game(db_path, "WHERE g.source_id = ?1 AND g.rom_relpath = ?2",
-                       source_id, rom_relpath, 0, out)
+                       source_id, rom_relpath, 0, out, NULL, 0)
         : -1;
 }
 
 int jw_db_get_game_by_id(const char *db_path, int game_id, jw_game_entry *out) {
     return game_id > 0
-        ? jw__get_game(db_path, "WHERE g.id = ?", NULL, NULL, game_id, out)
+        ? jw__get_game(db_path, "WHERE g.id = ?", NULL, NULL, game_id, out, NULL, 0)
         : -1;
 }
 
