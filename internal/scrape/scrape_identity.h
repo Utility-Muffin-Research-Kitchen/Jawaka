@@ -1,6 +1,7 @@
 #ifndef JW_SCRAPE_IDENTITY_H
 #define JW_SCRAPE_IDENTITY_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #define JW_SCRAPE_IDENTITY_CANDIDATE_MAX 3
@@ -29,5 +30,21 @@ void jw_scrape_identity_build(const char *descriptor_path,
    the title and stays. */
 void jw_scrape_identity_build_folder(const char *folder_name,
                                      jw_scrape_identity_candidates *out);
+
+/* Filename mode's ladder before any manual name: the actual filename alone,
+   which its one call searches by hash and then by name. */
+void jw_scrape_identity_build_filename(const char *rom_name,
+                                       jw_scrape_identity_candidates *out);
+
+/* Append the last lookup for a game outside descriptor mode to names, the
+   names its earlier lookups sent: the user's own Display Name with
+   extension ("Super Mario Bros.nes" for smb.nes), kept as typed when it
+   already ends in it. extension is NULL or "" for a name sent without one,
+   such as a folder game's. Surrounding whitespace is dropped. Returns false,
+   leaving names unchanged, when no name is left, it equals one already sent
+   ignoring case (that request was already made), or it does not fit. */
+bool jw_scrape_identity_add_manual_name(jw_scrape_identity_candidates *names,
+                                        const char *manual_title,
+                                        const char *extension);
 
 #endif

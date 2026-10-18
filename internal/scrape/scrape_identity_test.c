@@ -76,6 +76,83 @@ static void test_folder_ladder(void) {
     assert(candidates.count == 0);
 }
 
+static jw_scrape_identity_candidates g_names;
+
+/* The manual name appended after a ladder, or NULL when it adds nothing. */
+static const char *append_manual(const char *title, const char *extension) {
+    size_t before = g_names.count;
+    if (!jw_scrape_identity_add_manual_name(&g_names, title, extension)) {
+        assert(g_names.count == before);
+        return NULL;
+    }
+    assert(g_names.count == before + 1u);
+    return g_names.names[before];
+}
+
+static const char *manual_after_file(const char *rom_name, const char *title,
+                                     const char *extension) {
+    jw_scrape_identity_build_filename(rom_name, &g_names);
+    assert(g_names.count == 1u && strcmp(g_names.names[0], rom_name) == 0);
+    return append_manual(title, extension);
+}
+
+static const char *manual_after_folder(const char *folder, const char *title) {
+    jw_scrape_identity_build_folder(folder, &g_names);
+    return append_manual(title, NULL);
+}
+
+static void expect_name(const char *got, const char *want) {
+    if (!want) {
+        assert(got == NULL);
+        return;
+    }
+    assert(got && strcmp(got, want) == 0);
+}
+
+/* The manual Display Name lookup outside descriptor mode: a ROM's own
+   extension goes on, a folder game's name goes alone, and a name equal to
+   any one already sent, ignoring case, costs no second request. */
+static void test_manual_name(void) {
+    expect_name(manual_after_file("smb.nes", "Super Mario Bros", "nes"),
+                "Super Mario Bros.nes");
+    expect_name(manual_after_file("smb.nes", "  Super Mario Bros\t", "nes"),
+                "Super Mario Bros.nes");
+    expect_name(manual_after_file("smb.nes", "Super Mario Bros.NES", "nes"),
+                "Super Mario Bros.NES");
+    expect_name(manual_after_file("Sonic.md.zip", "Sonic the Hedgehog", "zip"),
+                "Sonic the Hedgehog.zip");
+    expect_name(manual_after_file("README", "Read Me", NULL), "Read Me");
+    expect_name(manual_after_file("README", "Read Me", ""), "Read Me");
+
+    expect_name(manual_after_file("smb.nes", "SMB", "nes"), NULL);
+    expect_name(manual_after_file("smb.nes", "smb.NES", "nes"), NULL);
+    expect_name(manual_after_file("smb.nes", "", "nes"), NULL);
+    expect_name(manual_after_file("smb.nes", " \t ", "nes"), NULL);
+    expect_name(manual_after_file("smb.nes", NULL, "nes"), NULL);
+
+    /* A folder game's ladder may hold two names; the manual one is checked
+       against both. */
+    expect_name(manual_after_folder("Folder Game", "Renamed RPG"), "Renamed RPG");
+    expect_name(manual_after_folder("Folder Game", "FOLDER GAME"), NULL);
+    expect_name(manual_after_folder("Dragon Destiny v1.2", "dragon destiny"), NULL);
+    expect_name(manual_after_folder("Dragon Destiny v1.2", "Dragon Destiny 2"),
+                "Dragon Destiny 2");
+    assert(g_names.count == 3u);
+
+    /* A name too long for a lookup is skipped, not cut short. */
+    char long_title[JW_SCRAPE_IDENTITY_NAME_MAX + 8];
+    memset(long_title, 'a', JW_SCRAPE_IDENTITY_NAME_MAX);
+    long_title[JW_SCRAPE_IDENTITY_NAME_MAX] = '\0';
+    expect_name(manual_after_folder("Folder Game", long_title), NULL);
+    long_title[JW_SCRAPE_IDENTITY_NAME_MAX - 4] = '\0';
+    expect_name(manual_after_file("smb.nes", long_title, "nes"), NULL);
+    expect_name(manual_after_folder("Folder Game", long_title), long_title);
+
+    jw_scrape_identity_build_filename(NULL, &g_names);
+    assert(g_names.count == 0u);
+    assert(!jw_scrape_identity_add_manual_name(NULL, "Title", "nes"));
+}
+
 int main(void) {
     test_folder_ladder();
 
@@ -117,6 +194,9 @@ int main(void) {
            "GAME.scummvm", NULL, NULL);
 
     unlink(path);
+
+    test_manual_name();
+
     puts("scrape-identity-test: ok");
     return 0;
 }

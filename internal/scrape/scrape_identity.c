@@ -211,3 +211,41 @@ void jw_scrape_identity_build_folder(const char *folder_name,
         return;
     }
 }
+
+void jw_scrape_identity_build_filename(const char *rom_name,
+                                       jw_scrape_identity_candidates *out) {
+    memset(out, 0, sizeof(*out));
+    jw_scrape__add(out, rom_name);
+}
+
+bool jw_scrape_identity_add_manual_name(jw_scrape_identity_candidates *names,
+                                        const char *manual_title,
+                                        const char *extension) {
+    if (!names) {
+        return false;
+    }
+    const char *start = manual_title ? manual_title : "";
+    while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') {
+        start++;
+    }
+    size_t length = strlen(start);
+    while (length > 0u && (start[length - 1u] == ' ' || start[length - 1u] == '\t' ||
+                           start[length - 1u] == '\r' || start[length - 1u] == '\n')) {
+        length--;
+    }
+    char title[JW_SCRAPE_IDENTITY_NAME_MAX];
+    if (length == 0u || length >= sizeof(title)) {
+        return false;
+    }
+    memcpy(title, start, length);
+    title[length] = '\0';
+
+    /* The add helpers skip a name equal to one already in the list. */
+    size_t sent = names->count;
+    if (extension && extension[0]) {
+        jw_scrape__add_with_extension(names, title, extension, true);
+    } else {
+        jw_scrape__add(names, title);
+    }
+    return names->count > sent;
+}

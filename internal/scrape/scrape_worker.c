@@ -49,6 +49,11 @@ typedef struct {
        filename. */
     char dest_stem[256];
     bool folder_game;
+    /* The name the user gave the game in Options > Display Name, "" when they
+       set none. effective_title can also be an imported or scanned name, so
+       this is read on its own: a filename-mode lookup that misses tries it
+       last. */
+    char manual_title[256];
     /* Requeued after a storage failure: a second storage failure while the
        card reports writable is a real error, not another pause. */
     bool storage_requeued;
@@ -578,8 +583,11 @@ static int jw__queue_push(const jw_storage_source_list *sources,
     bool folder_game = jw__scrape_dest_stem(jw__catalog_system(system), &loc,
                                             dest_stem, sizeof(dest_stem));
     jw_game_entry game;
+    char manual_title[256] = "";
     if (!jw__w.db_path[0] ||
-        jw_db_get_game_by_rom_path(jw__w.db_path, rom_path, &game) != 0) {
+        jw_db_get_game_with_manual_name(jw__w.db_path, rom_path, &game,
+                                        manual_title, sizeof(manual_title)) != 0) {
+        manual_title[0] = '\0';
         snprintf(row->display_name, sizeof(row->display_name), "%s",
                  dest_stem[0] ? dest_stem : rom_path);
     } else {
@@ -601,6 +609,7 @@ static int jw__queue_push(const jw_storage_source_list *sources,
     snprintf(slot->rom_path, sizeof(slot->rom_path), "%s", rom_path);
     snprintf(slot->dest_stem, sizeof(slot->dest_stem), "%s", dest_stem);
     slot->folder_game = folder_game;
+    snprintf(slot->manual_title, sizeof(slot->manual_title), "%s", manual_title);
     jw__w.count++;
     return 1;
 }
@@ -879,8 +888,9 @@ static jw__scrape_item_result jw__process_item(jw__scrape_item *item,
 
     jw_ss_result result;
     jw_ss_search_status search_status;
-    if (item->folder_game || item->name_source == JW_RA_SCRAPE_NAME_DESCRIPTOR) {
-        jw_scrape_identity_candidates candidates;
+    bool descriptor = item->name_source == JW_RA_SCRAPE_NAME_DESCRIPTOR;
+    jw_scrape_identity_candidates candidates;
+    if (item->folder_game || descriptor) {
         if (item->folder_game) {
             /* By name alone. When measured (2026-10) a marker's hash
                identified no game on ScreenScraper, and a folder name often
@@ -903,6 +913,26 @@ static jw__scrape_item_result jw__process_item(jw__scrape_item *item,
     } else {
         search_status = jw_ss_search_rom_platforms(
             &client, rom_name, rom_abs, system_ids, system_count,
+            (const char *const *)prefs.artwork, prefs.artwork_count,
+            (const char *const *)prefs.regions, prefs.region_count, &result);
+        jw_scrape_identity_build_filename(rom_name, &candidates);
+    }
+    /* A game the user renamed and ScreenScraper does not know by its file or
+       folder gets one exact name-only lookup by the user's name. Only a plain
+       miss falls through: no-media means the game was recognized, and an
+       error or cancel ends the item as it is. The descriptor ladder already
+       ends on the effective title. A folder game's names go without an
+       extension, so its manual name does too. The art keeps the file's or
+       folder's stem either way. */
+    const char *dot = item->folder_game ? NULL : strrchr(rom_name, '.');
+    if (search_status == JW_SS_SEARCH_NOT_FOUND && (item->folder_game || !descriptor) &&
+        jw_scrape_identity_add_manual_name(&candidates, item->manual_title,
+                                           dot && dot != rom_name ? dot + 1 : NULL)) {
+        const char *manual_name = candidates.names[candidates.count - 1];
+        jw_log_info("scrape: %s/%s not found, trying display name \"%s\"",
+                    item->system, rom_name, manual_name);
+        search_status = jw_ss_search_rom_platforms(
+            &client, manual_name, NULL, system_ids, system_count,
             (const char *const *)prefs.artwork, prefs.artwork_count,
             (const char *const *)prefs.regions, prefs.region_count, &result);
     }

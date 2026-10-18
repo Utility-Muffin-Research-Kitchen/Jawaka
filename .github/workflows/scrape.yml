@@ -1,0 +1,29 @@
+name: Artwork scraping
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Jawaka
+      - uses: actions/checkout@v4
+        with:
+          repository: Utility-Muffin-Research-Kitchen/miniloong-launcher-switcher
+          # scrape-art-test scans against the MLP1 release catalog defaults.
+          ref: 97f7b98de4b150ddfa353c2e2645ca06d2275f66
+          path: miniloong-launcher-switcher
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev libcurl4-openssl-dev
+      - name: Lookup names, ScreenScraper client and art paths
+        run: make -C Jawaka scrape-identity-test ss-client-test art-path-test
+      - name: Scrape worker against a scanned library
+        run: make -C Jawaka scrape-art-test
