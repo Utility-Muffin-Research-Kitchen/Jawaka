@@ -21,4 +21,13 @@ void jw_scrape_identity_build(const char *descriptor_path,
                               const char *lookup_extension,
                               jw_scrape_identity_candidates *out);
 
+/* Build the lookup ladder for a folder game (EasyRPG's Folder Game/RPG_RT.ldb),
+   searched by name only: the folder name, then the same name without a
+   trailing version ("Dragon Destiny v1.2" -> "Dragon Destiny"). A version is
+   a "v" number ("v2", "V1_20", "v0.123c") or a dotted one ("1.1", "0.10")
+   after a space, '_' or '-'. A bare number ("Vampires Dawn 2") is part of
+   the title and stays. */
+void jw_scrape_identity_build_folder(const char *folder_name,
+                                     jw_scrape_identity_candidates *out);
+
 #endif

@@ -879,10 +879,17 @@ static jw__scrape_item_result jw__process_item(jw__scrape_item *item,
 
     jw_ss_result result;
     jw_ss_search_status search_status;
-    if (item->name_source == JW_RA_SCRAPE_NAME_DESCRIPTOR) {
+    if (item->folder_game || item->name_source == JW_RA_SCRAPE_NAME_DESCRIPTOR) {
         jw_scrape_identity_candidates candidates;
-        jw_scrape_identity_build(rom_abs, rom_name, item->effective_title,
-                                 item->lookup_extension, &candidates);
+        if (item->folder_game) {
+            /* By name alone. When measured (2026-10) a marker's hash
+               identified no game on ScreenScraper, and a folder name often
+               matched only without its version suffix ("v1.2"). */
+            jw_scrape_identity_build_folder(rom_name, &candidates);
+        } else {
+            jw_scrape_identity_build(rom_abs, rom_name, item->effective_title,
+                                     item->lookup_extension, &candidates);
+        }
         search_status = JW_SS_SEARCH_NOT_FOUND;
         for (size_t i = 0; i < candidates.count; i++) {
             search_status = jw_ss_search_rom_platforms(

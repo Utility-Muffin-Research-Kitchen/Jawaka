@@ -29,7 +29,56 @@ static void expect(const void *bytes, size_t size, const char *rom_name,
     if (third) assert(strcmp(candidates.names[2], third) == 0);
 }
 
+static void expect_folder(const char *folder, const char *retry) {
+    jw_scrape_identity_candidates candidates;
+    jw_scrape_identity_build_folder(folder, &candidates);
+    size_t want = retry ? 2u : 1u;
+    if (candidates.count != want ||
+        (retry && strcmp(candidates.names[1], retry) != 0)) {
+        fprintf(stderr, "%s: want retry %s, got %zu candidates%s%s\n", folder,
+                retry ? retry : "(none)", candidates.count,
+                candidates.count > 1 ? ": " : "",
+                candidates.count > 1 ? candidates.names[1] : "");
+    }
+    assert(candidates.count == want);
+    assert(strcmp(candidates.names[0], folder) == 0);
+    if (retry) assert(strcmp(candidates.names[1], retry) == 0);
+}
+
+/* Folder games: the folder name, then once more without a trailing version.
+   The names are ones ScreenScraper missed with the version and found without
+   it, or titles whose number must stay. */
+static void test_folder_ladder(void) {
+    expect_folder("Dragon Destiny v1.2", "Dragon Destiny");
+    expect_folder("YumeNikki_v0.10", "YumeNikki");
+    expect_folder("space_funeral_v2", "space_funeral");
+    expect_folder("Legend of Heroen V1_20", "Legend of Heroen");
+    expect_folder("Ara Fell 1.1", "Ara Fell");
+    expect_folder("Yume 2kki 0.123c", "Yume 2kki");
+    expect_folder("Game - ver1.2", "Game");
+    expect_folder("Game version2", "Game");
+
+    expect_folder("Vampires Dawn 2", NULL);
+    expect_folder("The Way Episode 1", NULL);
+    expect_folder("Final Fantasy VI-2", NULL);
+    expect_folder("Final Fantasy 7 2D Remake", NULL);
+    expect_folder("Game 2D", NULL);
+    expect_folder("Game v", NULL);
+    expect_folder("Game v1.", NULL);
+    expect_folder("OFF", NULL);
+    expect_folder("v1.2", NULL);
+    expect_folder("_v1.2", NULL);
+
+    jw_scrape_identity_candidates candidates;
+    jw_scrape_identity_build_folder(NULL, &candidates);
+    assert(candidates.count == 0);
+    jw_scrape_identity_build_folder("", &candidates);
+    assert(candidates.count == 0);
+}
+
 int main(void) {
+    test_folder_ladder();
+
     int fd = mkstemp(path);
     assert(fd >= 0);
     close(fd);

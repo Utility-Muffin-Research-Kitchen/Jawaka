@@ -2,9 +2,9 @@
    the scan would use counts as existing, including art added before a rescan,
    so bulk scraping skips it, while an explicit single-game scrape still runs
    and writes PNG to its usual destination. EasyRPG folder games, whose launch
-   file is the same RPG_RT.ldb in every game, are searched and saved by their
-   folder's name. ScreenScraper is stubbed below; nothing here touches the
-   network. */
+   file is the same RPG_RT.ldb in every game, are searched by their folder's
+   name alone (once more without a version suffix) and saved under it.
+   ScreenScraper is stubbed below; nothing here touches the network. */
 
 #include "internal/db/db.h"
 #include "internal/discovery/discovery.h"
@@ -27,6 +27,7 @@
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static char g_searched[SEARCH_LOG_MAX][256];
+static int g_searched_hashed[SEARCH_LOG_MAX];   /* sent with the ROM to hash */
 static int g_search_count;
 static char g_downloaded[PATH_MAX];
 /* While set, the stub search for "Held Game" waits, so the test can look at
@@ -61,7 +62,6 @@ jw_ss_search_status jw_ss_search_rom_platforms(
     int region_count,
     jw_ss_result *result) {
     (void)client;
-    (void)rom_abs_path;
     (void)system_ids;
     (void)system_count;
     (void)artwork_types;
@@ -71,6 +71,7 @@ jw_ss_search_status jw_ss_search_rom_platforms(
     memset(result, 0, sizeof(*result));
     pthread_mutex_lock(&g_mu);
     if (g_search_count < SEARCH_LOG_MAX) {
+        g_searched_hashed[g_search_count] = rom_abs_path != NULL;
         snprintf(g_searched[g_search_count++], sizeof(g_searched[0]), "%s", rom_name);
     }
     pthread_mutex_unlock(&g_mu);
@@ -81,7 +82,7 @@ jw_ss_search_status jw_ss_search_rom_platforms(
         }
     }
     if (strcmp(rom_name, "Canon.gba") == 0 || strcmp(rom_name, "Folder Game") == 0 ||
-        strcmp(rom_name, "Card Game") == 0) {
+        strcmp(rom_name, "Card Game") == 0 || strcmp(rom_name, "Versioned Game") == 0) {
         snprintf(result->media_url, sizeof(result->media_url), "stub://canon");
         snprintf(result->media_format, sizeof(result->media_format), "png");
         return JW_SS_SEARCH_FOUND;
@@ -226,6 +227,16 @@ static int searched(const char *rom_name) {
     return hits;
 }
 
+static int searched_hashed(const char *rom_name) {
+    int hits = 0;
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < g_search_count; i++) {
+        if (strcmp(g_searched[i], rom_name) == 0 && g_searched_hashed[i]) hits++;
+    }
+    pthread_mutex_unlock(&g_mu);
+    return hits;
+}
+
 static int search_count(void) {
     pthread_mutex_lock(&g_mu);
     int n = g_search_count;
@@ -290,7 +301,8 @@ int main(void) {
 
     static const char *const dirs[] = {
         "Roms/GBA/Imgs", "Roms/FC", "Roms/MD", "Images/GBA", "Images/FC", "Images/MD",
-        "Roms/EASYRPG/Folder Game", "Roms/EASYRPG/Other Game", "Images/EASYRPG",
+        "Roms/EASYRPG/Folder Game", "Roms/EASYRPG/Other Game",
+        "Roms/EASYRPG/Versioned Game v1.2", "Images/EASYRPG",
     };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         snprintf(path, sizeof(path), "%s/%s", sd, dirs[i]);
@@ -305,6 +317,7 @@ int main(void) {
         "Roms/GBA/Canon.gba", "Roms/GBA/Fallback.gba", "Roms/GBA/Missing.gba",
         "Roms/FC/AliasOnly.nes", "Roms/MD/Sonic.md.zip",
         "Roms/EASYRPG/Folder Game/RPG_RT.ldb", "Roms/EASYRPG/Other Game/RPG_RT.ldb",
+        "Roms/EASYRPG/Versioned Game v1.2/RPG_RT.ldb",
     };
     for (size_t i = 0; i < sizeof(roms) / sizeof(roms[0]); i++) {
         snprintf(path, sizeof(path), "%s/%s", sd, roms[i]);
@@ -328,7 +341,7 @@ int main(void) {
     expect_missing("GBA", 4, 4);
     expect_missing("FC", 1, 1);
     expect_missing("MD", 1, 1);
-    expect_missing("EASYRPG", 3, 3);
+    expect_missing("EASYRPG", 4, 4);
 
     /* Hand-dropped art after the scan, in every location the scan uses:
        canonical Images/GBA, physical-folder Images/FC (FC's canonical root
@@ -360,7 +373,7 @@ int main(void) {
     int row_count = 0, total_missing = -1;
     assert(jw_scrape_missing_counts(rows, 16, &row_count, &total_missing) == 0);
     assert(row_count == 4);
-    assert(total_missing == 1 + 3);
+    assert(total_missing == 1 + 4);
 
     /* Scrape-all (missing only) enqueues just the artless game. */
     expect_system_enqueue("GBA", 1, 3);
@@ -369,6 +382,7 @@ int main(void) {
     wait_idle();
     assert(search_count() == 1);
     assert(searched("Missing.gba") == 1);
+    assert(searched_hashed("Missing.gba") == 1);
 
     /* An explicit single-game scrape still runs for a game with JPEG art and
        writes PNG to the scraper's destination, leaving the JPEG in place. */
@@ -387,21 +401,37 @@ int main(void) {
     assert(is_file(path));
     expect_missing("GBA", 1, 4);
 
-    /* EasyRPG folder games are searched by their folder's name, never by the
-       marker every one of them has, and each found game gets its own PNG on
-       its own card. The game ScreenScraper does not know still needs art:
-       the found ones did not land on one shared RPG_RT.png. */
-    char folder_rom[512], other_rom[512], card_rom[512];
+    /* EasyRPG folder games are searched by their folder's name alone, never
+       by the marker every one of them has or its hash, and each found game
+       gets its own PNG on its own card. A folder name that misses is tried
+       once more without its version suffix, but its art keeps the folder's
+       name, the title the scan gives it. The game ScreenScraper does not
+       know still needs art: the found ones did not land on one shared
+       RPG_RT.png. */
+    char folder_rom[512], other_rom[512], card_rom[512], versioned_rom[512];
     rom_path_for(db_path, "EASYRPG", "Folder Game", folder_rom, sizeof(folder_rom));
     rom_path_for(db_path, "EASYRPG", "Other Game", other_rom, sizeof(other_rom));
     rom_path_for(db_path, "EASYRPG", "Card Game", card_rom, sizeof(card_rom));
+    rom_path_for(db_path, "EASYRPG", "Versioned Game v1.2", versioned_rom,
+                 sizeof(versioned_rom));
     assert(strcmp(folder_rom, "Roms/EASYRPG/Folder Game/RPG_RT.ldb") == 0);
-    expect_system_enqueue("EASYRPG", 3, 0);
+    expect_system_enqueue("EASYRPG", 4, 0);
     wait_idle();
     assert(searched("Folder Game") == 1);
     assert(searched("Other Game") == 1);
     assert(searched("Card Game") == 1);
+    assert(searched("Versioned Game v1.2") == 1);
+    assert(searched("Versioned Game") == 1);
     assert(searched("RPG_RT.ldb") == 0);
+    assert(searched_hashed("Folder Game") == 0);
+    assert(searched_hashed("Other Game") == 0);
+    assert(searched_hashed("Card Game") == 0);
+    assert(searched_hashed("Versioned Game v1.2") == 0);
+    assert(searched_hashed("Versioned Game") == 0);
+    snprintf(path, sizeof(path), "%s/Images/EASYRPG/Versioned Game v1.2.png", sd);
+    assert(is_file(path));
+    snprintf(path, sizeof(path), "%s/Images/EASYRPG/Versioned Game.png", sd);
+    assert(!is_file(path));
     snprintf(path, sizeof(path), "%s/Images/EASYRPG/Folder Game.png", sd);
     assert(is_file(path));
     char card_art[PATH_MAX];
@@ -414,8 +444,9 @@ int main(void) {
     expect_image_path(db_path, folder_rom, "Images/EASYRPG/Folder Game.png");
     expect_image_path(db_path, card_rom, card_art);
     expect_image_path(db_path, other_rom, "");
-    expect_missing("EASYRPG", 1, 3);
-    expect_system_enqueue("EASYRPG", 1, 2);
+    expect_image_path(db_path, versioned_rom, "Images/EASYRPG/Versioned Game v1.2.png");
+    expect_missing("EASYRPG", 1, 4);
+    expect_system_enqueue("EASYRPG", 1, 3);
     wait_idle();
     assert(searched("Other Game") == 2);
 
@@ -423,9 +454,9 @@ int main(void) {
        own, the fallback the scan uses too. */
     snprintf(path, sizeof(path), "%s/Images/EASYRPG/RPG_RT.png", sd);
     write_file(path, "png");
-    expect_missing("EASYRPG", 0, 3);
+    expect_missing("EASYRPG", 0, 4);
     unlink(path);
-    expect_missing("EASYRPG", 1, 3);
+    expect_missing("EASYRPG", 1, 4);
 
     /* A folder game the library has not scanned yet is still named by its
        folder, in the queue and as the game being scraped. */
