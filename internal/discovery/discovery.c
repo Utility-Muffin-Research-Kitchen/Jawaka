@@ -292,12 +292,30 @@ static void jw__title_from_filename(const char *filename, char *out, size_t out_
     }
 }
 
+/* True when filename is one of the system's marker names (EasyRPG's
+   RPG_RT.ldb) and sits in a game folder below the system folder. Every such
+   game's marker has the same name, so the folder names the game. */
+static int jw__metadata_marker_in_folder(const jw_ra_system *system,
+                                         const char *rel_subpath,
+                                         const char *filename) {
+    return rel_subpath && rel_subpath[0] &&
+           jw_ra_string_list_contains_casefold(&system->file_names, filename);
+}
+
 static void jw__title_from_metadata_filename(const jw_ra_system *system,
+                                             const char *rel_subpath,
                                              const char *filename,
                                              char *out,
                                              size_t out_size) {
+    if (jw__metadata_marker_in_folder(system, rel_subpath, filename)) {
+        const char *folder = strrchr(rel_subpath, '/');
+        snprintf(out, out_size, "%s", folder ? folder + 1 : rel_subpath);
+        return;
+    }
     /* The title doubles as the art stem; the scraper's missing-art check
-       derives it through the same helper. */
+       derives it through the same helper. It does not know folder titles
+       yet, so it still looks for a folder game's art under the marker
+       name, which the scan below falls back to. */
     jw_art_stem_for_rom(system, filename, out, out_size);
 }
 
@@ -1102,7 +1120,8 @@ static int jw__scan_system_dir(jw_scan_tx *tx,
         char image_rel[PATH_MAX];
         const char *image_path = NULL;
 
-        jw__title_from_metadata_filename(system, entry->d_name, title, sizeof(title));
+        jw__title_from_metadata_filename(system, rel_subpath, entry->d_name,
+                                         title, sizeof(title));
 
         char rom_rel_candidate[PATH_MAX];
         int n = rel_subpath[0]
@@ -1119,6 +1138,16 @@ static int jw__scan_system_dir(jw_scan_tx *tx,
         image_path = jw__metadata_image_path(system, tx->art_index, source, system_folder, title,
                                              image_abs, sizeof(image_abs),
                                              image_rel, sizeof(image_rel));
+        if (!image_path &&
+            jw__metadata_marker_in_folder(system, rel_subpath, entry->d_name)) {
+            /* Art kept under the marker's own name (RPG_RT.png) still shows. */
+            char marker_stem[PATH_MAX];
+            jw_art_stem_for_rom(system, entry->d_name, marker_stem, sizeof(marker_stem));
+            image_path = jw__metadata_image_path(system, tx->art_index, source, system_folder,
+                                                 marker_stem,
+                                                 image_abs, sizeof(image_abs),
+                                                 image_rel, sizeof(image_rel));
+        }
 
         char stable_rom_rel[PATH_MAX];
         n = rel_subpath[0]

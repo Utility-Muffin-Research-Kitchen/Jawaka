@@ -51,6 +51,9 @@ mkdir -p \
     "$SD_ROOT/Roms/PS" \
     "$SD_ROOT/Roms/PORTS" \
     "$SD_ROOT/Roms/UNKNOWN" \
+    "$SD_ROOT/Roms/EASYRPG/Folder Game/Music" \
+    "$SD_ROOT/Roms/EASYRPG/Other Folder Game" \
+    "$SD_ROOT/Images/EASYRPG" \
     "$SD_ROOT/Images/MD" \
     "$SD_ROOT/Images/GENESIS" \
     "$SD_ROOT/Images/GBA" \
@@ -119,7 +122,20 @@ printf 'rom\n' >"$SD_ROOT/Roms/GBA/Where.gba"
 : >"$SD_ROOT/Roms/GBA/Imgs/Where.png"
 printf 'rom\n' >"$SD_ROOT/Roms/GBA/Mixed.gba"
 : >"$SD_ROOT/Images/GBA/Mixed.JpG"
-EXPECTED_GAMES=26
+# EasyRPG folder games launch through their RPG_RT.ldb marker. Every game has
+# a marker of that name, so the game folder is the title and the art stem.
+# The rest of the project folder is not content, and a game without folder
+# art still finds art kept under the marker's own name.
+printf 'database\n' >"$SD_ROOT/Roms/EASYRPG/Folder Game/RPG_RT.ldb"
+printf 'tree\n' >"$SD_ROOT/Roms/EASYRPG/Folder Game/RPG_RT.lmt"
+printf 'map\n' >"$SD_ROOT/Roms/EASYRPG/Folder Game/Map0001.lmu"
+printf '[RPG_RT]\n' >"$SD_ROOT/Roms/EASYRPG/Folder Game/RPG_RT.ini"
+printf 'music\n' >"$SD_ROOT/Roms/EASYRPG/Folder Game/Music/Theme.wav"
+printf 'database\n' >"$SD_ROOT/Roms/EASYRPG/Other Folder Game/RPG_RT.ldb"
+printf 'package\n' >"$SD_ROOT/Roms/EASYRPG/Packaged Game.easyrpg"
+: >"$SD_ROOT/Images/EASYRPG/Folder Game.png"
+: >"$SD_ROOT/Images/EASYRPG/RPG_RT.png"
+EXPECTED_GAMES=29
 if [[ "$CASE_SENSITIVE" == "1" ]]; then
     # Distinct stems on ext4: neither may borrow the other's art.
     printf 'rom\n' >"$SD_ROOT/Roms/GBA/Case.gba"
@@ -128,7 +144,7 @@ if [[ "$CASE_SENSITIVE" == "1" ]]; then
     : >"$SD_ROOT/Images/GBA/case.jpg"
     printf 'rom\n' >"$SD_ROOT/Roms/GBA/Lonely.gba"
     : >"$SD_ROOT/Images/GBA/lonely.jpg"
-    EXPECTED_GAMES=29
+    EXPECTED_GAMES=32
 fi
 printf '#!/bin/sh\n' >"$SD_ROOT/Apps/mlp1/FixtureNative.pak/launch.sh"
 printf '{ "name": "Fixture Native", "icon": "icon.png", "platform": "mlp1", "pak_version": "1.2.3", "min_jawaka_version": "0", "min_leaf_version": "0.7.0" }\n' \
@@ -209,7 +225,7 @@ expect_db_art() {
 
 run_scan "$DB_PATH" >"$OUT_PATH"
 
-grep -F $'summary\tgames='"$EXPECTED_GAMES"$'\tsystems=10\tapps=3' "$OUT_PATH" >/dev/null ||
+grep -F $'summary\tgames='"$EXPECTED_GAMES"$'\tsystems=11\tapps=3' "$OUT_PATH" >/dev/null ||
     { cat "$OUT_PATH" >&2; fail "unexpected scan summary"; }
 # Alias dedup: primary has one FC "Mario", and it is the canonical Roms/NES copy, not Roms/FC.
 # A secondary source alias copy with the same title remains separate.
@@ -254,6 +270,19 @@ if grep -F 'Dragon Knight 4 Special Disk (Disk ' "$OUT_PATH" >/dev/null; then
 fi
 grep -F $'game\tPS\tGame\tRoms/PS/Game.m3u\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tPORTS\tTest\tRoms/PORTS/Test.sh\t' "$OUT_PATH" >/dev/null
+# EasyRPG: folder games take the folder name; packages keep their file stem.
+expect_game_art "$OUT_PATH" EASYRPG "Folder Game" "Roms/EASYRPG/Folder Game/RPG_RT.ldb" \
+    "Images/EASYRPG/Folder Game.png"
+expect_db_art "$DB_PATH" primary "EASYRPG/Folder Game/RPG_RT.ldb" "images|EASYRPG/Folder Game.png"
+expect_game_art "$OUT_PATH" EASYRPG "Other Folder Game" \
+    "Roms/EASYRPG/Other Folder Game/RPG_RT.ldb" "Images/EASYRPG/RPG_RT.png"
+grep -F $'game\tEASYRPG\tPackaged Game\tRoms/EASYRPG/Packaged Game.easyrpg\t' "$OUT_PATH" >/dev/null
+[ "$(grep -c $'^game\tEASYRPG\t' "$OUT_PATH")" = "3" ] ||
+    { cat "$OUT_PATH" >&2; fail "EasyRPG fixture: want 3 games"; }
+if grep -E $'^game\tEASYRPG\tRPG_RT\t|RPG_RT\\.(lmt|ini)|Map0001|Theme\\.wav' "$OUT_PATH" >/dev/null; then
+    cat "$OUT_PATH" >&2
+    fail "EasyRPG fixture: a folder game kept the marker title or a project file was indexed"
+fi
 grep -F $'app\tFixture Native\tApps/mlp1/FixtureNative.pak\tmlp1\ticon.png\t0.7.0' "$OUT_PATH" >/dev/null
 grep -F $'app\tFixture Shared\tApps/shared/FixtureShared.pak\tshared\ticon.png' "$OUT_PATH" >/dev/null
 grep -F "app"$'\t'"Secondary Native"$'\t'"$SECONDARY_ROOT/Apps/mlp1/SecondaryNative.pak"$'\t'"mlp1"$'\t'"icon.png" "$OUT_PATH" >/dev/null
@@ -327,7 +356,7 @@ expect_db_art "$DB_PATH" primary MD/Streets.md "images|MD/Streets.png"
 rm -rf "$SECONDARY_ROOT"
 run_scan "$DB_PATH" >"$OUT_PRUNE_PATH"
 
-grep -F $'summary\tgames='"$EXPECTED_GAMES"$'\tsystems=10\tapps=3' "$OUT_PRUNE_PATH" >/dev/null
+grep -F $'summary\tgames='"$EXPECTED_GAMES"$'\tsystems=11\tapps=3' "$OUT_PRUNE_PATH" >/dev/null
 if ! grep -F "$SECONDARY_ROOT" "$OUT_PRUNE_PATH" >/dev/null ||
    ! grep -F $'game\tGBA\tSecondary' "$OUT_PRUNE_PATH" >/dev/null ||
    ! grep -F $'app\tSecondary Native' "$OUT_PRUNE_PATH" >/dev/null; then
