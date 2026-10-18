@@ -2202,8 +2202,6 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
         if (s.current_name[0]) {
             snprintf(item, sizeof(item), "%.*s",
                      (int)sizeof(item) - 1, s.current_name);
-            char *dot = strrchr(item, '.');
-            if (dot && dot != item) *dot = '\0';
         }
         if (paused_storage) {
             snprintf(state->status, sizeof(state->status),

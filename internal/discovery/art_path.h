@@ -45,6 +45,33 @@ int jw_art_find(jw_art_index *index, const char *dir, const char *stem,
 void jw_art_stem_for_rom(const jw_ra_system *system, const char *filename,
                          char *out, size_t out_size);
 
+/* True when filename is one of the system's file_names markers (EasyRPG's
+   RPG_RT.ldb) and sits in a game folder below the system folder. rel_subpath
+   is the folder path under the system folder, "" at its root. Every such
+   game's marker has the same name, so the folder names the game. */
+bool jw_art_is_folder_marker(const jw_ra_system *system, const char *rel_subpath,
+                             const char *filename);
+
+/* The title and art stem for the game file <system folder>/<rel_subpath>/
+   <filename>: a folder marker takes its folder's name ("Folder Game" for
+   "Folder Game/RPG_RT.ldb"), anything else jw_art_stem_for_rom. */
+void jw_art_stem_for_game(const jw_ra_system *system, const char *rel_subpath,
+                          const char *filename, char *out, size_t out_size);
+
+/* jw_art_find_for_rom for that game file, with the stem from
+   jw_art_stem_for_game. When a folder marker has no art under its folder's
+   name it falls back to the marker's own stem, so art kept as RPG_RT.png
+   still counts. image_root comes from the system; a NULL system searches only
+   the physical folder's locations. */
+int jw_art_find_for_game(jw_art_index *index,
+                         const jw_storage_source *source,
+                         const jw_ra_system *system,
+                         const char *physical_folder,
+                         const char *rel_subpath,
+                         const char *filename,
+                         char *image_abs, size_t image_abs_size,
+                         char *image_rel, size_t image_rel_size);
+
 /* Search a ROM's art locations on its storage source in order:
      <source root>/<image_root>/     (canonical, skipped when image_root is NULL)
      Images/<physical_folder>/

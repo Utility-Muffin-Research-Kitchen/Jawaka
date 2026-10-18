@@ -1,8 +1,10 @@
 /* Missing-art accounting against a real scanned library: art in any location
    the scan would use counts as existing, including art added before a rescan,
    so bulk scraping skips it, while an explicit single-game scrape still runs
-   and writes PNG to its usual destination. ScreenScraper is stubbed below;
-   nothing here touches the network. */
+   and writes PNG to its usual destination. EasyRPG folder games, whose launch
+   file is the same RPG_RT.ldb in every game, are searched and saved by their
+   folder's name. ScreenScraper is stubbed below; nothing here touches the
+   network. */
 
 #include "internal/db/db.h"
 #include "internal/discovery/discovery.h"
@@ -14,6 +16,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +29,10 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static char g_searched[SEARCH_LOG_MAX][256];
 static int g_search_count;
 static char g_downloaded[PATH_MAX];
+/* While set, the stub search for "Held Game" waits, so the test can look at
+   the game being scraped. */
+static atomic_int g_hold;
+static atomic_int g_holding;
 
 bool jw_ss_available(void) {
     return true;
@@ -67,7 +74,14 @@ jw_ss_search_status jw_ss_search_rom_platforms(
         snprintf(g_searched[g_search_count++], sizeof(g_searched[0]), "%s", rom_name);
     }
     pthread_mutex_unlock(&g_mu);
-    if (strcmp(rom_name, "Canon.gba") == 0) {
+    if (strcmp(rom_name, "Held Game") == 0) {
+        atomic_store(&g_holding, 1);
+        while (atomic_load(&g_hold)) {
+            usleep(1000);
+        }
+    }
+    if (strcmp(rom_name, "Canon.gba") == 0 || strcmp(rom_name, "Folder Game") == 0 ||
+        strcmp(rom_name, "Card Game") == 0) {
         snprintf(result->media_url, sizeof(result->media_url), "stub://canon");
         snprintf(result->media_format, sizeof(result->media_format), "png");
         return JW_SS_SEARCH_FOUND;
@@ -75,11 +89,21 @@ jw_ss_search_status jw_ss_search_rom_platforms(
     return JW_SS_SEARCH_NOT_FOUND;
 }
 
+static void make_dirs(const char *path);
+
 int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
                          const char *dest_path, int max_dim) {
     (void)client;
     (void)media_url;
     (void)max_dim;
+    /* Like the real download, create the art folder when it is missing. */
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s", dest_path);
+    char *slash = strrchr(dir, '/');
+    if (slash && slash != dir) {
+        *slash = '\0';
+        make_dirs(dir);
+    }
     FILE *f = fopen(dest_path, "wb");
     if (!f) {
         return -1;
@@ -209,6 +233,16 @@ static int search_count(void) {
     return n;
 }
 
+static void expect_image_path(const char *db_path, const char *rom_path,
+                              const char *want) {
+    jw_game_entry game;
+    assert(jw_db_get_game_by_rom_path(db_path, rom_path, &game) == 0);
+    if (strcmp(game.image_path, want) != 0) {
+        fprintf(stderr, "%s: want image %s, got %s\n", rom_path, want, game.image_path);
+    }
+    assert(strcmp(game.image_path, want) == 0);
+}
+
 static void rom_path_for(const char *db_path, const char *system, const char *name,
                          char *out, size_t out_size) {
     jw_game_entry *games = calloc(64, sizeof(*games));
@@ -256,6 +290,7 @@ int main(void) {
 
     static const char *const dirs[] = {
         "Roms/GBA/Imgs", "Roms/FC", "Roms/MD", "Images/GBA", "Images/FC", "Images/MD",
+        "Roms/EASYRPG/Folder Game", "Roms/EASYRPG/Other Game", "Images/EASYRPG",
     };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         snprintf(path, sizeof(path), "%s/%s", sd, dirs[i]);
@@ -263,16 +298,21 @@ int main(void) {
     }
     snprintf(path, sizeof(path), "%s/Roms/GBA/Imgs", secondary);
     make_dirs(path);
+    snprintf(path, sizeof(path), "%s/Roms/EASYRPG/Card Game", secondary);
+    make_dirs(path);
 
     static const char *const roms[] = {
         "Roms/GBA/Canon.gba", "Roms/GBA/Fallback.gba", "Roms/GBA/Missing.gba",
         "Roms/FC/AliasOnly.nes", "Roms/MD/Sonic.md.zip",
+        "Roms/EASYRPG/Folder Game/RPG_RT.ldb", "Roms/EASYRPG/Other Game/RPG_RT.ldb",
     };
     for (size_t i = 0; i < sizeof(roms) / sizeof(roms[0]); i++) {
         snprintf(path, sizeof(path), "%s/%s", sd, roms[i]);
         write_file(path, "rom");
     }
     snprintf(path, sizeof(path), "%s/Roms/GBA/Second.gba", secondary);
+    write_file(path, "rom");
+    snprintf(path, sizeof(path), "%s/Roms/EASYRPG/Card Game/RPG_RT.ldb", secondary);
     write_file(path, "rom");
 
     sqlite3 *db = NULL;
@@ -288,6 +328,7 @@ int main(void) {
     expect_missing("GBA", 4, 4);
     expect_missing("FC", 1, 1);
     expect_missing("MD", 1, 1);
+    expect_missing("EASYRPG", 3, 3);
 
     /* Hand-dropped art after the scan, in every location the scan uses:
        canonical Images/GBA, physical-folder Images/FC (FC's canonical root
@@ -318,8 +359,8 @@ int main(void) {
     jw_scrape_missing_row rows[16];
     int row_count = 0, total_missing = -1;
     assert(jw_scrape_missing_counts(rows, 16, &row_count, &total_missing) == 0);
-    assert(row_count == 3);
-    assert(total_missing == 1);
+    assert(row_count == 4);
+    assert(total_missing == 1 + 3);
 
     /* Scrape-all (missing only) enqueues just the artless game. */
     expect_system_enqueue("GBA", 1, 3);
@@ -345,6 +386,74 @@ int main(void) {
     snprintf(path, sizeof(path), "%s/Images/GBA/Canon.jpeg", sd);
     assert(is_file(path));
     expect_missing("GBA", 1, 4);
+
+    /* EasyRPG folder games are searched by their folder's name, never by the
+       marker every one of them has, and each found game gets its own PNG on
+       its own card. The game ScreenScraper does not know still needs art:
+       the found ones did not land on one shared RPG_RT.png. */
+    char folder_rom[512], other_rom[512], card_rom[512];
+    rom_path_for(db_path, "EASYRPG", "Folder Game", folder_rom, sizeof(folder_rom));
+    rom_path_for(db_path, "EASYRPG", "Other Game", other_rom, sizeof(other_rom));
+    rom_path_for(db_path, "EASYRPG", "Card Game", card_rom, sizeof(card_rom));
+    assert(strcmp(folder_rom, "Roms/EASYRPG/Folder Game/RPG_RT.ldb") == 0);
+    expect_system_enqueue("EASYRPG", 3, 0);
+    wait_idle();
+    assert(searched("Folder Game") == 1);
+    assert(searched("Other Game") == 1);
+    assert(searched("Card Game") == 1);
+    assert(searched("RPG_RT.ldb") == 0);
+    snprintf(path, sizeof(path), "%s/Images/EASYRPG/Folder Game.png", sd);
+    assert(is_file(path));
+    char card_art[PATH_MAX];
+    snprintf(card_art, sizeof(card_art), "%s/Images/EASYRPG/Card Game.png", secondary);
+    assert(is_file(card_art));
+    snprintf(path, sizeof(path), "%s/Images/EASYRPG/RPG_RT.png", sd);
+    assert(!is_file(path));
+    snprintf(path, sizeof(path), "%s/Images/EASYRPG/RPG_RT.png", secondary);
+    assert(!is_file(path));
+    expect_image_path(db_path, folder_rom, "Images/EASYRPG/Folder Game.png");
+    expect_image_path(db_path, card_rom, card_art);
+    expect_image_path(db_path, other_rom, "");
+    expect_missing("EASYRPG", 1, 3);
+    expect_system_enqueue("EASYRPG", 1, 2);
+    wait_idle();
+    assert(searched("Other Game") == 2);
+
+    /* Art kept under the marker's name counts for a folder game without its
+       own, the fallback the scan uses too. */
+    snprintf(path, sizeof(path), "%s/Images/EASYRPG/RPG_RT.png", sd);
+    write_file(path, "png");
+    expect_missing("EASYRPG", 0, 3);
+    unlink(path);
+    expect_missing("EASYRPG", 1, 3);
+
+    /* A folder game the library has not scanned yet is still named by its
+       folder, in the queue and as the game being scraped. */
+    snprintf(path, sizeof(path), "%s/Roms/EASYRPG/Held Game", sd);
+    make_dirs(path);
+    snprintf(path, sizeof(path), "%s/Roms/EASYRPG/Held Game/RPG_RT.ldb", sd);
+    write_file(path, "rom");
+    atomic_store(&g_hold, 1);
+    assert(jw_scrape_enqueue_game("EASYRPG", "Roms/EASYRPG/Held Game/RPG_RT.ldb",
+                                  &error) == 1);
+    for (int i = 0; i < 500 && !atomic_load(&g_holding); i++) {
+        usleep(10 * 1000);
+    }
+    assert(atomic_load(&g_holding));
+    jw_scrape_status_info status;
+    jw_scrape_status(&status);
+    assert(strcmp(status.current_name, "Held Game") == 0);
+    jw_scrape_queue_info *queue = calloc(1, sizeof(*queue));
+    assert(queue);
+    jw_scrape_queue_snapshot(queue, 0, 0);
+    assert(queue->row_count == 1);
+    assert(strcmp(queue->rows[0].display_name, "Held Game") == 0);
+    free(queue);
+    atomic_store(&g_hold, 0);
+    wait_idle();
+    assert(searched("Held Game") == 1);
+    snprintf(path, sizeof(path), "%s/Images/EASYRPG/Held Game.png", sd);
+    assert(!is_file(path));
 
     jw_scrape_worker_stop();
     remove_tree(root);
