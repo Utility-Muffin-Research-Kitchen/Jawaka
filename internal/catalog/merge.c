@@ -3,6 +3,7 @@
 #endif
 
 #include "internal/catalog/merge.h"
+#include "internal/i18n/i18n.h"
 
 #include "cJSON.h"
 
@@ -311,7 +312,7 @@ static char *base_collision_detail(const candidate *candidate,
                  owned->kind, owned->value);
         length += (size_t)needed;
     }
-    char *detail = format("%s %s claims %s already owned by the release catalog",
+    char *detail = format(JW_UI("%s %s claims %s already owned by the release catalog"),
                           candidate->kind, text(candidate->entry, "id"), hits);
     free(hits);
     return detail;
@@ -505,7 +506,7 @@ int jw_catalog_merge(const cJSON *base, const cJSON *contributors,
             if (p) strcat(joined, ", ");
             strcat(joined, providers.items[p]);
         }
-        char *detail = format("%s %s claims %s=%s, also claimed by %s; both refused",
+        char *detail = format(JW_UI("%s %s claims %s=%s, also claimed by %s; both refused"),
                               candidate->kind, text(candidate->entry, "id"),
                               collisions[i]->kind, collisions[i]->value, joined);
         free(joined);
@@ -557,8 +558,8 @@ int jw_catalog_merge(const cJSON *base, const cJSON *contributors,
                                      ? "default-core-unavailable"
                                      : "unknown-default-core";
             if (record(diagnostics, candidate->provider, reason,
-                       format("system %s needs core %s, which is not available after merge; "
-                              "the system is refused too rather than producing a tile that cannot launch",
+                       format(JW_UI("system %s needs core %s, which is not available after merge; "
+                              "the system is refused too rather than producing a tile that cannot launch"),
                               text(candidate->entry, "id"), needed)) != 0) {
                 cJSON_Delete(systems);
                 cJSON_Delete(cores);
@@ -596,7 +597,7 @@ int jw_catalog_merge(const cJSON *base, const cJSON *contributors,
             cJSON *target = find_id(systems, system_id);
             if (!target) {
                 if (record(diagnostics, provider, "dangling-extension-system",
-                           format("system_extensions names %s, which no system provides after merge; extension dropped",
+                           format(JW_UI("system_extensions names %s, which no system provides after merge; extension dropped"),
                                   system_id)) != 0) {
                     cJSON_Delete(systems);
                     cJSON_Delete(cores);
@@ -614,8 +615,8 @@ int jw_catalog_merge(const cJSON *base, const cJSON *contributors,
                 const char *core_id = core->valuestring;
                 if (!core_exists(&core_ids, core_id)) {
                     if (record(diagnostics, provider, "dangling-alternate-core",
-                               format("system_extensions for %s names core %s, absent after merge; "
-                                      "that name dropped, extension accepted", system_id, core_id)) != 0) {
+                               format(JW_UI("system_extensions for %s names core %s, absent after merge; "
+                                      "that name dropped, extension accepted"), system_id, core_id)) != 0) {
                         cJSON_Delete(systems);
                         cJSON_Delete(cores);
                         goto done;

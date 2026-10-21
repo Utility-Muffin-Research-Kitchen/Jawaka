@@ -1,4 +1,5 @@
 #include "internal/platform/bluetooth.h"
+#include "internal/i18n/i18n.h"
 #include "internal/platform/paths.h"
 
 #include "cJSON.h"
@@ -1093,7 +1094,7 @@ static jw_bt_operation_status jw__bt_worker_poll(jw_bt_operation_kind kind,
     if (jw__bt_now_ms() > s_worker.deadline_ms) {
         kill(s_worker.pid, SIGKILL);
         waitpid(s_worker.pid, NULL, 0);
-        jw__bt_copy(message, message_len, "Bluetooth operation timed out");
+        jw__bt_copy(message, message_len, JW_UI("Bluetooth operation timed out"));
         jw__bt_worker_reset();
         return JW_BT_OP_TIMEOUT;
     }
@@ -1117,8 +1118,8 @@ static jw_bt_operation_status jw__bt_worker_poll(jw_bt_operation_kind kind,
         jw__bt_copy(message, message_len, m);
     } else {
         jw__bt_copy(message, message_len,
-                    result == JW_BT_OP_OK ? "Bluetooth operation complete"
-                                          : "Bluetooth operation failed");
+                    result == JW_BT_OP_OK ? JW_UI("Bluetooth operation complete")
+                                          : JW_UI("Bluetooth operation failed"));
     }
     jw__bt_worker_reset();
     return result;
@@ -1135,11 +1136,11 @@ static void jw__bt_scan_child(const char *mac, bool pair, int out_fd) {
     int rc = jw__btctl_timeout_scan(buf, sizeof(buf));
     (void)jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS, "scan", "off", NULL);
     if (rc < 0) {
-        fprintf(out, "Bluetooth scan failed\n");
+        fprintf(out, JW_UI("Bluetooth scan failed\n"));
         fflush(out);
         _exit(1);
     }
-    fprintf(out, "Bluetooth scan complete\n");
+    fprintf(out, JW_UI("Bluetooth scan complete\n"));
     fflush(out);
     _exit(0);
 }
@@ -1213,7 +1214,7 @@ static void jw__bt_connect_child(const char *mac, bool pair_if_needed, int out_f
     }
 
     if (!jw_bt_mac_valid(mac)) {
-        fprintf(out, "Invalid Bluetooth address\n");
+        fprintf(out, JW_UI("Invalid Bluetooth address\n"));
         fflush(out);
         _exit(1);
     }
@@ -1226,7 +1227,7 @@ static void jw__bt_connect_child(const char *mac, bool pair_if_needed, int out_f
     jw_bt_device_t before;
     bool bonded = jw_bt_refresh_device(canon, &before) == 0 && before.bonded;
     if (!bonded && !pair_if_needed) {
-        fprintf(out, "Device is not paired\n");
+        fprintf(out, JW_UI("Device is not paired\n"));
         fflush(out);
         _exit(1);
     }
@@ -1242,7 +1243,7 @@ static void jw__bt_connect_child(const char *mac, bool pair_if_needed, int out_f
             seen = jw__bt_device_seen(canon);
         }
         if (!seen) {
-            fprintf(out, "Device not found\n");
+            fprintf(out, JW_UI("Device not found\n"));
             fflush(out);
             _exit(1);
         }
@@ -1279,7 +1280,7 @@ static void jw__bt_connect_child(const char *mac, bool pair_if_needed, int out_f
 
     if (!jw__bt_device_connected(canon)) {
         (void)jw_bt_sync_stock_saved_list();
-        fprintf(out, "Connect failed\n");
+        fprintf(out, JW_UI("Connect failed\n"));
         fflush(out);
         _exit(1);
     }

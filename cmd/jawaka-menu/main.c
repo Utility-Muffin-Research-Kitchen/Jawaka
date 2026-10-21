@@ -396,7 +396,9 @@ static void jw__render_menu(const jw_menu_state *state) {
         int line_h = TTF_FontHeight(body_font);
         if (state->status[0]) {
             int ty = pane_y + (pane_h - line_h) / 2;
-            cat_draw_text_wrapped(body_font, state->status, detail_x, ty,
+            char status_tr[sizeof(state->status)];
+            jw_i18n_message(state->status, NULL, 0, status_tr, sizeof status_tr);
+            cat_draw_text_wrapped(body_font, status_tr, detail_x, ty,
                                   detail_w, theme->hint, CAT_ALIGN_CENTER);
         } else if (state->summary_ready) {
             char l1[32], l2[32];
@@ -513,7 +515,7 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
         case JW_MENU_EXIT_STOCK:
             if (jw_ipc_exit_stock(socket_path) != 0) {
                 snprintf(state->status, sizeof(state->status), "%s",
-                         "Exit to stock failed");
+                         T("Exit to stock failed"));
                 return -1;
             }
             *running = false;
@@ -528,7 +530,7 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
         case JW_MENU_POWEROFF:
             if (jw_ipc_platform_action(socket_path, "poweroff", 0) != 0) {
                 snprintf(state->status, sizeof(state->status), "%s",
-                         "Power off failed");
+                         T("Power off failed"));
                 return -1;
             }
             *running = false;
@@ -634,7 +636,7 @@ static int jw__db_game_name(sqlite3 *db, const char *rom_path,
 static void jw__ingame_resolve_titles(jw_ingame_state *state) {
     if (!state->session.active) {
         snprintf(state->game_title, sizeof(state->game_title), "%s",
-                 "No active session");
+                 T("No active session"));
         state->console_title[0] = '\0';
         return;
     }
@@ -1132,7 +1134,7 @@ static void jw__ingame_detail(const jw_ingame_state *state, int item,
         }
     } else if (item == JW_INGAME_PERF) {
         if (state->perf_ready && state->perf.supported && state->perf.soc_temp_c >= 0) {
-            snprintf(out, out_size, "%s, %d C",
+            snprintf(out, out_size, T("%s, %d C"),
                      jw__ingame_perf_active_label(state),
                      state->perf.soc_temp_c);
         } else {
@@ -1440,7 +1442,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
 
     const char *session_line = state->console_title[0]
                              ? state->console_title
-                             : (state->session.active ? "" : "No active RetroArch session");
+                             : (state->session.active ? "" : JW_UI("No active RetroArch session"));
     if (session_line[0]) {
         cat_draw_text_ellipsized(small, session_line, x, meta_y,
                                  theme->hint, list_w);
@@ -1524,12 +1526,14 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
                       state->load_entries[state->load_index].is_latest);
     if (!status_text[0] && on_latest) {
         snprintf(latest_hint, sizeof(latest_hint),
-                 "Save & Quit quicksave \xe2\x80\x94 A resumes, Y keeps it as a slot");
+                 T("Save & Quit quicksave \xe2\x80\x94 A resumes, Y keeps it as a slot"));
         status_text = latest_hint;
     }
     if (state->show_hints && status_text[0]) {
         int status_y = content.y + content.h - small_h - CAT_S(10);
-        cat_draw_text_ellipsized(small, status_text, x, status_y,
+        char status_tr[256];
+        jw_i18n_message(status_text, NULL, 0, status_tr, sizeof status_tr);
+        cat_draw_text_ellipsized(small, status_tr, x, status_y,
                                  theme->hint, list_w);
     }
 
@@ -1774,7 +1778,9 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
 
     if (state->show_hints && state->status[0]) {
         int y = content.y + content.h - small_h - CAT_S(10);
-        cat_draw_text_ellipsized(small, state->status, x, y, theme->hint, list_w);
+        char status_tr[sizeof(state->status)];
+        jw_i18n_message(state->status, NULL, 0, status_tr, sizeof status_tr);
+        cat_draw_text_ellipsized(small, status_tr, x, y, theme->hint, list_w);
     }
     if (state->show_hints) {
         cat_set_footer_bg_opacity(JW_INGAME_UNDERLAY_ALPHA);   /* match the underlay panels */
@@ -2374,7 +2380,7 @@ static void jw__ingame_refresh(const char *socket_path, jw_ingame_state *state) 
         memset(&state->session, 0, sizeof(state->session));
         if (!state->status[0]) {
             snprintf(state->status, sizeof(state->status), "%s",
-                     "RetroArch session unavailable");
+                     T("RetroArch session unavailable"));
         }
     } else if (state->session.active && state->session.command_ok) {
         state->session_details_ready = true;
@@ -2470,7 +2476,7 @@ static int jw__ingame_activate(const char *socket_path, jw_ingame_state *state,
         case JW_INGAME_SAVE:
             if (!state->session.savestate_supported) {
                 snprintf(state->status, sizeof(state->status), "%s",
-                         "Savestates are not available");
+                         T("Savestates are not available"));
                 return -1;
             }
             action = "save-state";
@@ -2654,11 +2660,11 @@ static void jw__handle_ingame_input(const char *socket_path,
                     jw_ra_promote_switcher_slot(dir, state->session.rom_path,
                                                 &kept)) {
                     snprintf(state->status, sizeof(state->status),
-                             "Kept as Slot %d", kept);
+                             T("Kept as Slot %d"), kept);
                     jw__ingame_rebuild_slots(state);
                 } else {
                     snprintf(state->status, sizeof(state->status), "%s",
-                             "Keep failed");
+                             T("Keep failed"));
                 }
             }
             break;

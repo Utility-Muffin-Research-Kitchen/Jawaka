@@ -1,4 +1,5 @@
 #include "cJSON.h"
+#include "internal/i18n/i18n.h"
 #include "internal/platform/device_backend.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/core/log.h"
@@ -1810,26 +1811,26 @@ static void jw__mlp1_enable_adb(jw_platform_context *ctx,
                                 jw_platform_result *out) {
     if (!jw__mlp1_adb_supported()) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
-                               "ADB support unavailable");
+                               JW_UI("ADB support unavailable"));
         return;
     }
 
     if (jw__exec_shell(JW_MLP1_ADB_ENABLE_CMD) != 0 ||
         !jw__mlp1_adb_is_pinned()) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
-                               "ADB pin failed");
+                               JW_UI("ADB pin failed"));
         return;
     }
 
     if (jw__mlp1_set_adb_intent(ctx, true) != 0) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
-                               "ADB enabled, restore marker failed");
+                               JW_UI("ADB enabled, restore marker failed"));
         return;
     }
 
     if (jw__exec_shell(JW_MLP1_USB_RESTART_CMD) != 0) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
-                               "ADB enabled; USB restart failed");
+                               JW_UI("ADB enabled; USB restart failed"));
         return;
     }
 
@@ -1840,7 +1841,7 @@ static void jw__mlp1_disable_adb(jw_platform_context *ctx,
                                  jw_platform_result *out) {
     if (!jw__mlp1_adb_supported()) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
-                               "ADB support unavailable");
+                               JW_UI("ADB support unavailable"));
         return;
     }
 
@@ -1853,13 +1854,13 @@ static void jw__mlp1_disable_adb(jw_platform_context *ctx,
 
     if (jw__mlp1_set_adb_intent(ctx, false) != 0) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
-                               "ADB disabled, marker removal failed");
+                               JW_UI("ADB disabled, marker removal failed"));
         return;
     }
 
     if (jw__exec_shell(JW_MLP1_USB_RESTART_CMD) != 0) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
-                               "ADB disabled; USB restart failed");
+                               JW_UI("ADB disabled; USB restart failed"));
         return;
     }
 
@@ -2819,7 +2820,7 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
     unsigned available = jw__mlp1_get_audio_available_outputs();
     if ((available & JW_PLATFORM_AUDIO_OUTPUT_BIT(output)) == 0) {
         char message[JW_PLATFORM_MAX_MESSAGE];
-        snprintf(message, sizeof(message), "%s output unavailable",
+        snprintf(message, sizeof(message), JW_UI("%s output unavailable"),
                  jw_platform_audio_output_label(output));
         jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE, message);
         return -1;
@@ -2872,13 +2873,13 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
 
     if (rc != 0) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
-                               "audio output route failed");
+                               JW_UI("audio output route failed"));
         return -1;
     }
 
     (void)jw__mlp1_apply_stored_audio_volume(output);
     char message[JW_PLATFORM_MAX_MESSAGE];
-    snprintf(message, sizeof(message), "audio output: %s",
+    snprintf(message, sizeof(message), JW_UI("audio output: %s"),
              jw_platform_audio_output_label(output));
     jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, (int)output);
     return 0;
@@ -3803,13 +3804,13 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         bool enabled = value != 0;
         if (jw__mlp1_set_boot_splash(ctx, enabled) != 0) {
             jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
-                                   enabled ? "boot splash enable failed"
-                                           : "boot splash disable failed");
+                                   enabled ? JW_UI("boot splash enable failed")
+                                           : JW_UI("boot splash disable failed"));
             return;
         }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
-                               enabled ? "boot splash enabled"
-                                       : "boot splash disabled");
+                               enabled ? JW_UI("boot splash enabled")
+                                       : JW_UI("boot splash disabled"));
         return;
     }
 
@@ -3825,7 +3826,7 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         }
         jw_log_info("display: refresh rate -> %d Hz", hz);
         char msg[32];
-        snprintf(msg, sizeof(msg), "switching to %d Hz", hz);
+        snprintf(msg, sizeof(msg), JW_UI("switching to %d Hz"), hz);
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
     }
@@ -3847,11 +3848,11 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
             }
             if (jw__mlp1_write_gamma_ramp(1.0, 1.0, 1.0) != 0) {
                 jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
-                                       "Color temperature reset for the external display failed");
+                                       JW_UI("Color temperature reset for the external display failed"));
                 return;
             }
             jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
-                                   "Color temperature neutral for the external display");
+                                   JW_UI("Color temperature neutral for the external display"));
             return;
         }
         int kelvin = jw_platform_clamp_color_temp_k(value);
@@ -3863,9 +3864,9 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         jw_log_info("display: color temperature -> %d K", kelvin);
         char msg[40];
         if (kelvin == JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
-            snprintf(msg, sizeof(msg), "Color temperature neutral");
+            snprintf(msg, sizeof(msg), JW_UI("Color temperature neutral"));
         } else {
-            snprintf(msg, sizeof(msg), "Color temperature %d K", kelvin);
+            snprintf(msg, sizeof(msg), JW_UI("Color temperature %d K"), kelvin);
         }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
@@ -3895,7 +3896,7 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         static const char *const names[] = { "off", "4:3", "stretch" };
         jw_log_info("display: HDMI output -> %s", names[mode]);
         char msg[48];
-        snprintf(msg, sizeof(msg), "HDMI output %s", names[mode]);
+        snprintf(msg, sizeof(msg), JW_UI("HDMI output %s"), names[mode]);
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
     }
@@ -4211,7 +4212,7 @@ static void jw__mlp1_safe_unmount_storage(jw_platform_context *ctx,
     jw_mlp1_platform_data *data = ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
     if (!jw__mlp1_source_is_secondary(source_id)) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID,
-                               "only secondary SD can be unmounted");
+                               JW_UI("only secondary SD can be unmounted"));
         return;
     }
 
@@ -4221,13 +4222,13 @@ static void jw__mlp1_safe_unmount_storage(jw_platform_context *ctx,
 
     if (!jw__mlp1_mount_is_active(ctx)) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
-                               "Secondary SD is not mounted");
+                               JW_UI("Secondary SD is not mounted"));
         return;
     }
 
     if (jw__mlp1_storage_busy(ctx)) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
-                               "Secondary SD is busy");
+                               JW_UI("Secondary SD is busy"));
         return;
     }
 
@@ -4235,7 +4236,7 @@ static void jw__mlp1_safe_unmount_storage(jw_platform_context *ctx,
     snprintf(command, sizeof(command), "umount %s >/dev/null 2>&1", mount);
     if (jw__exec_shell(command) != 0) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
-                               "Secondary SD unmount failed");
+                               JW_UI("Secondary SD unmount failed"));
         return;
     }
 

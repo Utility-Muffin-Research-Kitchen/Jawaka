@@ -977,14 +977,25 @@ static int jw__system_activity_height(const jw_launcher_state *state) {
         ? TTF_FontHeight(cat_get_font(CAT_FONT_SMALL)) + CAT_S(8) : 0;
 }
 
+/* Draw-time message lookup for text composed at runtime (daemon replies,
+ * snprintf'd status lines). T() only matches a whole literal; jw_i18n_message()
+ * also rebuilds %d/%s templates, and returns the text unchanged on a miss. */
+static const char *jw__tr_msg(const char *text, char *buf, size_t size) {
+    if (!text || !text[0]) return text;
+    jw_i18n_message(text, NULL, 0, buf, size);
+    return buf;
+}
+
 static void jw__draw_system_activity(const jw_launcher_state *state) {
     int h = jw__system_activity_height(state);
     g_activity_strip_h = h;
     if (!h) return;
     int margin = CAT_S(12);
     int bottom = cat_get_screen_height() - jw__footer_height(state) - margin;
+    char activity_tr[256];
     cat_draw_text_ellipsized(cat_get_font(CAT_FONT_SMALL),
-        jw__system_activity_text(state), margin + CAT_S(12), bottom - h + CAT_S(4),
+        jw__tr_msg(jw__system_activity_text(state), activity_tr, sizeof activity_tr),
+        margin + CAT_S(12), bottom - h + CAT_S(4),
         cat_get_theme()->hint, cat_get_screen_width() - 2 * (margin + CAT_S(12)));
 }
 
@@ -1001,6 +1012,8 @@ static void jw__draw_launch_notice(const jw_launcher_state *state) {
     if (!state) return;
     const char *text = jw_launch_notice_text(&state->launch_notice, SDL_GetTicks());
     if (!text[0]) return;
+    char text_tr[1024];
+    text = jw__tr_msg(text, text_tr, sizeof text_tr);
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
@@ -1292,7 +1305,7 @@ static void jw__set_launching_status(jw_launcher_state *state,
         max_name_len = (size_t)INT_MAX;
     }
 
-    snprintf(state->status, sizeof(state->status), "Launching %.*s...",
+    snprintf(state->status, sizeof(state->status), T("Launching %.*s..."),
              (int)max_name_len, display);
 }
 
@@ -2111,7 +2124,7 @@ static void jw__poll_library_generation(const char *socket_path,
         state->menu_scanning = scan_running;
         if (scan_running) {
             snprintf(state->status, sizeof(state->status), "%s",
-                     pending_rescan ? "Library updating; another scan is queued"
+                     pending_rescan ? T("Library updating; another scan is queued")
                                     : "Library updating...");
         }
         cat_request_frame();
@@ -2481,7 +2494,7 @@ static void jw__pakrat_build_view(jw_launcher_state *state) {
                  count == 1 ? T("%d theme") : T("%d themes"), count);
     } else {
         snprintf(state->pakrat_message, sizeof(state->pakrat_message),
-                 "%d Pak Rat app%s", count, count == 1 ? "" : "s");
+                 T("%d Pak Rat app%s"), count, count == 1 ? "" : "s");
     }
 }
 
@@ -2516,7 +2529,7 @@ static void jw__load_pakrat_store(jw_launcher_state *state) {
         if (!state->pakrat_apps) {
             state->pakrat_load_rc = -1;
             snprintf(state->pakrat_message, sizeof(state->pakrat_message),
-                     "%s", "Pak Rat catalog unavailable");
+                     "%s", T("Pak Rat catalog unavailable"));
             return;
         }
     }
@@ -2532,10 +2545,10 @@ static void jw__load_pakrat_store(jw_launcher_state *state) {
         jw_settings_ui_set_themes_root(&state->settings, state->sdcard_root);
     } else if (rc > 0) {
         snprintf(state->pakrat_message, sizeof(state->pakrat_message),
-                 "%s", "Pak Rat catalog not configured");
+                 "%s", T("Pak Rat catalog not configured"));
     } else if (rc == JW_PAKRAT_CATALOG_REQUIRES_NEWER_LEAF) {
         snprintf(state->pakrat_message, sizeof(state->pakrat_message),
-                 "%s", "Pak Rat catalog requires a newer Leaf");
+                 "%s", T("Pak Rat catalog requires a newer Leaf"));
     } else {
         snprintf(state->pakrat_message, sizeof(state->pakrat_message),
                  "%s", "Pak Rat catalog unavailable");
@@ -2731,17 +2744,17 @@ static const char *jw__pakrat_primary_action_label(const jw_pakrat_app_state *ap
 static void jw__pakrat_provides_line(const jw_pakrat_app_state *app,
                                      char *out, size_t out_size) {
     if (app->provides_summary[0]) {
-        snprintf(out, out_size, "Adds %s%s", app->provides_summary,
-                 app->content_only ? " — no app to open" : "");
+        snprintf(out, out_size, T("Adds %s%s"), app->provides_summary,
+                 app->content_only ? T(" — no app to open") : "");
     } else {
         snprintf(out, out_size,
-                 "Adds systems and emulators rather than an app to open.");
+                 T("Adds systems and emulators rather than an app to open."));
     }
 }
 
 static void jw__pakrat_diagnostic_line(const jw_pakrat_app_state *app,
                                        char *out, size_t out_size) {
-    snprintf(out, out_size, "Contribution refused — %s",
+    snprintf(out, out_size, T("Contribution refused — %s"),
              app->content_diagnostic);
 }
 
@@ -3213,10 +3226,13 @@ static int jw__draw_pakrat_header(const jw_launcher_state *state, const char *ti
     int title_max = w - CAT_S(8);
 
     if (state && state->pakrat_message[0] && small) {
+        char pakrat_tr[256];
         int msg_w = w / 2;
         int msg_x = margin + w - msg_w - CAT_S(4);
         int msg_y = y + (large_h - TTF_FontHeight(small)) / 2;
-        cat_draw_text_ellipsized(small, state->pakrat_message,
+        cat_draw_text_ellipsized(small,
+                                 jw__tr_msg(state->pakrat_message, pakrat_tr,
+                                            sizeof pakrat_tr),
                                  msg_x, msg_y, theme->hint, msg_w);
         title_max = msg_x - margin - CAT_S(12);
         if (title_max < CAT_S(96)) {
@@ -3340,7 +3356,7 @@ static int jw__pakrat_detail_content_h(const jw_pakrat_app_state *app,
     if (app->gated_version[0] && app->gated_min_leaf_version[0]) {
         char gate[256];
         snprintf(gate, sizeof(gate),
-                 "Version %s requires Leaf v%s — update Leaf in Settings to get it.",
+                 T("Version %s requires Leaf v%s — update Leaf in Settings to get it."),
                  app->gated_version, app->gated_min_leaf_version);
         h += cat_measure_wrapped_text_height(body, gate, w) + CAT_S(18);
     }
@@ -3348,7 +3364,7 @@ static int jw__pakrat_detail_content_h(const jw_pakrat_app_state *app,
         app->installed_version[0]) {
         char missing[256];
         snprintf(missing, sizeof(missing),
-                 "%s unavailable: version %s is missing from catalog history.",
+                 T("%s unavailable: version %s is missing from catalog history."),
                  app->status == JW_PAKRAT_APP_STALE ? "Restore" : "Reinstall",
                  app->installed_version);
         h += cat_measure_wrapped_text_height(body, missing, w) + CAT_S(18);
@@ -3511,7 +3527,7 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
                 ? (state->pakrat_load_rc == 0 ? T("No themes in Pak Rat yet")
                                               : state->pakrat_message)
                 : (state->pakrat_message[0] ? state->pakrat_message
-                                            : "No Pak Rat apps found");
+                                            : JW_UI("No Pak Rat apps found"));
             cat_draw_text_wrapped(body, msg,
                 list.x + CAT_S(8), list.y + CAT_S(8),
                 list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
@@ -3849,8 +3865,13 @@ static void jw__render_vertical(const jw_launcher_state *state) {
 
     /* Status line at bottom-left */
     int status_y = content_y + content_h - TTF_FontHeight(small);
-    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, margin, status_y,
-                             theme->hint, list_w - margin);
+    if (jw_settings_show_hints(&state->settings)) {
+        char status_tr[sizeof(state->status)];
+        cat_draw_text_ellipsized(small,
+                                 jw__tr_msg(state->status, status_tr,
+                                            sizeof status_tr),
+                                 margin, status_y, theme->hint, list_w - margin);
+    }
 
     /* Settings overlay (dims background + draws panel) */
     if (jw_settings_ui_is_open(&state->settings)) {
@@ -4095,8 +4116,13 @@ static void jw__render_horizontal(jw_launcher_state *state) {
 
     /* Status line */
     int status_y = sh - fh - TTF_FontHeight(small);
-    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, CAT_S(12), status_y,
-                             theme->hint, sw / 2);
+    if (jw_settings_show_hints(&state->settings)) {
+        char status_tr[sizeof(state->status)];
+        cat_draw_text_ellipsized(small,
+                                 jw__tr_msg(state->status, status_tr,
+                                            sizeof status_tr),
+                                 CAT_S(12), status_y, theme->hint, sw / 2);
+    }
 
     /* Tools overlay */
     if (state->tools_open)
@@ -5461,7 +5487,7 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
 
     char metadata[160];
     if (app->pak_version[0]) {
-        snprintf(metadata, sizeof(metadata), "Version %s",
+        snprintf(metadata, sizeof(metadata), T("Version %s"),
                  app->pak_version);
         int metadata_w = cat_measure_text(small, metadata);
         if (metadata_w > max_w) metadata_w = max_w;
@@ -5471,7 +5497,7 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
         label_y += sub_h + line_gap;
     }
     if (app->min_leaf_version[0]) {
-        snprintf(metadata, sizeof(metadata), "Requires Leaf v%s",
+        snprintf(metadata, sizeof(metadata), T("Requires Leaf v%s"),
                  app->min_leaf_version);
         int metadata_w = cat_measure_text(small, metadata);
         if (metadata_w > max_w) metadata_w = max_w;
@@ -6082,8 +6108,13 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
     }
 
     int status_y = content_y + content_h - TTF_FontHeight(small);
-    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, margin, status_y,
-                             theme->hint, sw - margin * 2);
+    if (jw_settings_show_hints(&state->settings)) {
+        char status_tr[sizeof(state->status)];
+        cat_draw_text_ellipsized(small,
+                                 jw__tr_msg(state->status, status_tr,
+                                            sizeof status_tr),
+                                 margin, status_y, theme->hint, sw - margin * 2);
+    }
 
     cat_footer_item footer[] = {
         { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
@@ -6829,9 +6860,11 @@ static const char *jw__delete_source_name(const char *source) {
 
 static int jw__delete_line(const char *text, int x, int y, int w, bool draw) {
     TTF_Font *font = cat_get_font(CAT_FONT_SMALL);
-    if (draw) cat_draw_text_wrapped(font, text, x, y, w,
+    char text_tr[2048];
+    jw_i18n_message(text, NULL, 0, text_tr, sizeof text_tr);
+    if (draw) cat_draw_text_wrapped(font, text_tr, x, y, w,
                                    cat_get_theme()->text, CAT_ALIGN_LEFT);
-    return cat_measure_wrapped_text_height(font, text, w) + CAT_S(10);
+    return cat_measure_wrapped_text_height(font, text_tr, w) + CAT_S(10);
 }
 
 static int jw__delete_body(jw_launcher_state *state, int x, int y, int w, bool draw) {
@@ -9210,7 +9243,7 @@ static void jw__action_refresh_core_choices(const char *db_path,
     const jw_ra_catalog *catalog =
         jw_ra_catalog_get(state->sdcard_root, error, sizeof(error));
     if (!catalog) {
-        snprintf(state->status, sizeof(state->status), "Core metadata unavailable: %.180s",
+        snprintf(state->status, sizeof(state->status), T("Core metadata unavailable: %.180s"),
                  error[0] ? error : "unknown");
         return;
     }
@@ -9504,26 +9537,26 @@ static int jw__perform_search(const char *db_path, jw_launcher_state *state,
                              JW_MAX_SEARCH_RESULTS, &state->search_count) != 0) {
         state->search_open = true;
         cat_list_state_init(&state->search_list, jw__search_visible_rows(state));
-        snprintf(state->status, sizeof(state->status), "%s", "search failed");
+        snprintf(state->status, sizeof(state->status), "%s", T("search failed"));
         return -1;
     }
 
     state->search_open = true;
     cat_list_state_init(&state->search_list, jw__search_visible_rows(state));
     cat_list_state_jump(&state->search_list, 0, state->search_count);
-    snprintf(state->status, sizeof(state->status), "%d results", state->search_count);
+    snprintf(state->status, sizeof(state->status), T("%d results"), state->search_count);
     return 0;
 }
 
 static void jw__open_search(const char *db_path, jw_launcher_state *state) {
     cat_keyboard_result result;
     int rc = cat_keyboard(state->search_query,
-                          "Search library\nStart: Confirm\nY: Cancel",
+                          JW_UI("Search library\nStart: Confirm\nY: Cancel"),
                           CAT_KB_GENERAL, &result);
     if (rc == CAT_OK) {
         jw__perform_search(db_path, state, result.text);
     } else if (rc == CAT_ERROR) {
-        snprintf(state->status, sizeof(state->status), "%s", "search keyboard failed");
+        snprintf(state->status, sizeof(state->status), "%s", T("search keyboard failed"));
     }
 }
 
@@ -9536,11 +9569,11 @@ static int jw__open_system_games(const char *db_path, const char *system,
     int rc = jw__load_system_games_full(db_path, system, state, 0);
     if (rc != 0) {
         if (rc < 0) {
-            snprintf(state->status, sizeof(state->status), "Could not load games for %s",
+            snprintf(state->status, sizeof(state->status), T("Could not load games for %s"),
                      display_name[0] ? display_name : system);
             return -1;
         }
-        snprintf(state->status, sizeof(state->status), "No launchable games for %s",
+        snprintf(state->status, sizeof(state->status), T("No launchable games for %s"),
                  display_name[0] ? display_name : system);
         return -1;
     }
@@ -9560,7 +9593,7 @@ static int jw__open_system_games(const char *db_path, const char *system,
 static int jw__open_favorites(const char *db_path, jw_launcher_state *state) {
     if (jw__load_bounded_game_browser(db_path, state, jw_db_list_favorite_games,
                                       JW_OPENED_GAME_BROWSER_LIMIT) != 0) {
-        snprintf(state->status, sizeof(state->status), "%s", "Could not load favorites");
+        snprintf(state->status, sizeof(state->status), "%s", T("Could not load favorites"));
         return -1;
     }
 
@@ -9583,7 +9616,7 @@ static int jw__open_favorites(const char *db_path, jw_launcher_state *state) {
 static int jw__open_recents(const char *db_path, jw_launcher_state *state) {
     if (jw__load_bounded_game_browser(db_path, state, jw_db_list_recent_games,
                                       JW_OPENED_GAME_BROWSER_LIMIT) != 0) {
-        snprintf(state->status, sizeof(state->status), "%s", "Could not load recents");
+        snprintf(state->status, sizeof(state->status), "%s", T("Could not load recents"));
         return -1;
     }
 
@@ -9595,9 +9628,9 @@ static int jw__open_recents(const char *db_path, jw_launcher_state *state) {
     cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
     cat_list_state_jump(&state->game_list, 0, state->game_count);
     if (state->game_count == 0) {
-        snprintf(state->status, sizeof(state->status), "%s", "No recent games yet");
+        snprintf(state->status, sizeof(state->status), "%s", T("No recent games yet"));
     } else {
-        snprintf(state->status, sizeof(state->status), "%d recent", state->game_count);
+        snprintf(state->status, sizeof(state->status), T("%d recent"), state->game_count);
     }
     return 0;
 }
@@ -9729,7 +9762,7 @@ static bool jw__pakrat_append(char *message, size_t capacity,
     }
     va_list args;
     va_start(args, fmt);
-    int n = vsnprintf(message + *used, capacity - *used, fmt, args);
+    int n = vsnprintf(message + *used, capacity - *used, T(fmt), args);
     va_end(args);
     if (n < 0 || (size_t)n >= capacity - *used) {
         return false;
@@ -9752,12 +9785,12 @@ static bool jw__confirm_pakrat_uninstall(
     }
     size_t used = 0;
     bool complete = jw__pakrat_append(
-        message, capacity, &used, "Uninstall %.180s?\n\n",
+        message, capacity, &used, JW_UI("Uninstall %.180s?\n\n"),
         app->package.name[0] ? app->package.name : app->package.id);
     if (complete && info->metadata.revoke_count > 0) {
         complete = jw__pakrat_append(
             message, capacity, &used,
-            "Declared browser trust and credentials will be revoked.\n");
+            JW_UI("Declared browser trust and credentials will be revoked.\n"));
     }
     if (complete && info->item_count == 0) {
         complete = jw__pakrat_append(
@@ -9766,11 +9799,12 @@ static bool jw__confirm_pakrat_uninstall(
     } else if (complete) {
         complete = jw__pakrat_append(
             message, capacity, &used,
-            "These retained data directories will be preserved:\n");
+            JW_UI("These retained data directories will be preserved:\n"));
     }
     for (int i = 0; complete && i < info->item_count; i++) {
         const jw_pakrat_retained_item *item = &info->items[i];
-        char size[64] = "unknown size";
+        char size[64];
+        snprintf(size, sizeof(size), "%s", T("unknown size"));
         if (item->size_known) {
             jw__pakrat_format_size(item->size_bytes, size, sizeof(size));
         }
@@ -9778,7 +9812,7 @@ static bool jw__confirm_pakrat_uninstall(
             message, capacity, &used, "\n%s: %s (%s)", item->source_id,
             item->root,
             item->source_present
-                ? size : "card absent; not inventoried");
+                ? size : JW_UI("card absent; not inventoried"));
     }
     if (!complete) {
         free(message);
@@ -9809,7 +9843,7 @@ static bool jw__confirm_pakrat_remove_retained(
     char message[768];
     snprintf(
         message, sizeof(message),
-        "Also remove retained data for %.180s?\n\nThis separately deletes every declared retained directory on cards that are present now. Absent cards remain unchanged. This cannot be undone.",
+        T("Also remove retained data for %.180s?\n\nThis separately deletes every declared retained directory on cards that are present now. Absent cards remain unchanged. This cannot be undone."),
         app->package.name[0] ? app->package.name : app->package.id);
     cat_footer_item footer[] = {
         { .button = CAT_BTN_B, .label = "Keep data", .is_confirm = false },
@@ -9830,7 +9864,7 @@ static bool jw__confirm_pakrat_reinstall(const jw_pakrat_app_state *app) {
     }
     char message[512];
     snprintf(message, sizeof(message),
-             "Reinstall %.180s?\n\nThe app package will be replaced. User data is preserved.",
+             T("Reinstall %.180s?\n\nThe app package will be replaced. User data is preserved."),
              app->package.name[0] ? app->package.name : app->package.id);
     cat_footer_item footer[] = {
         { .button = CAT_BTN_B, .label = "Cancel",    .is_confirm = false },
@@ -9864,8 +9898,8 @@ static bool jw__confirm_pakrat_adopt(const jw_pakrat_app_state *app) {
                  app->package.name[0] ? app->package.name : app->package.id);
     } else {
         snprintf(message, sizeof(message),
-                 "%.180s is already installed manually.\n\nReplace it with the Pak Rat "
-                 "version so it can be updated? User data is preserved.",
+                 T("%.180s is already installed manually.\n\nReplace it with the Pak Rat "
+                 "version so it can be updated? User data is preserved."),
                  app->package.name[0] ? app->package.name : app->package.id);
     }
     cat_footer_item footer[] = {
@@ -9930,11 +9964,13 @@ static void jw__rebuild_for_layout(jw_launcher_state *state);
 /* A one-button notice for something the user has to read, not just glimpse in
    the header. */
 static void jw__pakrat_notice(const char *message) {
+    char message_tr[1024];
+    jw_i18n_message(message, NULL, 0, message_tr, sizeof message_tr);
     cat_footer_item footer[] = {
         { .button = CAT_BTN_A, .label = T("OK"), .is_confirm = true },
     };
     cat_message_opts opts = {
-        .message = message,
+        .message = message_tr,
         .footer = footer,
         .footer_count = 1,
     };
@@ -10939,11 +10975,11 @@ static void jw__cycle_action_core(const char *db_path, jw_launcher_state *state,
                                       JW_CONTENT_SETTING_CORE_ID, next_id);
     }
     if (rc == 0) {
-        snprintf(state->status, sizeof(state->status), "Core: %.160s",
+        snprintf(state->status, sizeof(state->status), T("Core: %.160s"),
                  jw__action_core_label(state, next_id));
         jw__refresh_after_action_write(db_path, state);
     } else {
-        snprintf(state->status, sizeof(state->status), "%s", "Core update failed");
+        snprintf(state->status, sizeof(state->status), "%s", T("Core update failed"));
     }
 }
 
@@ -10975,12 +11011,12 @@ static void jw__cycle_action_performance(const char *db_path,
                                       next_name);
     }
     if (rc == 0) {
-        snprintf(state->status, sizeof(state->status), "Performance: %.160s",
+        snprintf(state->status, sizeof(state->status), T("Performance: %.160s"),
                  jw_platform_perf_profile_label(kActionPerfProfiles[next]));
         jw__refresh_after_action_write(db_path, state);
     } else {
         snprintf(state->status, sizeof(state->status), "%s",
-                 "Performance update failed");
+                 T("Performance update failed"));
     }
 }
 
@@ -11040,7 +11076,7 @@ static void jw__edit_action_display_name(const char *db_path,
     }
 
     int rc = cat_keyboard_ex(current,
-                          "Start: Confirm\nY: Cancel\nLeave empty to reset",
+                          JW_UI("Start: Confirm\nY: Cancel\nLeave empty to reset"),
                           CAT_KB_GENERAL, cf_backdrop, &result);
 
     if (cf_theme) {
@@ -11061,10 +11097,10 @@ static void jw__edit_action_display_name(const char *db_path,
                                          result.text);
             if (write_rc != 0) {
                 snprintf(state->status, sizeof(state->status), "%s",
-                         "Display name update failed");
+                         T("Display name update failed"));
                 return;
             }
-            snprintf(state->status, sizeof(state->status), "Display Name: %.160s",
+            snprintf(state->status, sizeof(state->status), T("Display Name: %.160s"),
                      result.text);
         } else {
             int delete_rc = state->action_scope == JW_ACTION_SYSTEM
@@ -11074,16 +11110,16 @@ static void jw__edit_action_display_name(const char *db_path,
                                             JW_CONTENT_SETTING_DISPLAY_NAME);
             if (delete_rc != 0) {
                 snprintf(state->status, sizeof(state->status), "%s",
-                         "Display name reset failed");
+                         T("Display name reset failed"));
                 return;
             }
             snprintf(state->status, sizeof(state->status), "%s",
-                     "Display name reset");
+                     T("Display name reset"));
         }
         jw__refresh_after_action_write(db_path, state);
     } else if (rc == CAT_ERROR) {
         snprintf(state->status, sizeof(state->status), "%s",
-                 "display name keyboard failed");
+                 T("display name keyboard failed"));
     }
 }
 
@@ -11113,10 +11149,10 @@ static void jw__reset_action_overrides(const char *db_path,
                                           JW_CONTENT_SETTING_SATURN_BIOS);
     }
     if (rc == 0) {
-        snprintf(state->status, sizeof(state->status), "%s", "Overrides reset");
+        snprintf(state->status, sizeof(state->status), "%s", T("Overrides reset"));
         jw__refresh_after_action_write(db_path, state);
     } else {
-        snprintf(state->status, sizeof(state->status), "%s", "Reset failed");
+        snprintf(state->status, sizeof(state->status), "%s", T("Reset failed"));
     }
 }
 
@@ -11156,8 +11192,8 @@ static bool jw__confirm_anonymous_batch_scrape(bool missing_only) {
     };
     cat_message_opts opts = {
         .message = missing_only
-            ? "Scrape missing artwork anonymously? ScreenScraper can be slow and quota-limited without an account."
-            : "Re-scrape all artwork anonymously? ScreenScraper can be slow and quota-limited without an account.",
+            ? JW_UI("Scrape missing artwork anonymously? ScreenScraper can be slow and quota-limited without an account.")
+            : JW_UI("Re-scrape all artwork anonymously? ScreenScraper can be slow and quota-limited without an account."),
         .footer = footer,
         .footer_count = 2,
     };
@@ -11170,7 +11206,7 @@ static void jw__start_action_scrape(const char *socket_path, const char *db_path
     bool is_game = state->action_scope == JW_ACTION_GAME;
     if (!is_game && !jw__screenscraper_account_configured(db_path) &&
         !jw__confirm_anonymous_batch_scrape(missing_only)) {
-        snprintf(state->status, sizeof(state->status), "%s", "Scrape cancelled");
+        snprintf(state->status, sizeof(state->status), "%s", T("Scrape cancelled"));
         return;
     }
     int enqueued = 0;
@@ -11183,7 +11219,7 @@ static void jw__start_action_scrape(const char *socket_path, const char *db_path
                                  missing_only, &enqueued,
                                  status, sizeof(status));
     if (rc != 0) {
-        snprintf(state->status, sizeof(state->status), "Scrape failed: %.180s",
+        snprintf(state->status, sizeof(state->status), T("Scrape failed: %.180s"),
                  status[0] ? status : "daemon unavailable");
         return;
     }
@@ -11192,14 +11228,14 @@ static void jw__start_action_scrape(const char *socket_path, const char *db_path
         char name[256];
         jw__clean_rom_name(state->action_game.name, name, sizeof(name));
         snprintf(state->status, sizeof(state->status),
-                 "Scraping artwork: %.180s", name);
+                 T("Scraping artwork: %.180s"), name);
     } else if (enqueued == 0) {
         snprintf(state->status, sizeof(state->status), "%s",
-                 missing_only ? "Nothing to scrape - all games have artwork"
-                              : "Nothing to scrape - no games in this system");
+                 missing_only ? T("Nothing to scrape - all games have artwork")
+                              : T("Nothing to scrape - no games in this system"));
     } else {
         snprintf(state->status, sizeof(state->status),
-                 "Scraping %d game%s in %.140s", enqueued,
+                 T("Scraping %d game%s in %.140s"), enqueued,
                  enqueued == 1 ? "" : "s", state->action_system_display);
     }
     jw__action_refresh(db_path, state);
@@ -11216,11 +11252,11 @@ static void jw__cancel_action_scrape(const char *socket_path, const char *db_pat
                              is_game ? state->action_game.rom_path : NULL,
                              &removed) != 0) {
         snprintf(state->status, sizeof(state->status), "%s",
-                 "Cancel failed: daemon unavailable");
+                 T("Cancel failed: daemon unavailable"));
         return;
     }
     snprintf(state->status, sizeof(state->status),
-             "Scraping cancelled (%d item%s stopped)", removed,
+             T("Scraping cancelled (%d item%s stopped)"), removed,
              removed == 1 ? "" : "s");
     jw__action_refresh(db_path, state);
 }
@@ -11534,7 +11570,7 @@ static void jw__toggle_favorite_selected(const char *db_path, jw_launcher_state 
     int want_on = !game->favorite;
 
     if (jw_db_set_favorite(db_path, "game", game->id, want_on) != 0) {
-        snprintf(state->status, sizeof(state->status), "%s", "Favorite update failed");
+        snprintf(state->status, sizeof(state->status), "%s", T("Favorite update failed"));
         return;
     }
     game->favorite = want_on;
@@ -11558,7 +11594,7 @@ static void jw__toggle_favorite_selected(const char *db_path, jw_launcher_state 
     /* Bound the name so the prefix + name always fit the status buffer; the
        line is ellipsized on screen anyway. */
     snprintf(state->status, sizeof(state->status), "%s %.200s",
-             want_on ? "Favorited" : "Unfavorited", game->name);
+             want_on ? T("Favorited") : T("Unfavorited"), game->name);
 }
 
 /* Toggle the highlighted search game's favorite state. Empty results, apps,
@@ -12292,7 +12328,7 @@ static void jw__fsetup_toggle(jw_launcher_state *st, int id) {
     }
     if (st->focus_setup_count >= JW_FOCUS_SCREEN_MAX_TILES) {
         snprintf(st->focus_setup_note, sizeof(st->focus_setup_note),
-                 "5 games max — deselect one first");
+                 T("5 games max — deselect one first"));
         jw__haptic(st, "blocked");               /* refused: the set is full */
         return;
     }
@@ -12346,14 +12382,14 @@ static void jw__focus_pick_reenter(jw_launcher_state *state) {
 static void jw__pick_clear(jw_launcher_state *state) {
     state->focus_setup_count = 0;
     for (int i = 0; i < JW_FOCUS_SCREEN_MAX_TILES; i++) state->focus_setup_ids[i] = 0;
-    snprintf(state->focus_setup_note, sizeof(state->focus_setup_note), "Cleared");
+    snprintf(state->focus_setup_note, sizeof(state->focus_setup_note), T("Cleared"));
     jw__haptic(state, "select");
 }
 
 static void jw__pick_done(jw_launcher_state *state) {
     if (state->focus_setup_count <= 0) {
         snprintf(state->focus_setup_note, sizeof(state->focus_setup_note),
-                 "Pick at least one game");
+                 T("Pick at least one game"));
         return;
     }
     if (state->games_open) jw__close_game_browser(state);
@@ -13117,7 +13153,7 @@ static void jw__handle_input_inner(const char *socket_path, const char *db_path,
                 } else if (state->tools_list.cursor == 3) {
                     jw_settings_ui_enter(&state->settings);
                 } else {
-                    snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
+                    snprintf(state->status, sizeof(state->status), "%s", T("Coming soon"));
                 }
                 break;
             case CAT_BTN_B:
@@ -13299,7 +13335,7 @@ static void jw__handle_input_inner(const char *socket_path, const char *db_path,
                         if (c < 0) c = 0;
                         cat_list_state_jump(&state->list, c, jw__tab_list_count(state));
                         snprintf(state->status, sizeof(state->status), "%s",
-                                 "Removed from favorites");
+                                 T("Removed from favorites"));
                     } else {
                         snprintf(state->status, sizeof(state->status), "%s",
                                  "Favorite update failed");
@@ -13352,10 +13388,15 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
         { .button = CAT_BTN_B, .label = "Revert", .is_confirm = false },
     };
     static const char *const body =
-        "Keep this TV display mode?\n\n"
+        JW_UI("Keep this TV display mode?\n\n"
         "Sending 1080p120 over HDMI. If your TV stays blank it can't show this "
-        "mode - leave it and Leaf reverts to a safe picture.";
-    static const char *const keep_hint = "Press L1 then R1 to keep";
+        "mode - leave it and Leaf reverts to a safe picture.");
+    static const char *const keep_hint = JW_UI("Press L1 then R1 to keep");
+    /* Translate once: the prompt redraws every frame while the countdown runs. */
+    char body_tr[1024];
+    char keep_hint_tr[128];
+    jw_i18n_message(body, NULL, 0, body_tr, sizeof body_tr);
+    jw_i18n_message(keep_hint, NULL, 0, keep_hint_tr, sizeof keep_hint_tr);
 
     /* Drive the visible countdown from a local deadline so the bar animates every
        frame; re-sync with the daemon every couple of seconds. */
@@ -13405,7 +13446,7 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
         }
 
         cat_draw_background();
-        int body_h  = cat_measure_wrapped_text_height(font, body, max_w);
+        int body_h  = cat_measure_wrapped_text_height(font, body_tr, max_w);
         int bar_w   = sw * 3 / 5;
         int bar_h   = CAT_S(10);
         int gap     = CAT_S(24);
@@ -13415,7 +13456,7 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
         if (y < CAT_S(20)) {
             y = CAT_S(20);
         }
-        cat_draw_text_wrapped(font, body, CAT_S(40), y, max_w, theme->text,
+        cat_draw_text_wrapped(font, body_tr, CAT_S(40), y, max_w, theme->text,
                               CAT_ALIGN_CENTER);
         int by = y + body_h + gap;
         int bx = (sw - bar_w) / 2;
@@ -13425,12 +13466,12 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
         cat_draw_rect(bx, by, bar_w, bar_h, theme->hint);
         cat_draw_rect(bx, by, (int)(bar_w * frac), bar_h, theme->highlight);
         char cd[48];
-        snprintf(cd, sizeof(cd), "Reverting in %d second%s", remaining_s,
+        snprintf(cd, sizeof(cd), T("Reverting in %d second%s"), remaining_s,
                  remaining_s == 1 ? "" : "s");
         int cw = cat_measure_text(font, cd);
         cat_draw_text(font, cd, (sw - cw) / 2, by + bar_h + CAT_S(12), theme->text);
-        int kw = cat_measure_text(font, keep_hint);
-        cat_draw_text(font, keep_hint, (sw - kw) / 2,
+        int kw = cat_measure_text(font, keep_hint_tr);
+        cat_draw_text(font, keep_hint_tr, (sw - kw) / 2,
                       by + bar_h + CAT_S(12) + line_h + CAT_S(10), theme->highlight);
         jw__footer_direct(footer, 1);
         /* Request a frame so cat_present takes the active 60fps-paced path instead
@@ -13562,16 +13603,19 @@ typedef enum {
    had, and B cancels. Retry sends one request per press and never loops. */
 static jw__rop_prompt_choice jw__raofflineproxy_prompt(bool retry_allowed) {
     const char *body = retry_allowed
-        ? "Offline achievements unavailable.\n\n"
+        ? JW_UI("Offline achievements unavailable.\n\n"
           "RAOfflineProxy is enabled but not responding. Retry checks it "
           "again. Play directly signs you in to RetroAchievements online, "
           "but unlocks can't be queued for offline play. To check the "
-          "service, cancel and open Settings > System > Services."
-        : "Offline achievements unavailable.\n\n"
+          "service, cancel and open Settings > System > Services.")
+        : JW_UI("Offline achievements unavailable.\n\n"
           "RAOfflineProxy is enabled but not responding. Play directly "
           "signs you in to RetroAchievements online, but unlocks can't be "
           "queued for offline play. To check the service, cancel and open "
-          "Settings > System > Services.";
+          "Settings > System > Services.");
+    /* Translated once: this prompt redraws until the user answers. */
+    char body_tr[1024];
+    jw_i18n_message(body, NULL, 0, body_tr, sizeof body_tr);
     TTF_Font *font = cat_get_font(CAT_FONT_MEDIUM);
     if (!font) {
         return JW__ROP_PROMPT_CANCEL;
@@ -13611,12 +13655,12 @@ static jw__rop_prompt_choice jw__raofflineproxy_prompt(bool retry_allowed) {
             max_w = 1;
         }
         cat_draw_background();
-        int body_h = cat_measure_wrapped_text_height(font, body, max_w);
+        int body_h = cat_measure_wrapped_text_height(font, body_tr, max_w);
         int y = (sh - body_h - cat_get_footer_height()) / 2;
         if (y < CAT_S(20)) {
             y = CAT_S(20);
         }
-        cat_draw_text_wrapped(font, body, CAT_S(40), y, max_w, theme->text,
+        cat_draw_text_wrapped(font, body_tr, CAT_S(40), y, max_w, theme->text,
                               CAT_ALIGN_CENTER);
         /* jw__footer_direct translates labels in place; draw from a copy so
            the next frame does not translate an already translated label. */
@@ -13637,7 +13681,7 @@ static bool jw__surface_blocked_game_launch(
         char title[192];
         jw__pakrat_format_size((unsigned long long)blocked->pending_bytes,
                                size, sizeof(size));
-        snprintf(title, sizeof(title), "Sync before play — %d item%s, %s",
+        snprintf(title, sizeof(title), T("Sync before play — %d item%s, %s"),
                  blocked->pending_items,
                  blocked->pending_items == 1 ? "" : "s", size);
         cat_list_item items[] = {
@@ -13689,37 +13733,37 @@ static bool jw__surface_blocked_game_launch(
             strcmp(blocked->reason, "unsafe-card-binding") == 0;
         if (unsafe_card_binding) {
             snprintf(message, sizeof(message),
-                     "Syncthing card setup needs attention.\n\nLeaf could not "
+                     T("Syncthing card setup needs attention.\n\nLeaf could not "
                      "match this game's card to its Saves and States folders. "
-                     "Review Cards and Folders in Syncthing.");
+                     "Review Cards and Folders in Syncthing."));
         } else if (blocked->pending_items > 0 || blocked->pending_bytes > 0) {
             char size[64];
             jw__pakrat_format_size(
                 (unsigned long long)blocked->pending_bytes,
                 size, sizeof(size));
             snprintf(message, sizeof(message),
-                     "Sync needs attention.\n\n%d item%s (%s) remained when "
+                     T("Sync needs attention.\n\n%d item%s (%s) remained when "
                      "waiting ended. Play anyway will stop Syncthing first; "
-                     "Cancel leaves syncing active.",
+                     "Cancel leaves syncing active."),
                      blocked->pending_items,
                      blocked->pending_items == 1 ? "" : "s", size);
         } else if (blocked->requires_verified_stop) {
             snprintf(message, sizeof(message),
-                     "Sync needs attention.\n\nSyncthing could not be verified "
+                     T("Sync needs attention.\n\nSyncthing could not be verified "
                      "stopped. Play anyway will retry the safe stop; Leaf "
-                     "will not launch until Syncthing is stopped.");
+                     "will not launch until Syncthing is stopped."));
         } else {
             snprintf(message, sizeof(message),
-                     "Game launch blocked.\n\n%.128s may still be writing Saves "
+                     T("Game launch blocked.\n\n%.128s may still be writing Saves "
                      "or States. Play anyway only if you accept possible data "
-                     "corruption.",
+                     "corruption."),
                      blocked->service_id[0] ? blocked->service_id
-                                            : "A background service");
+                                            : T("A background service"));
         }
         cat_footer_item footer[] = {
             { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
             { .button = CAT_BTN_A,
-              .label = unsafe_card_binding ? "Stop & Play" : "Play Anyway",
+              .label = unsafe_card_binding ? JW_UI("Stop & Play") : JW_UI("Play Anyway"),
               .is_confirm = true },
         };
         cat_message_opts opts = {
@@ -13740,9 +13784,9 @@ static bool jw__surface_blocked_game_launch(
     }
 
     snprintf(message, sizeof(message),
-             "Game launch blocked.\n\nA previous game may still be writing "
+             T("Game launch blocked.\n\nA previous game may still be writing "
              "Saves or States. Restart the device before launching another "
-             "game.");
+             "game."));
     cat_footer_item footer[] = {
         { .button = CAT_BTN_A, .label = "OK", .is_confirm = true },
     };
@@ -13981,11 +14025,11 @@ int main(void) {
        screen, not a flash of the normal launcher. */
     jw__focus_init(&state);
 
-    snprintf(state.status, sizeof(state.status), "%s", "loading library...");
+    snprintf(state.status, sizeof(state.status), "%s", T("loading library..."));
 
     long long cache_start_ms = jw__monotonic_ms();
     if (jw__load_library_cache(socket_path, db_path, &state) != 0) {
-        snprintf(state.status, sizeof(state.status), "%s", "scanning library...");
+        snprintf(state.status, sizeof(state.status), "%s", T("scanning library..."));
         state.scan_ready = false;
         state.scan_running = true;
     }

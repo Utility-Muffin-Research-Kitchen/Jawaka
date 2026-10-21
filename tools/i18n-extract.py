@@ -59,6 +59,39 @@ FUNNELS = [
     "jw__fsetup_footer",
     "jw__update_msg",
     "jw__copy_status",
+    # Message sinks whose literal arguments are user-facing text. Added after
+    # the 2026-10 audit: these carried 400+ strings that never reached the .pot
+    # (daemon error replies, Settings Wi-Fi/Bluetooth toasts, update-runner
+    # progress, Pak Rat notices, storage-ui feedback).
+    "jw__launch_notice",
+    "jw__bt_msg",
+    "jw__wifi_msg",
+    "jw__set_message",
+    "jw__pakrat_notice",
+    "jw__storage_ui_message",
+    "jw__set_pakrat_message",
+]
+
+# Funnels that only hold UI text in ONE file. jw__reply_error answers a UI
+# client in the daemon (the text becomes a notice/status line), but in the OSD
+# it answers the daemon itself -- a protocol diagnostic the user never sees.
+# A global funnel would put those 12 OSD strings into the .pot for translators.
+FILE_FUNNELS = [
+    ("cmd/jawakad/main.c", "jw__reply_error"),
+    # Error-message writers whose text is displayed verbatim by the Delete
+    # dialog, the scrape queue detail or the core-metadata notice.
+    ("internal/discovery/content.c", "jw__fail"),
+    ("internal/discovery/delete.c", "jw__error"),
+    ("internal/scrape/ss_client.c", "jw__ss_set_error"),
+    ("internal/retroarch/catalog.c", "jw_ra_set_error"),
+]
+
+# Calls where only ONE argument is UI text, so they cannot be funnels (the
+# other arguments are ids, states or printf values). Index is 0-based.
+ARG_SINKS = [
+    ("jw__write_result", 2),     # (req, state, message)
+    ("jw__pakrat_append", 3),    # (message, capacity, &used, fmt, ...)
+    ("CAT_LIST_ITEM", 0),        # (label, id)
 ]
 
 # A run of adjacent string literals -- C concatenates "a" "b" into one string,
@@ -78,7 +111,10 @@ def run_to_text(run: str) -> str:
 FOOTER_RE = re.compile(r"\{\s*CAT_BTN_[A-Z0-9_]+\s*,\s*(" + RUN.pattern + r")")
 # JW_UI("...") -- the marker for UI text in a static initializer. See i18n.h.
 JW_UI_RE  = re.compile(r"\bJW_UI\s*\(\s*(" + RUN.pattern + r")\s*\)")
-DESIG_RE  = re.compile(r"\.(?:message|label)\s*=\s*(" + RUN.pattern + r")")
+DESIG_RE  = re.compile(r"\.(?:message|label|title|help_text|text|body|hint)\s*=\s*(" + RUN.pattern + r")")
+# Test fixtures use .title/.body for sample data, not UI. Keep the historical
+# .message/.label shape there (which the committed .pot already reflects).
+DESIG_TEST_RE = re.compile(r"\.(?:message|label)\s*=\s*(" + RUN.pattern + r")")
 
 # Label arrays translated where they are indexed (T(kTabs[i]) and the like).
 # kSystemDisplayNames rows are {"ID", "Display Name"}; only the name is UI.
@@ -148,6 +184,28 @@ def call_spans(src: str, name: str):
         yield src[m.end():j - 1]
 
 
+def split_args(span: str):
+    """Split the text between a call's parentheses into top-level arguments."""
+    args, depth, start, i = [], 0, 0, 0
+    n = len(span)
+    while i < n:
+        c = span[i]
+        if c == '"':
+            i += 1
+            while i < n and (span[i] != '"' or span[i - 1] == "\\"):
+                i += 1
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c == "," and depth == 0:
+            args.append(span[start:i])
+            start = i + 1
+        i += 1
+    args.append(span[start:])
+    return args
+
+
 def array_literals(src: str, name: str, mode: str):
     m = re.search(re.escape(name) + r"[^=]*=\s*\{", src)
     if not m:
@@ -188,14 +246,25 @@ def extract():
         if any(part in rel for part in EXCLUDE_PARTS):
             continue
         src = strip_comments(f.read_text(encoding="utf-8", errors="replace"))
-        for fn in FUNNELS:
+        funnels = FUNNELS + [fn for file, fn in FILE_FUNNELS if rel == file]
+        for fn in funnels:
             for span in call_spans(src, fn):
                 for m in RUN.finditer(span):
                     add(run_to_text(m.group(0)), rel)
         for m in FOOTER_RE.finditer(src):
             add(run_to_text(m.group(1)), rel)
-        for m in DESIG_RE.finditer(src):
+        is_test = rel.endswith("_test.c")
+        for m in (DESIG_TEST_RE if is_test else DESIG_RE).finditer(src):
             add(run_to_text(m.group(1)), rel)
+        # Calls where exactly one argument is UI text (the others carry states,
+        # ids or values), so a funnel would over-collect.
+        for fn, idx in ([] if is_test else ARG_SINKS):
+            for span in call_spans(src, fn):
+                args = split_args(span)
+                if len(args) > idx:
+                    m = RUN.fullmatch(args[idx].strip())
+                    if m:
+                        add(run_to_text(m.group(0)), rel)
         for arr_file, arr_name, mode in ARRAYS:
             if rel == arr_file:
                 for lit in array_literals(src, arr_name, mode):

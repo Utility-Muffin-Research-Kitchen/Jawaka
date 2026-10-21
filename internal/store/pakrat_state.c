@@ -1,4 +1,5 @@
 #include "internal/store/pakrat_state.h"
+#include "internal/i18n/i18n.h"
 
 #include "internal/db/db.h"
 #include "internal/platform/leaf_version.h"
@@ -369,19 +370,19 @@ static void jw__summarize_provides(const cJSON *provides, char *out,
         cJSON_IsArray(extensions) ? cJSON_GetArraySize(extensions) : 0;
 
     if (system_count > 0 && core_count > 0) {
-        snprintf(out, out_size, "%s and %d core%s", ids, core_count,
+        snprintf(out, out_size, JW_UI("%s and %d core%s"), ids, core_count,
                  core_count == 1 ? "" : "s");
     } else if (system_count > 0) {
         snprintf(out, out_size, "%s", ids);
     } else if (core_count > 0 && extension_count > 0) {
-        snprintf(out, out_size, "%d core%s for %d existing system%s",
+        snprintf(out, out_size, JW_UI("%d core%s for %d existing system%s"),
                  core_count, core_count == 1 ? "" : "s",
                  extension_count, extension_count == 1 ? "" : "s");
     } else if (core_count > 0) {
-        snprintf(out, out_size, "%d core%s", core_count,
+        snprintf(out, out_size, JW_UI("%d core%s"), core_count,
                  core_count == 1 ? "" : "s");
     } else if (extension_count > 0) {
-        snprintf(out, out_size, "%d system extension%s", extension_count,
+        snprintf(out, out_size, JW_UI("%d system extension%s"), extension_count,
                  extension_count == 1 ? "" : "s");
     }
 }

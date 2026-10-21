@@ -4645,3 +4645,2034 @@ msgstr "更新临时路径过长"
 #: internal/update/update.c
 msgid "Update was prepared on the other SD slot; install again"
 msgstr "更新已在另一张 SD 卡上准备好；请再次安装"
+
+msgid "  saved"
+msgstr "  已保存"
+
+msgid " (charging)"
+msgstr " （充电中）"
+
+msgid " | %d thread"
+msgstr "| %d 线程"
+
+msgid " | %d/%d threads"
+msgstr "| %d/%d 线程"
+
+msgid " | ETA %s"
+msgstr "| 预计 %s"
+
+msgid " | showing first %d"
+msgstr "| 仅显示前 %d 项"
+
+msgid " · auto"
+msgstr " · 自动"
+
+msgid " — no app to open"
+msgstr " — 无应用可打开"
+
+msgid "%.180s is already installed manually.\n\nReplace it with the Pak Rat version so it can be updated? User data is preserved."
+msgstr "%.180s 已手动安装。\n\n要用 Pak Rat 版本替换它以便更新吗？用户数据会保留。"
+
+msgid "%d Pak Rat app%s"
+msgstr "%d 个 Pak Rat 应用%s"
+
+msgid "%d artwork job%s already queued"
+msgstr "%d 个封面任务%s已在队列中"
+
+msgid "%d core%s"
+msgstr "%d 个核心%s"
+
+msgid "%d core%s for %d existing system%s"
+msgstr "%d 个核心%s，用于 %d 个现有系统%s"
+
+msgid "%d games across %d systems"
+msgstr "%d 个游戏，跨 %d 个系统"
+
+msgid "%d missing"
+msgstr "%d 项缺失"
+
+msgid "%d missing across %d systems"
+msgstr "%d 项缺失，跨 %d 个系统"
+
+msgid "%d recent"
+msgstr "%d 个最近"
+
+msgid "%d results"
+msgstr "%d 个结果"
+
+msgid "%d system extension%s"
+msgstr "%d 个系统扩展%s"
+
+msgid "%d total"
+msgstr "共 %d 项"
+
+msgid "%lld days ago"
+msgstr "%lld 天前"
+
+msgid "%lld month%s ago"
+msgstr "%lld 个月%s前"
+
+msgid "%lld week%s ago"
+msgstr "%lld 周%s前"
+
+msgid "%lld year%s ago"
+msgstr "%lld 年%s前"
+
+msgid "%s %s claims %s already owned by the release catalog"
+msgstr "%s %s 声称 %s 已被发行目录占用"
+
+msgid "%s %s claims %s=%s, also claimed by %s; both refused"
+msgstr "%s %s 声称 %s=%s，同时被 %s 声称；两者都被拒绝"
+
+msgid "%s and %d core%s"
+msgstr "%s 和 %d 个核心%s"
+
+msgid "%s isn't saved"
+msgstr "%s 未保存"
+
+msgid "%s output unavailable"
+msgstr "%s 输出不可用"
+
+msgid "%s unavailable: version %s is missing from catalog history."
+msgstr "%s 不可用：目录历史中缺少版本 %s。"
+
+msgid "%s%d/%d done, %d failed, %d busy%s%s%s%s"
+msgstr "%s%d/%d 已完成，%d 失败，%d 忙碌%s%s%s%s"
+
+msgid "%s, %d C"
+msgstr "%s，%d C"
+
+msgid "5 games max — deselect one first"
+msgstr "最多 5 个游戏 —— 请先取消一个"
+
+msgid "A background service"
+msgstr "一个后台服务"
+
+msgid "A file is being moved. Try again when it finishes."
+msgstr "文件正在移动。请等它完成后再试。"
+
+msgid "A game is being deleted. Try again when it finishes."
+msgstr "游戏正在删除。请等它完成后再试。"
+
+msgid "ADB disabled"
+msgstr "ADB 已禁用"
+
+msgid "ADB disabled, marker removal failed"
+msgstr "ADB 已禁用，但标记移除失败"
+
+msgid "ADB disabled; USB restart failed"
+msgstr "ADB 已禁用；USB 重启失败"
+
+msgid "ADB enabled"
+msgstr "ADB 已启用"
+
+msgid "ADB enabled, restore marker failed"
+msgstr "ADB 已启用，但恢复标记失败"
+
+msgid "ADB enabled; USB restart failed"
+msgstr "ADB 已启用；USB 重启失败"
+
+msgid "ADB failed"
+msgstr "ADB 失败"
+
+msgid "ADB failed: daemon unavailable"
+msgstr "ADB 失败：守护进程不可达"
+
+msgid "ADB pin failed"
+msgstr "ADB PIN 设置失败"
+
+msgid "ADB support unavailable"
+msgstr "ADB 支持不可用"
+
+msgid "Adds %s%s"
+msgstr "添加 %s%s"
+
+msgid "Adds systems and emulators rather than an app to open."
+msgstr "添加系统和模拟器，而不是可打开的应用。"
+
+msgid "Also remove retained data for %.180s?\n\nThis separately deletes every declared retained directory on cards that are present now. Absent cards remain unchanged. This cannot be undone."
+msgstr "同时删除 %.180s 的保留数据？\n\n这会另外删除当前存在的卡上所有已声明的保留目录。不在的卡不受影响。此操作无法撤销。"
+
+msgid "Ambiguous ROM source: %.160s"
+msgstr "ROM 来源不明确：%.160s"
+
+msgid "Ambiguous filesystem name: %.160s"
+msgstr "文件系统名称不明确：%.160s"
+
+msgid "An SD card check is pending. Finish it before deleting ROMs."
+msgstr "SD 卡检查待完成。请先完成再删除 ROM。"
+
+msgid "Apps directory missing"
+msgstr "Apps 目录缺失"
+
+msgid "Artwork scraping is stopping. Try again when it finishes."
+msgstr "封面刮削正在停止。请等它完成后再试。"
+
+msgid "At least one tab must stay visible"
+msgstr "至少需要保留一个标签页可见"
+
+msgid "Black Frame Insertion on for %d fps"
+msgstr "黑帧插入已开启，适用于 %d fps"
+
+msgid "Bluetooth is busy"
+msgstr "蓝牙忙"
+
+msgid "Bluetooth is off"
+msgstr "蓝牙已关闭"
+
+msgid "Bluetooth name is read-only"
+msgstr "蓝牙名称是只读的"
+
+msgid "Bluetooth off"
+msgstr "蓝牙已关闭"
+
+msgid "Bluetooth off failed"
+msgstr "关闭蓝牙失败"
+
+msgid "Bluetooth on"
+msgstr "蓝牙已开启"
+
+msgid "Bluetooth on failed"
+msgstr "开启蓝牙失败"
+
+msgid "Bluetooth operation complete"
+msgstr "蓝牙操作完成"
+
+msgid "Bluetooth operation failed"
+msgstr "蓝牙操作失败"
+
+msgid "Bluetooth operation timed out"
+msgstr "蓝牙操作超时"
+
+msgid "Bluetooth scan complete\n"
+msgstr "蓝牙扫描完成\n"
+
+msgid "Bluetooth scan failed\n"
+msgstr "蓝牙扫描失败\n"
+
+msgid "Bluetooth unavailable"
+msgstr "蓝牙不可用"
+
+msgid "Box art (2D)"
+msgstr "盒装封面（2D）"
+
+msgid "Box art (3D)"
+msgstr "盒装封面（3D）"
+
+msgid "Btn Bg"
+msgstr "按钮背景"
+
+msgid "Btn Text"
+msgstr "按钮文字"
+
+msgid "CMD has no executable name"
+msgstr "CMD 没有可执行文件名"
+
+msgid "CMD inspection needs the system's file formats"
+msgstr "CMD 检查需要该系统的文件格式"
+
+msgid "CTL-1 response exceeds 64 KiB"
+msgstr "CTL-1 响应超过 64 KiB"
+
+msgid "CUE FILE record has no file type"
+msgstr "CUE FILE 记录缺少文件类型"
+
+msgid "Cancel failed: daemon unavailable"
+msgstr "取消失败：守护进程不可达"
+
+msgid "Cancelled before it started"
+msgstr "启动前已取消"
+
+msgid "Cannot copy update runner to runtime storage"
+msgstr "无法将更新执行器复制到运行时存储"
+
+msgid "Cannot extract update artifact"
+msgstr "无法解压更新包"
+
+msgid "Cannot fetch release manifest"
+msgstr "无法获取发行清单"
+
+msgid "Cannot inspect %.160s: %s"
+msgstr "无法检查 %.160s：%s"
+
+msgid "Cannot inspect ROM source %s: %s"
+msgstr "无法检查 ROM 来源 %s：%s"
+
+msgid "Cannot move update download into place: %s"
+msgstr "无法将更新下载移动到目标位置：%s"
+
+msgid "Cannot prepare update for restart"
+msgstr "无法为重启准备更新"
+
+msgid "Cannot promote update payload"
+msgstr "无法提升更新载荷"
+
+msgid "Cannot read descriptor %.160s: %s"
+msgstr "无法读取描述符 %.160s：%s"
+
+msgid "Cannot read directory %.160s: %s"
+msgstr "无法读取目录 %.160s：%s"
+
+msgid "Cannot resolve %.160s: %s"
+msgstr "无法解析 %.160s：%s"
+
+msgid "Cannot start update runner"
+msgstr "无法启动更新执行器"
+
+msgid "Cannot start update runner: %s"
+msgstr "无法启动更新执行器：%s"
+
+msgid "Cannot traverse missing directory: %.160s"
+msgstr "无法遍历缺失的目录：%.160s"
+
+msgid "Cannot unmount: service %s could not be verified stopped"
+msgstr "无法卸载：无法确认服务 %s 已停止"
+
+msgid "Characters not allowed - account unchanged"
+msgstr "包含不允许的字符 —— 账号未更改"
+
+msgid "Cleared"
+msgstr "已清除"
+
+msgid "Cleared %d"
+msgstr "已清除 %d 项"
+
+msgid "Color temperature %d K"
+msgstr "色温 %d K"
+
+msgid "Color temperature failed"
+msgstr "色温设置失败"
+
+msgid "Color temperature failed: daemon unavailable"
+msgstr "色温设置失败：守护进程不可达"
+
+msgid "Color temperature neutral"
+msgstr "色温中性"
+
+msgid "Color temperature updated"
+msgstr "色温已更新"
+
+msgid "Coming soon"
+msgstr "即将推出"
+
+msgid "Connect failed\n"
+msgstr "连接失败\n"
+
+msgid "Connected to %s"
+msgstr "已连接到 %s"
+
+msgid "Connecting %s..."
+msgstr "正在连接 %s..."
+
+msgid "Connecting to %s…"
+msgstr "正在连接 %s…"
+
+msgid "Content descriptors are nested too deeply"
+msgstr "内容描述符嵌套过深"
+
+msgid "Content descriptors contain a cycle: %.160s"
+msgstr "内容描述符存在循环：%.160s"
+
+msgid "Content descriptors exceed the inspection size limit: %.160s"
+msgstr "内容描述符超出检查大小限制：%.160s"
+
+msgid "Content is not a regular file: %.160s"
+msgstr "内容不是普通文件：%.160s"
+
+msgid "Content is outside the mounted ROM roots: %.160s"
+msgstr "内容位于已挂载的 ROM 根目录之外：%.160s"
+
+msgid "Content path has too many missing directories"
+msgstr "内容路径缺失的目录过多"
+
+msgid "Content path is too long"
+msgstr "内容路径过长"
+
+msgid "Content path is too long: %.100s"
+msgstr "内容路径过长：%.100s"
+
+msgid "Content reference escapes its ROM source: %.160s"
+msgstr "内容引用越出了其 ROM 来源：%.160s"
+
+msgid "Content references too many files"
+msgstr "内容引用的文件过多"
+
+msgid "Content uses too many directories"
+msgstr "内容使用的目录过多"
+
+msgid "Contribution refused — %s"
+msgstr "投稿被拒绝 —— %s"
+
+msgid "Copying update to SD card"
+msgstr "正在把更新复制到 SD 卡"
+
+msgid "Core metadata unavailable: %.180s"
+msgstr "核心元数据不可用：%.180s"
+
+msgid "Core update failed"
+msgstr "核心更新失败"
+
+msgid "Core: %.160s"
+msgstr "核心：%.160s"
+
+msgid "Could not check artwork work before deletion."
+msgstr "删除前无法检查封面任务。"
+
+msgid "Could not check your game's files."
+msgstr "无法检查游戏的存档文件。"
+
+msgid "Could not connect to %s"
+msgstr "无法连接到 %s"
+
+msgid "Could not disconnect"
+msgstr "无法断开连接"
+
+msgid "Could not forget %s"
+msgstr "无法忘记 %s"
+
+msgid "Could not keep quota-paused item queued"
+msgstr "无法让配额暂停的任务继续排队"
+
+msgid "Could not keep storage-paused item queued"
+msgstr "无法让存储暂停的任务继续排队"
+
+msgid "Could not load favorites"
+msgstr "无法加载收藏"
+
+msgid "Could not load games for %s"
+msgstr "无法加载 %s 的游戏"
+
+msgid "Could not load recents"
+msgstr "无法加载最近游玩"
+
+msgid "Could not lock package mutation: %s"
+msgstr "无法锁定包变更：%s"
+
+msgid "Could not read complete descriptor: %.160s"
+msgstr "无法读取完整描述符：%.160s"
+
+msgid "Could not read your game's library identity."
+msgstr "无法读取游戏的库标识。"
+
+msgid "Could not resolve paths for %.200s"
+msgstr "无法解析 %.200s 的路径"
+
+msgid "Could not resolve storage sources."
+msgstr "无法解析存储来源。"
+
+msgid "Could not start Bluetooth connect"
+msgstr "无法启动蓝牙连接"
+
+msgid "Could not start Bluetooth scan"
+msgstr "无法启动蓝牙扫描"
+
+msgid "Could not start deleting your game."
+msgstr "无法开始删除游戏。"
+
+msgid "Couldn't check %.160s: %s"
+msgstr "无法检查 %.160s：%s"
+
+msgid "Couldn't connect — check password"
+msgstr "无法连接 —— 请检查密码"
+
+msgid "Couldn't delete %.160s: %s"
+msgstr "无法删除 %.160s：%s"
+
+msgid "Couldn't delete %.160s: it's no longer a regular file"
+msgstr "无法删除 %.160s：它已不再是普通文件"
+
+msgid "Couldn't save the removal of %.160s: %s"
+msgstr "无法保存对 %.160s 的删除：%s"
+
+msgid "Daily quota exceeded (HTTP 430)"
+msgstr "今日配额已用尽（HTTP 430）"
+
+msgid "Declared browser trust and credentials will be revoked.\n"
+msgstr "已声明的浏览器信任和凭据将被撤销。\n"
+
+msgid "Delete can't remove a symlinked game file."
+msgstr "删除操作不能移除符号链接的游戏文件。"
+
+msgid "Delete isn't available for this game."
+msgstr "此游戏不支持删除。"
+
+msgid "Descriptor argument is too long"
+msgstr "描述符参数过长"
+
+msgid "Descriptor contains binary data: %.160s"
+msgstr "描述符包含二进制数据：%.160s"
+
+msgid "Descriptor has an unterminated quote"
+msgstr "描述符中有未闭合的引号"
+
+msgid "Device is not paired\n"
+msgstr "设备未配对\n"
+
+msgid "Device not found\n"
+msgstr "未找到设备\n"
+
+msgid "Disc descriptor has missing or inconsistent track records"
+msgstr "光盘描述符的轨道记录缺失或不一致"
+
+msgid "Disc descriptor has no FILE filename"
+msgstr "光盘描述符没有 FILE 文件名"
+
+msgid "Disconnect failed"
+msgstr "断开连接失败"
+
+msgid "Disconnected %s"
+msgstr "已断开 %s"
+
+msgid "Disconnected from %s"
+msgstr "已从 %s 断开"
+
+msgid "Display Name: %.160s"
+msgstr "显示名称：%.160s"
+
+msgid "Display name reset"
+msgstr "显示名称已重置"
+
+msgid "Display name reset failed"
+msgstr "显示名称重置失败"
+
+msgid "Display name update failed"
+msgstr "显示名称更新失败"
+
+msgid "Downloaded artifact failed final verification"
+msgstr "下载的产物未通过最终校验"
+
+msgid "Downloading %s"
+msgstr "正在下载 %s"
+
+msgid "Empty or oversized content reference"
+msgstr "内容引用为空或过大"
+
+msgid "Enabled"
+msgstr "已启用"
+
+msgid "Excluded entries cannot be reordered"
+msgstr "排除的条目无法重新排序"
+
+msgid "Exit to stock failed"
+msgstr "退出到官方系统失败"
+
+msgid "Extracting update files"
+msgstr "正在解压更新文件"
+
+msgid "Fan art"
+msgstr "同人图"
+
+msgid "Favorite update failed"
+msgstr "收藏更新失败"
+
+msgid "Favorited"
+msgstr "已收藏"
+
+msgid "Filesystem name changed during inspection: %.160s"
+msgstr "检查期间文件系统名称发生变化：%.160s"
+
+msgid "Forgot %s"
+msgstr "已忘记 %s"
+
+msgid "GDI has an incomplete track record"
+msgstr "GDI 的轨道记录不完整"
+
+msgid "GDI has an invalid track count or number"
+msgstr "GDI 的轨道数量或编号无效"
+
+msgid "GDI has an invalid track field"
+msgstr "GDI 的轨道字段无效"
+
+msgid "GDI has an invalid track offset"
+msgstr "GDI 的轨道偏移无效"
+
+msgid "GDI has no track filename"
+msgstr "GDI 没有轨道文件名"
+
+msgid "GDI has no track offset"
+msgstr "GDI 没有轨道偏移"
+
+msgid "GDI track count has extra fields"
+msgstr "GDI 轨道数量包含多余字段"
+
+msgid "Game launch blocked.\n\n%.128s may still be writing Saves or States. Play anyway only if you accept possible data corruption."
+msgstr "游戏启动被拦截。\n\n%.128s 可能仍在写入存档或即时存档。只有在能接受数据损坏风险时才选择仍然游玩。"
+
+msgid "Game launch blocked.\n\nA previous game may still be writing Saves or States. Restart the device before launching another game."
+msgstr "游戏启动被拦截。\n\n上一个游戏可能仍在写入存档或即时存档。请重启设备后再启动另一个游戏。"
+
+msgid "HDMI output %s"
+msgstr "HDMI 输出 %s"
+
+msgid "HDMI output failed"
+msgstr "HDMI 输出失败"
+
+msgid "HDMI output failed: daemon unavailable"
+msgstr "HDMI 输出失败：守护进程不可达"
+
+msgid "HDMI output unavailable"
+msgstr "HDMI 输出不可用"
+
+msgid "Image decode failed (stb_image)"
+msgstr "图像解码失败（stb_image）"
+
+msgid "Install Leaf %s?"
+msgstr "安装 Leaf %s？"
+
+msgid "Installed package metadata cannot be cached: %s"
+msgstr "无法缓存已安装包元数据：%s"
+
+msgid "Installed package metadata cannot be validated: %s"
+msgstr "无法校验已安装包元数据：%s"
+
+msgid "Invalid Bluetooth address\n"
+msgstr "蓝牙地址无效\n"
+
+msgid "Invalid content path: %.160s"
+msgstr "内容路径无效：%.160s"
+
+msgid "Invalid game identity."
+msgstr "游戏标识无效。"
+
+msgid "Invalid path for %.160s"
+msgstr "%.160s 的路径无效"
+
+msgid "Keep failed"
+msgstr "保留失败"
+
+msgid "Keep this TV display mode?\n\nSending 1080p120 over HDMI. If your TV stays blank it can't show this mode - leave it and Leaf reverts to a safe picture."
+msgstr "保留此电视显示模式？\n\n正在通过 HDMI 发送 1080p120。如果电视黑屏，说明它无法显示此模式 —— 不操作的话 Leaf 会恢复到安全的画面。"
+
+msgid "Kept as Slot %d"
+msgstr "已保留为存档位 %d"
+
+msgid "Launch file escapes the selected ROM source"
+msgstr "启动文件越出了所选的 ROM 来源"
+
+msgid "Launching %.*s..."
+msgstr "正在启动 %.*s..."
+
+msgid "Legacy save recovery failed; original files were retained"
+msgstr "旧版存档恢复失败；原始文件已保留"
+
+msgid "Legacy save recovery skipped: ambiguous ROM name"
+msgstr "旧版存档恢复已跳过：ROM 名称不明确"
+
+msgid "Library updating; another scan is queued"
+msgstr "媒体库正在更新；另一次扫描已排队"
+
+msgid "Menu + %s"
+msgstr "菜单 + %s"
+
+msgid "No HDMI cable connected"
+msgstr "未连接 HDMI 线"
+
+msgid "No Pak Rat apps found"
+msgstr "未找到 Pak Rat 应用"
+
+msgid "No ScreenScraper mapping for this system"
+msgstr "此系统没有 ScreenScraper 映射"
+
+msgid "No ScreenScraper platform ids provided"
+msgstr "未提供 ScreenScraper 平台 ID"
+
+msgid "No active RetroArch session"
+msgstr "没有活动的 RetroArch 会话"
+
+msgid "No active session"
+msgstr "没有活动会话"
+
+msgid "No app selected"
+msgstr "未选择应用"
+
+msgid "No compatible Leaf update metadata found"
+msgstr "未找到兼容的 Leaf 更新元数据"
+
+msgid "No game selected"
+msgstr "未选择游戏"
+
+msgid "No launchable games for %s"
+msgstr "%s 没有可启动的游戏"
+
+msgid "No new scrape jobs"
+msgstr "没有新的刮削任务"
+
+msgid "No recent games yet"
+msgstr "还没有最近游玩的游戏"
+
+msgid "No result selected"
+msgstr "未选择结果"
+
+msgid "No retained data directories are declared."
+msgstr "未声明任何保留数据目录。"
+
+msgid "None selected"
+msgstr "未选择任何项"
+
+msgid "Not saved - sign in again"
+msgstr "未保存 —— 请重新登录"
+
+msgid "Not signed in"
+msgstr "未登录"
+
+msgid "Not written"
+msgstr "未写入"
+
+msgid "Nothing to scrape - all games have artwork"
+msgstr "没有可刮削的内容 —— 所有游戏都已有封面"
+
+msgid "Nothing to scrape - no games in this system"
+msgstr "没有可刮削的内容 —— 此系统没有游戏"
+
+msgid "Offline achievements unavailable.\n\nRAOfflineProxy is enabled but not responding. Play directly signs you in to RetroAchievements online, but unlocks can't be queued for offline play. To check the service, cancel and open Settings > System > Services."
+msgstr "离线成就不可用。\n\nRAOfflineProxy 已启用但没有响应。直接游玩会在线登录 RetroAchievements，但解锁无法排队到离线游玩。要检查该服务，请取消并打开设置 > 系统 > 服务。"
+
+msgid "Offline achievements unavailable.\n\nRAOfflineProxy is enabled but not responding. Retry checks it again. Play directly signs you in to RetroAchievements online, but unlocks can't be queued for offline play. To check the service, cancel and open Settings > System > Services."
+msgstr "离线成就不可用。\n\nRAOfflineProxy 已启用但没有响应。重试会再次检查它。直接游玩会在线登录 RetroAchievements，但解锁无法排队到离线游玩。要检查该服务，请取消并打开设置 > 系统 > 服务。"
+
+msgid "Open  "
+msgstr "开放  "
+
+msgid "Open Delete Game again."
+msgstr "再次打开“删除游戏”。"
+
+msgid "Out of memory while downscaling image"
+msgstr "缩小图像时内存不足"
+
+msgid "Overrides reset"
+msgstr "覆盖设置已重置"
+
+msgid "PNG encoding failed (miniz)"
+msgstr "PNG 编码失败（miniz）"
+
+msgid "Package manifest is not transaction-safe: %s"
+msgstr "包清单不支持事务：%s"
+
+msgid "Pairing %s..."
+msgstr "正在配对 %s..."
+
+msgid "Pak Rat catalog not configured"
+msgstr "Pak Rat 目录未配置"
+
+msgid "Pak Rat catalog requires a newer Leaf"
+msgstr "Pak Rat 目录需要更新版本的 Leaf"
+
+msgid "Pak Rat catalog unavailable"
+msgstr "Pak Rat 目录不可用"
+
+msgid "Pak Rat ownership record is inconsistent: %s"
+msgstr "Pak Rat 归属记录不一致：%s"
+
+msgid "Password for %s\nStart: Confirm\nY: Cancel"
+msgstr "%s 的密码\nStart: 确认\nY: 取消"
+
+msgid "Paused: the artwork card is not available"
+msgstr "已暂停：封面卡不可用"
+
+msgid "Paused: the artwork card is read-only"
+msgstr "已暂停：封面卡为只读"
+
+msgid "Paused: the artwork card is waiting for repair"
+msgstr "已暂停：封面卡正在等待修复"
+
+msgid "Paused: the library card is not available"
+msgstr "已暂停：媒体库卡不可用"
+
+msgid "Paused: the library card is read-only"
+msgstr "已暂停：媒体库卡为只读"
+
+msgid "Paused: the library card is waiting for repair"
+msgstr "已暂停：媒体库卡正在等待修复"
+
+msgid "Performance update failed"
+msgstr "性能更新失败"
+
+msgid "Performance: %.160s"
+msgstr "性能：%.160s"
+
+msgid "Pick at least one game"
+msgstr "请至少选择一个游戏"
+
+msgid "Pick installed Leaf %s again?"
+msgstr "再次选择已安装的 Leaf %s？"
+
+msgid "Pick older Leaf %s?"
+msgstr "选择较旧的 Leaf %s？"
+
+msgid "Play Anyway"
+msgstr "仍然游玩"
+
+msgid "Playlist has an empty archive member"
+msgstr "播放列表包含空的归档成员"
+
+msgid "Playlist has an unterminated quote"
+msgstr "播放列表中有未闭合的引号"
+
+msgid "Power off failed"
+msgstr "关机失败"
+
+msgid "Preparing restart step"
+msgstr "正在准备重启步骤"
+
+msgid "Press L1 then R1 to keep"
+msgstr "按 L1 再按 R1 保留"
+
+msgid "Promoting launcher update"
+msgstr "正在提升启动器更新"
+
+msgid "Promoting managed apps"
+msgstr "正在提升托管应用"
+
+msgid "Queued %d artwork job%s"
+msgstr "%d 个封面任务%s已排队"
+
+msgid "Queued %d, %d already queued"
+msgstr "已排队 %d 项，其中 %d 项已在队列中"
+
+msgid "Quota paused"
+msgstr "配额暂停"
+
+msgid "Quota paused, "
+msgstr "配额暂停，"
+
+msgid "ROM"
+msgstr "ROM"
+
+msgid "ROM deletion in progress"
+msgstr "ROM 删除进行中"
+
+msgid "ROM deletion is preparing or committing"
+msgstr "ROM 删除正在准备或提交"
+
+msgid "ROM path missing"
+msgstr "ROM 路径缺失"
+
+msgid "ROM source is not mounted: %s"
+msgstr "ROM 来源未挂载：%s"
+
+msgid "Re-scrape all artwork anonymously? ScreenScraper can be slow and quota-limited without an account."
+msgstr "匿名重新刮削所有封面？没有账号时 ScreenScraper 可能很慢且受配额限制。"
+
+msgid "Reinstall %.180s?\n\nThe app package will be replaced. User data is preserved."
+msgstr "重新安装 %.180s？\n\n应用包会被替换，用户数据会保留。"
+
+msgid "Rejected - wrong username or password"
+msgstr "被拒绝 —— 用户名或密码错误"
+
+msgid "Release %s does not support %s"
+msgstr "发行版 %s 不支持 %s"
+
+msgid "Release is missing an update asset"
+msgstr "发行版缺少更新资源"
+
+msgid "Removed from favorites"
+msgstr "已从收藏中移除"
+
+msgid "Request failed"
+msgstr "请求失败"
+
+msgid "Requires Leaf v%s"
+msgstr "需要 Leaf v%s"
+
+msgid "Reset failed"
+msgstr "重置失败"
+
+msgid "RetroAchievements password\nStart: Confirm\nY: Cancel"
+msgstr "RetroAchievements 密码\nStart: 确认\nY: 取消"
+
+msgid "RetroAchievements username\nStart: Confirm\nY: Cancel"
+msgstr "RetroAchievements 用户名\nStart: 确认\nY: 取消"
+
+msgid "RetroArch action failed"
+msgstr "RetroArch 操作失败"
+
+msgid "RetroArch action failed: %s"
+msgstr "RetroArch 操作失败：%s"
+
+msgid "RetroArch action failed: daemon unavailable"
+msgstr "RetroArch 操作失败：守护进程不可达"
+
+msgid "RetroArch action missing"
+msgstr "RetroArch 操作缺失"
+
+msgid "RetroArch action requested"
+msgstr "已请求 RetroArch 操作"
+
+msgid "RetroArch binary missing"
+msgstr "RetroArch 可执行文件缺失"
+
+msgid "RetroArch config reset"
+msgstr "RetroArch 配置已重置"
+
+msgid "RetroArch exit failed"
+msgstr "退出 RetroArch 失败"
+
+msgid "RetroArch metadata catalog is empty"
+msgstr "RetroArch 元数据目录为空"
+
+msgid "RetroArch quit failed"
+msgstr "退出 RetroArch 失败"
+
+msgid "RetroArch reset failed"
+msgstr "重置 RetroArch 失败"
+
+msgid "RetroArch reset failed: %s"
+msgstr "重置 RetroArch 失败：%s"
+
+msgid "RetroArch reset failed: daemon unavailable"
+msgstr "重置 RetroArch 失败：守护进程不可达"
+
+msgid "RetroArch session active"
+msgstr "RetroArch 会话活动"
+
+msgid "RetroArch session failed"
+msgstr "RetroArch 会话失败"
+
+msgid "RetroArch session failed: %s"
+msgstr "RetroArch 会话失败：%s"
+
+msgid "RetroArch session unavailable"
+msgstr "RetroArch 会话不可用"
+
+msgid "Return to the launcher before deleting ROMs."
+msgstr "删除 ROM 前请先返回启动器。"
+
+msgid "Reverting in %d second%s"
+msgstr "%d 秒后恢复%s"
+
+msgid "SD-card mounted noexec; switcher remount failed or regressed"
+msgstr "SD 卡以 noexec 挂载；切换器重新挂载失败或回退"
+
+msgid "Save & Quit quicksave \\xe2\\x80\\x94 A resumes, Y keeps it as a slot"
+msgstr "退出并保存的快速存档 —— A 继续，Y 将其保留为存档位"
+
+msgid "Save failed - account unchanged"
+msgstr "保存失败 —— 账号未更改"
+
+msgid "Save-state features disabled: core metadata is unavailable"
+msgstr "即时存档功能已禁用：核心元数据不可用"
+
+msgid "Saved - RetroArch can't use this password"
+msgstr "已保存 —— RetroArch 无法使用此密码"
+
+msgid "Saved - emulators sign in on next launch"
+msgstr "已保存 —— 模拟器将在下次启动时登录"
+
+msgid "Saved: %.48s - not usable by RetroArch"
+msgstr "已保存：%.48s —— RetroArch 无法使用"
+
+msgid "Savestates are not available"
+msgstr "即时存档不可用"
+
+msgid "Scanning Bluetooth..."
+msgstr "正在扫描蓝牙..."
+
+msgid "Scanning Wi-Fi…"
+msgstr "正在扫描 Wi-Fi…"
+
+msgid "Scrape Artwork - %s"
+msgstr "刮削封面 —— %s"
+
+msgid "Scrape cancelled"
+msgstr "刮削已取消"
+
+msgid "Scrape failed"
+msgstr "刮削失败"
+
+msgid "Scrape failed: %.180s"
+msgstr "刮削失败：%.180s"
+
+msgid "Scrape missing artwork anonymously? ScreenScraper can be slow and quota-limited without an account."
+msgstr "匿名刮削缺失的封面？没有账号时 ScreenScraper 可能很慢且受配额限制。"
+
+msgid "Scrape queue is full"
+msgstr "刮削队列已满"
+
+msgid "Scraping %d game%s in %.140s"
+msgstr "正在刮削 %d 个游戏%s（%.140s）"
+
+msgid "Scraping artwork: %.180s"
+msgstr "正在刮削封面：%.180s"
+
+msgid "Scraping cancelled (%d item%s stopped)"
+msgstr "刮削已取消（停止了 %d 个任务%s）"
+
+msgid "ScreenScraper API temporarily closed (HTTP 423)"
+msgstr "ScreenScraper API 暂时关闭（HTTP 423）"
+
+msgid "ScreenScraper password\nStart: Confirm\nY: Cancel"
+msgstr "ScreenScraper 密码\nStart: 确认\nY: 取消"
+
+msgid "ScreenScraper response is missing 'response'"
+msgstr "ScreenScraper 响应缺少 'response'"
+
+msgid "ScreenScraper username\nStart: Confirm\nY: Cancel"
+msgstr "ScreenScraper 用户名\nStart: 确认\nY: 取消"
+
+msgid "Screenshot (in-game)"
+msgstr "截图（游戏内）"
+
+msgid "Screenshot (title)"
+msgstr "截图（标题）"
+
+msgid "Search library\nStart: Confirm\nY: Cancel"
+msgstr "搜索媒体库\nStart: 确认\nY: 取消"
+
+msgid "Secondary"
+msgstr "次要"
+
+msgid "Secondary SD is busy"
+msgstr "次要 SD 卡忙"
+
+msgid "Secondary SD is not mounted"
+msgstr "次要 SD 卡未挂载"
+
+msgid "Secondary SD unmount failed"
+msgstr "卸载次要 SD 卡失败"
+
+msgid "Secondary SD unmounted"
+msgstr "次要 SD 卡已卸载"
+
+msgid "Secondary SD unmounted; library rescan queued"
+msgstr "次要 SD 卡已卸载；媒体库重新扫描已排队"
+
+msgid "Secondary SD unmounted; library update started"
+msgstr "次要 SD 卡已卸载；媒体库更新已开始"
+
+msgid "Service is still stopping"
+msgstr "服务仍在停止中"
+
+msgid "Service quiesce failed: %s"
+msgstr "服务静默失败：%s"
+
+msgid "Service quiesce failed: %s (%s)"
+msgstr "服务静默失败：%s（%s）"
+
+msgid "Service status unavailable"
+msgstr "服务状态不可用"
+
+msgid "Service unavailable"
+msgstr "服务不可用"
+
+msgid "Sign-out failed - account unchanged"
+msgstr "退出登录失败 —— 账号未更改"
+
+msgid "Signed in - %d thread%s, quota %d/%d today"
+msgstr "已登录 —— %d 个线程%s，今日配额 %d/%d"
+
+msgid "Signed in as %s"
+msgstr "已登录为 %s"
+
+msgid "Signed in as %s - %d thread%s%s"
+msgstr "已登录为 %s —— %d 个线程%s%s"
+
+msgid "Signed in as %s%s"
+msgstr "已登录为 %s%s"
+
+msgid "Signed out of RetroAchievements"
+msgstr "已退出 RetroAchievements"
+
+msgid "Signed out of ScreenScraper"
+msgstr "已退出 ScreenScraper"
+
+msgid "Software has been blacklisted (HTTP 426)"
+msgstr "软件已被列入黑名单（HTTP 426）"
+
+msgid "Start: Confirm\nY: Cancel\nLeave empty to reset"
+msgstr "Start: 确认\nY: 取消\n留空则重置"
+
+msgid "Starting"
+msgstr "正在启动"
+
+msgid "Status"
+msgstr "状态"
+
+msgid "Stop & Play"
+msgstr "停止并游玩"
+
+msgid "Stopped %d job%s"
+msgstr "已停止 %d 个任务%s"
+
+msgid "Stopping"
+msgstr "正在停止"
+
+msgid "Storage paused"
+msgstr "存储暂停"
+
+msgid "Storage paused, "
+msgstr "存储暂停，"
+
+msgid "Sync before play — %d item%s, %s"
+msgstr "游玩前同步 —— %d 项%s，%s"
+
+msgid "Sync needs attention.\n\n%d item%s (%s) remained when waiting ended. Play anyway will stop Syncthing first; Cancel leaves syncing active."
+msgstr "同步需要注意。\n\n等待结束时仍有 %d 项%s（%s）未完成。仍然游玩会先停止 Syncthing；取消则保持同步。"
+
+msgid "Sync needs attention.\n\nSyncthing could not be verified stopped. Play anyway will retry the safe stop; Leaf will not launch until Syncthing is stopped."
+msgstr "同步需要注意。\n\n无法确认 Syncthing 已停止。仍然游玩会重试安全停止；在 Syncthing 停止前 Leaf 不会启动。"
+
+msgid "Syncing update files"
+msgstr "正在同步更新文件"
+
+msgid "Syncthing card setup needs attention.\n\nLeaf could not match this game's card to its Saves and States folders. Review Cards and Folders in Syncthing."
+msgstr "Syncthing 卡配置需要注意。\n\nLeaf 无法把此游戏的卡与它的存档和即时存档文件夹对应起来。请检查 Syncthing 中的卡和文件夹。"
+
+msgid "Syncthing still has Saves or States to transfer. Wait keeps syncing for up to 15 seconds. Play anyway stops Syncthing first. Cancel leaves syncing active."
+msgstr "Syncthing 仍有存档或即时存档需要传输。等待会继续同步最多 15 秒。仍然游玩会先停止 Syncthing。取消则保持同步。"
+
+msgid "System default"
+msgstr "系统默认"
+
+msgid "Theme package is not valid: %s"
+msgstr "主题包无效：%s"
+
+msgid "These retained data directories will be preserved:\n"
+msgstr "以下保留数据目录将被保留：\n"
+
+msgid "This connection has no deletion running."
+msgstr "此连接没有正在进行的删除。"
+
+msgid "Thread limit reached (HTTP 429)"
+msgstr "已达到线程上限（HTTP 429）"
+
+msgid "Time zone: %s"
+msgstr "时区：%s"
+
+msgid "Too long - account unchanged"
+msgstr "过长 —— 账号未更改"
+
+msgid "Too many ScreenScraper mappings for this system"
+msgstr "此系统的 ScreenScraper 映射过多"
+
+msgid "Too many unrecognized ROMs (HTTP 431)"
+msgstr "无法识别的 ROM 过多（HTTP 431）"
+
+msgid "Turning Bluetooth off..."
+msgstr "正在关闭蓝牙..."
+
+msgid "Turning Bluetooth on..."
+msgstr "正在开启蓝牙..."
+
+msgid "Turning Wi-Fi off…"
+msgstr "正在关闭 Wi-Fi…"
+
+msgid "Turning Wi-Fi on…"
+msgstr "正在开启 Wi-Fi…"
+
+msgid "Unavailable services cannot be enabled"
+msgstr "不可用的服务无法启用"
+
+msgid "Unfavorited"
+msgstr "已取消收藏"
+
+msgid "Uninstall %.180s?\n\n"
+msgstr "卸载 %.180s？\n\n"
+
+msgid "Unix peer pid unavailable"
+msgstr "Unix 对端 pid 不可用"
+
+msgid "Unknown ROM deletion request."
+msgstr "未知的 ROM 删除请求。"
+
+msgid "Unpair %s?"
+msgstr "取消配对 %s？"
+
+msgid "Unpair canceled"
+msgstr "已取消配对"
+
+msgid "Unpair failed"
+msgstr "取消配对失败"
+
+msgid "Unpaired %s"
+msgstr "已取消配对 %s"
+
+msgid "Unsafe stock update trigger: %s"
+msgstr "不安全的官方更新触发器：%s"
+
+msgid "Unsupported stock update method for %s"
+msgstr "%s 的官方更新方式不受支持"
+
+msgid "Unsupported update artifact kind: %s"
+msgstr "不支持的更新产物类型：%s"
+
+msgid "Unsupported update install method"
+msgstr "不支持的更新安装方式"
+
+msgid "Unsupported update install method: %s"
+msgstr "不支持的更新安装方式：%s"
+
+msgid "Update finished but service restore failed: %s"
+msgstr "更新已完成，但服务恢复失败：%s"
+
+msgid "Update installed"
+msgstr "更新已安装"
+
+msgid "Update runner path is too long"
+msgstr "更新执行器路径过长"
+
+msgid "Use a separate connection for ROM deletion."
+msgstr "请为 ROM 删除使用单独的连接。"
+
+msgid "Verifying downloaded update"
+msgstr "正在校验下载的更新"
+
+msgid "Version %s"
+msgstr "版本 %s"
+
+msgid "Version %s requires Leaf v%s — update Leaf in Settings to get it."
+msgstr "版本 %s 需要 Leaf v%s —— 请到设置中更新 Leaf 以获取。"
+
+msgid "Wait for ROM deletion before repairing storage"
+msgstr "修复存储前请等待 ROM 删除完成"
+
+msgid "Wait for ROM deletion before unmounting storage"
+msgstr "卸载存储前请等待 ROM 删除完成"
+
+msgid "Wait for sync"
+msgstr "等待同步"
+
+msgid "Wheel"
+msgstr "方向盘"
+
+msgid "Wheel (carbon)"
+msgstr "方向盘（碳纤维）"
+
+msgid "Wheel (steel)"
+msgstr "方向盘（钢）"
+
+msgid "Wi-Fi is not connected"
+msgstr "Wi-Fi 未连接"
+
+msgid "Wi-Fi unavailable on this platform"
+msgstr "此平台不支持 Wi-Fi"
+
+msgid "Windows drive paths cannot be resolved here: %.160s"
+msgstr "无法在此解析 Windows 盘符路径：%.160s"
+
+msgid "World"
+msgstr "世界"
+
+msgid "Writing installed release marker"
+msgstr "正在写入已安装发行标记"
+
+msgid "Wrong password"
+msgstr "密码错误"
+
+msgid "Your %s storage is unavailable or read-only."
+msgstr "你的 %s 存储不可用或为只读。"
+
+msgid "Your ROM card or library card is read-only."
+msgstr "你的 ROM 卡或媒体库卡为只读。"
+
+msgid "Your game's files changed. Open Delete Game again."
+msgstr "你的游戏文件已变化。请再次打开“删除游戏”。"
+
+msgid "Your library is busy or read-only. Try again."
+msgstr "媒体库忙或为只读。请重试。"
+
+msgid "Your library is scanning. Request a preview when it finishes."
+msgstr "媒体库正在扫描。请等它完成后请求预览。"
+
+msgid "Your selected ROM card is not mounted."
+msgstr "你选择的 ROM 卡未挂载。"
+
+msgid "\n%s: %s (%s)"
+msgstr "\n%s：%s（%s）"
+
+msgid "app launch path too long"
+msgstr "应用启动路径过长"
+
+msgid "app launch.sh missing or not executable"
+msgstr "应用 launch.sh 缺失或不可执行"
+
+msgid "app pak missing"
+msgstr "应用 pak 缺失"
+
+msgid "app pak outside Apps"
+msgstr "应用 pak 位于 Apps 之外"
+
+msgid "app path too long"
+msgstr "应用路径过长"
+
+msgid "app spawn failed"
+msgstr "应用启动失败"
+
+msgid "app storage source missing"
+msgstr "应用存储来源缺失"
+
+msgid "audio output failed: daemon unavailable"
+msgstr "音频输出失败：守护进程不可达"
+
+msgid "audio output invalid"
+msgstr "音频输出无效"
+
+msgid "audio output route failed"
+msgstr "音频输出路由失败"
+
+msgid "audio output set"
+msgstr "音频输出已设置"
+
+msgid "audio output: %s"
+msgstr "音频输出：%s"
+
+msgid "backoff"
+msgstr "退避中"
+
+msgid "blocked game launch is not overrideable"
+msgstr "被拦截的游戏启动无法覆盖"
+
+msgid "blocked game launch is not retryable"
+msgstr "被拦截的游戏启动无法重试"
+
+msgid "boot splash disable failed"
+msgstr "禁用开机动画失败"
+
+msgid "boot splash disabled"
+msgstr "开机动画已禁用"
+
+msgid "boot splash enable failed"
+msgstr "启用开机动画失败"
+
+msgid "boot splash enabled"
+msgstr "开机动画已启用"
+
+msgid "boot splash failed"
+msgstr "开机动画失败"
+
+msgid "boot splash failed: daemon unavailable"
+msgstr "开机动画失败：守护进程不可达"
+
+msgid "brightness failed: %s"
+msgstr "亮度设置失败：%s"
+
+msgid "brightness failed: daemon unavailable"
+msgstr "亮度设置失败：守护进程不可达"
+
+msgid "brightness: %d%%"
+msgstr "亮度：%d%%"
+
+msgid "busy"
+msgstr "忙碌"
+
+msgid "cache failed"
+msgstr "缓存失败"
+
+msgid "card absent; not inventoried"
+msgstr "卡不在；未清点"
+
+msgid "case-folding config_folder collision: %s and %s"
+msgstr "config_folder 大小写折叠冲突：%s 与 %s"
+
+msgid "content contribution refused during manifest validation (%s)"
+msgstr "清单校验期间拒绝内容投稿（%s）"
+
+msgid "could not compute missing counts"
+msgstr "无法计算缺失数量"
+
+msgid "could not list games for this system"
+msgstr "无法列出此系统的游戏"
+
+msgid "could not list systems"
+msgstr "无法列出系统"
+
+msgid "could not record acknowledgement"
+msgstr "无法记录确认"
+
+msgid "could not resolve catalog path"
+msgstr "无法解析目录路径"
+
+msgid "could not save language"
+msgstr "无法保存语言"
+
+msgid "could not serialize service status"
+msgstr "无法序列化服务状态"
+
+msgid "daemon unreachable"
+msgstr "守护进程不可达"
+
+msgid "disabled"
+msgstr "已禁用"
+
+msgid "display name keyboard failed"
+msgstr "显示名称键盘失败"
+
+msgid "duplicate core id in RetroArch metadata: %s"
+msgstr "RetroArch 元数据中有重复的核心 id：%s"
+
+msgid "duplicate system id in RetroArch metadata: %s"
+msgstr "RetroArch 元数据中有重复的系统 id：%s"
+
+msgid "expanded RetroArch metadata has wrong shape"
+msgstr "扩展的 RetroArch 元数据结构不正确"
+
+msgid "expanded RetroArch metadata missing"
+msgstr "扩展的 RetroArch 元数据缺失"
+
+msgid "expanded RetroArch metadata missing or invalid"
+msgstr "扩展的 RetroArch 元数据缺失或无效"
+
+msgid "expanded RetroArch metadata platform mismatch"
+msgstr "扩展的 RetroArch 元数据平台不匹配"
+
+msgid "failed"
+msgstr "失败"
+
+msgid "foreground or update operation in progress"
+msgstr "前台或更新操作正在进行"
+
+msgid "game is relocating"
+msgstr "游戏正在迁移"
+
+msgid "game is still resuming"
+msgstr "游戏仍在恢复中"
+
+msgid "game no longer exists"
+msgstr "游戏已不存在"
+
+msgid "game spawn failed"
+msgstr "游戏启动失败"
+
+msgid "installed package metadata is unavailable"
+msgstr "已安装包元数据不可用"
+
+msgid "invalid"
+msgstr "无效"
+
+msgid "invalid CTL-1 request"
+msgstr "CTL-1 请求无效"
+
+msgid "invalid battery override"
+msgstr "电池覆盖值无效"
+
+msgid "invalid cancel scope"
+msgstr "取消范围无效"
+
+msgid "invalid core id"
+msgstr "核心 id 无效"
+
+msgid "invalid core row in RetroArch metadata"
+msgstr "RetroArch 元数据中的核心行无效"
+
+msgid "invalid input shortcuts"
+msgstr "输入快捷键无效"
+
+msgid "invalid json"
+msgstr "JSON 无效"
+
+msgid "invalid language code"
+msgstr "语言代码无效"
+
+msgid "invalid refresh-osd-appearance request"
+msgstr "refresh-osd-appearance 请求无效"
+
+msgid "invalid repair mode"
+msgstr "修复模式无效"
+
+msgid "invalid request id"
+msgstr "请求 id 无效"
+
+msgid "invalid service id"
+msgstr "服务 id 无效"
+
+msgid "invalid shader scope"
+msgstr "着色器范围无效"
+
+msgid "invalid system row in RetroArch metadata"
+msgstr "RetroArch 元数据中的系统行无效"
+
+msgid "invalid title groups"
+msgstr "标题分组无效"
+
+msgid "language change failed"
+msgstr "语言切换失败"
+
+msgid "language change failed: daemon unavailable"
+msgstr "语言切换失败：守护进程不可达"
+
+msgid "language code too long"
+msgstr "语言代码过长"
+
+msgid "launch failed"
+msgstr "启动失败"
+
+msgid "launch failed: %s"
+msgstr "启动失败：%s"
+
+msgid "launch failed: daemon unavailable"
+msgstr "启动失败：守护进程不可达"
+
+msgid "launch failed: missing app"
+msgstr "启动失败：缺少应用"
+
+msgid "launch failed: missing game"
+msgstr "启动失败：缺少游戏"
+
+msgid "launch failed: standalone emulator missing"
+msgstr "启动失败：独立模拟器缺失"
+
+msgid "launch-app failed"
+msgstr "启动应用失败"
+
+msgid "launch-game failed"
+msgstr "启动游戏失败"
+
+msgid "libretro core missing"
+msgstr "libretro 核心缺失"
+
+msgid "loading library..."
+msgstr "正在加载媒体库..."
+
+msgid "malformed response"
+msgstr "响应格式错误"
+
+msgid "metadata path too long"
+msgstr "元数据路径过长"
+
+msgid "missing RetroArch action"
+msgstr "缺少 RetroArch 操作"
+
+msgid "missing SD-card root"
+msgstr "缺少 SD 卡根目录"
+
+msgid "missing app payload"
+msgstr "缺少应用载荷"
+
+msgid "missing credentials"
+msgstr "缺少凭据"
+
+msgid "missing frontend role"
+msgstr "缺少前端角色"
+
+msgid "missing language"
+msgstr "缺少语言"
+
+msgid "missing launch payload"
+msgstr "缺少启动载荷"
+
+msgid "missing performance profile"
+msgstr "缺少性能档位"
+
+msgid "missing platform action"
+msgstr "缺少平台操作"
+
+msgid "missing rom_path"
+msgstr "缺少 rom_path"
+
+msgid "missing scope"
+msgstr "缺少 scope"
+
+msgid "missing shader operation"
+msgstr "缺少着色器操作"
+
+msgid "missing shader path"
+msgstr "缺少着色器路径"
+
+msgid "missing storage action"
+msgstr "缺少存储操作"
+
+msgid "missing suspend inhibitor scope or reason"
+msgstr "缺少挂起抑制的范围或原因"
+
+msgid "missing suspend inhibitor token"
+msgstr "缺少挂起抑制令牌"
+
+msgid "missing system"
+msgstr "缺少系统"
+
+msgid "missing type"
+msgstr "缺少类型"
+
+msgid "mutation lock is not held"
+msgstr "未持有变更锁"
+
+msgid "no ScreenScraper mapping for this system"
+msgstr "此系统没有 ScreenScraper 映射"
+
+msgid "no active RetroArch session"
+msgstr "没有活动的 RetroArch 会话"
+
+msgid "no blocked game launch"
+msgstr "没有被拦截的游戏启动"
+
+msgid "no language given"
+msgstr "未提供语言"
+
+msgid "no package mutation in progress"
+msgstr "没有正在进行的包变更"
+
+msgid "no pending sync check"
+msgstr "没有待处理的同步检查"
+
+msgid "no waiting game launch"
+msgstr "没有等待中的游戏启动"
+
+msgid "not-found"
+msgstr "未找到"
+
+msgid "only secondary SD can be unmounted"
+msgstr "只有次要 SD 卡可以卸载"
+
+msgid "open-menu failed"
+msgstr "打开菜单失败"
+
+msgid "open-switcher failed"
+msgstr "打开切换器失败"
+
+msgid "optional content art metadata ignored"
+msgstr "已忽略可选的内容封面元数据"
+
+msgid "optional content scrape metadata ignored; filename behavior retained"
+msgstr "已忽略可选的内容刮削元数据；保留文件名行为"
+
+msgid "out of memory"
+msgstr "内存不足"
+
+msgid "overridden game launch still failed"
+msgstr "覆盖后的游戏启动仍然失败"
+
+msgid "package mutation failed: %.127s"
+msgstr "包变更失败：%.127s"
+
+msgid "package mutation failed: %.127s (%.127s)"
+msgstr "包变更失败：%.127s（%.127s）"
+
+msgid "package mutation in progress"
+msgstr "包变更进行中"
+
+msgid "package mutation operation mismatch"
+msgstr "包变更操作不匹配"
+
+msgid "package mutation release failed: %.127s"
+msgstr "包变更释放失败：%.127s"
+
+msgid "package operation in progress"
+msgstr "包操作进行中"
+
+msgid "packaged RetroArch core has unsafe config_folder: %s"
+msgstr "打包的 RetroArch 核心使用了不安全的 config_folder：%s"
+
+msgid "patterns contains redundant case variants"
+msgstr "patterns 包含重复的大小写变体"
+
+msgid "performance custom failed"
+msgstr "性能自定义设置失败"
+
+msgid "performance custom failed: daemon unavailable"
+msgstr "性能自定义设置失败：守护进程不可达"
+
+msgid "performance custom missing"
+msgstr "缺少性能自定义设置"
+
+msgid "performance custom set"
+msgstr "性能自定义设置已应用"
+
+msgid "performance failed"
+msgstr "性能设置失败"
+
+msgid "performance profile failed"
+msgstr "性能档位设置失败"
+
+msgid "performance profile failed: daemon unavailable"
+msgstr "性能档位设置失败：守护进程不可达"
+
+msgid "performance profile missing"
+msgstr "缺少性能档位"
+
+msgid "performance profile set"
+msgstr "性能档位已应用"
+
+msgid "performance reset"
+msgstr "性能已重置"
+
+msgid "performance reset failed"
+msgstr "性能重置失败"
+
+msgid "performance reset failed: daemon unavailable"
+msgstr "性能重置失败：守护进程不可达"
+
+msgid "power-handoff-missing"
+msgstr "缺少电源交接"
+
+msgid "power-required"
+msgstr "需要电源"
+
+msgid "primary storage source missing"
+msgstr "主存储来源缺失"
+
+msgid "profile cannot be a session override"
+msgstr "档位不能作为会话覆盖"
+
+msgid "profile cannot be global"
+msgstr "档位不能是全局"
+
+msgid "refresh rate failed"
+msgstr "刷新率设置失败"
+
+msgid "refresh rate failed: daemon unavailable"
+msgstr "刷新率设置失败：守护进程不可达"
+
+msgid "requested core unavailable"
+msgstr "请求的核心不可用"
+
+msgid "reset failed"
+msgstr "重置失败"
+
+msgid "restarting"
+msgstr "正在重启"
+
+msgid "resume failed"
+msgstr "恢复失败"
+
+msgid "retried game launch failed"
+msgstr "重试的游戏启动失败"
+
+msgid "retried game launch still blocked"
+msgstr "重试的游戏启动仍被拦截"
+
+msgid "running"
+msgstr "运行中"
+
+msgid "runtime unavailable"
+msgstr "运行时不可用"
+
+msgid "save-state failed"
+msgstr "即时存档失败"
+
+msgid "savestate namespace unavailable"
+msgstr "即时存档命名空间不可用"
+
+msgid "savestate unavailable"
+msgstr "即时存档不可用"
+
+msgid "savestates unsupported"
+msgstr "不支持即时存档"
+
+msgid "scan already running; queued rescan"
+msgstr "扫描已在运行；已排队重新扫描"
+
+msgid "scan complete: %d games, %d apps"
+msgstr "扫描完成：%d 个游戏，%d 个应用"
+
+msgid "scan failed: daemon returned error"
+msgstr "扫描失败：守护进程返回错误"
+
+msgid "scan failed: daemon unavailable"
+msgstr "扫描失败：守护进程不可达"
+
+msgid "scan started"
+msgstr "扫描已开始"
+
+msgid "scan-library could not start"
+msgstr "scan-library 无法启动"
+
+msgid "scanning library..."
+msgstr "正在扫描媒体库..."
+
+msgid "scrape failed"
+msgstr "刮削失败"
+
+msgid "scrape failed: daemon unavailable"
+msgstr "刮削失败：守护进程不可达"
+
+msgid "scrape queue is full"
+msgstr "刮削队列已满"
+
+msgid "scrape worker not running"
+msgstr "刮削工作进程未运行"
+
+msgid "scrape-start failed"
+msgstr "刮削启动失败"
+
+msgid "scraping unavailable in this build"
+msgstr "此版本不支持刮削"
+
+msgid "search failed"
+msgstr "搜索失败"
+
+msgid "search keyboard failed"
+msgstr "搜索键盘失败"
+
+msgid "server supports CTL-1 v1 only"
+msgstr "服务器仅支持 CTL-1 v1"
+
+msgid "service supervisor is unavailable"
+msgstr "服务监管器不可用"
+
+msgid "service supervisor unavailable"
+msgstr "服务监管器不可用"
+
+msgid "shader path not permitted"
+msgstr "不允许使用该着色器路径"
+
+msgid "stale-generation"
+msgstr "代次过期"
+
+msgid "standalone emulator missing"
+msgstr "独立模拟器缺失"
+
+msgid "starting"
+msgstr "正在启动"
+
+msgid "stopped"
+msgstr "已停止"
+
+msgid "stopping"
+msgstr "正在停止"
+
+msgid "storage source unavailable"
+msgstr "存储来源不可用"
+
+msgid "storage sources unavailable"
+msgstr "存储来源不可用"
+
+msgid "switch failed"
+msgstr "切换失败"
+
+msgid "switch failed: %s"
+msgstr "切换失败：%s"
+
+msgid "switch failed: daemon unavailable"
+msgstr "切换失败：守护进程不可达"
+
+msgid "switch failed: missing game"
+msgstr "切换失败：缺少游戏"
+
+msgid "switch-game failed"
+msgstr "切换游戏失败"
+
+msgid "switching HDMI output"
+msgstr "正在切换 HDMI 输出"
+
+msgid "switching to %d Hz"
+msgstr "正在切换到 %d Hz"
+
+msgid "switching to 60 Hz"
+msgstr "正在切换到 60 Hz"
+
+msgid "switching to 90 Hz"
+msgstr "正在切换到 90 Hz"
+
+msgid "sync check could not safely proceed"
+msgstr "同步检查无法安全进行"
+
+msgid "system %s needs core %s, which is not available after merge; the system is refused too rather than producing a tile that cannot launch"
+msgstr "系统 %s 需要核心 %s，但合并后该核心不可用；系统也被拒绝，而不是生成无法启动的条目"
+
+msgid "system_extensions for %s names core %s, absent after merge; that name dropped, extension accepted"
+msgstr "system_extensions 为 %s 指定核心 %s，但合并后该核心不存在；该名称被丢弃，扩展保留"
+
+msgid "system_extensions names %s, which no system provides after merge; extension dropped"
+msgstr "system_extensions 指定了 %s，但合并后没有系统提供它；扩展被丢弃"
+
+msgid "this platform"
+msgstr "此平台"
+
+msgid "today"
+msgstr "今天"
+
+msgid "unavailable"
+msgstr "不可用"
+
+msgid "unknown operation"
+msgstr "未知操作"
+
+msgid "unknown performance profile"
+msgstr "未知性能档位"
+
+msgid "unknown performance scope"
+msgstr "未知性能范围"
+
+msgid "unknown resume policy"
+msgstr "未知恢复策略"
+
+msgid "unknown scope"
+msgstr "未知范围"
+
+msgid "unknown service id"
+msgstr "未知服务 id"
+
+msgid "unknown shader operation"
+msgstr "未知着色器操作"
+
+msgid "unknown size"
+msgstr "未知大小"
+
+msgid "unknown type"
+msgstr "未知类型"
+
+msgid "unmount failed"
+msgstr "卸载失败"
+
+msgid "unmount failed: daemon unavailable"
+msgstr "卸载失败：守护进程不可达"
+
+msgid "unsupported system"
+msgstr "不支持的系统"
+
+msgid "unsupported-platform"
+msgstr "平台不支持"
+
+msgid "update"
+msgstr "更新"
+
+msgid "update cancel failed"
+msgstr "取消更新失败"
+
+msgid "update cancel unavailable"
+msgstr "取消更新不可用"
+
+msgid "update download cancelled"
+msgstr "更新下载已取消"
+
+msgid "update download failed"
+msgstr "更新下载失败"
+
+msgid "update download finished"
+msgstr "更新下载已完成"
+
+msgid "update download unavailable"
+msgstr "更新下载不可用"
+
+msgid "update install failed"
+msgstr "更新安装失败"
+
+msgid "update install started"
+msgstr "更新安装已开始"
+
+msgid "update install unavailable"
+msgstr "更新安装不可用"
+
+msgid "update ready check complete"
+msgstr "更新就绪检查完成"
+
+msgid "update ready check failed"
+msgstr "更新就绪检查失败"
+
+msgid "update ready check unavailable"
+msgstr "更新就绪检查不可用"
+
+msgid "update releases failed"
+msgstr "更新发行列表失败"
+
+msgid "update releases unavailable"
+msgstr "更新发行列表不可用"
+
+msgid "update selected"
+msgstr "已选择更新"
+
+msgid "update selection failed"
+msgstr "更新选择失败"
+
+msgid "update selection unavailable"
+msgstr "更新选择不可用"
+
+msgid "update status failed"
+msgstr "更新状态获取失败"
+
+msgid "update status ready"
+msgstr "更新状态就绪"
+
+msgid "update status unavailable"
+msgstr "更新状态不可用"
+
+msgid "validation failed"
+msgstr "校验失败"
+
+msgid "volume failed: %s"
+msgstr "音量设置失败：%s"
+
+msgid "volume failed: daemon unavailable"
+msgstr "音量设置失败：守护进程不可达"
+
+msgid "volume: %d%%"
+msgstr "音量：%d%%"
+
+msgid "yesterday"
+msgstr "昨天"
+
+msgid "Library cleanup failed after %d files were removed. Refresh the library."
+msgstr "删除 %d 个文件后媒体库清理失败。请刷新媒体库。"
+
+msgid ", quota %d/%d"
+msgstr "，配额 %d/%d"
+
+msgid "Color temperature neutral for the external display"
+msgstr "外接显示器色温已设为中性"
+
+msgid "Color temperature reset for the external display failed"
+msgstr "外接显示器色温重置失败"
+
+msgid "Invalid content identity"
+msgstr "内容标识无效"
+
+msgid "No deletion plan"
+msgstr "没有删除计划"
+
+msgid "Out of memory inspecting content"
+msgstr "检查内容时内存不足"
+
+msgid "Out of memory inspecting files"
+msgstr "检查文件时内存不足"
+
+msgid "Out of memory inspecting references"
+msgstr "检查引用时内存不足"
+
+msgid "Out of memory preparing deletion"
+msgstr "准备删除时内存不足"
+
+msgid "Out of memory reading descriptor"
+msgstr "读取描述符时内存不足"
+
+msgid "Out of memory recording deletion"
+msgstr "记录删除时内存不足"
+
+msgid "ScreenScraper request URL too long"
+msgstr "ScreenScraper 请求 URL 过长"
+
+msgid "curl global init failed: %s"
+msgstr "curl 全局初始化失败：%s"
+
+msgid "curl init failed"
+msgstr "curl 初始化失败"
+
+msgid "curl init failed while building request"
+msgstr "构建请求时 curl 初始化失败"
+
+msgid "default core is missing from metadata"
+msgstr "默认核心未出现在元数据中"
+
+msgid "default core is not a packaged RetroArch core"
+msgstr "默认核心不是随包提供的 RetroArch 核心"
+
+msgid "default core is packaged but missing on disk"
+msgstr "默认核心已打包但磁盘上缺失"
+
+msgid "failed to encode ScreenScraper credentials"
+msgstr "ScreenScraper 凭据编码失败"
+
+msgid "failed to encode ScreenScraper debug credentials"
+msgstr "ScreenScraper 调试凭据编码失败"
+
+msgid "failed to encode ScreenScraper request"
+msgstr "ScreenScraper 请求编码失败"
+
+msgid "missing metadata signature output"
+msgstr "缺少元数据签名输出"
+
+msgid "out of memory while building request"
+msgstr "构建请求时内存不足"
+
+msgid "request failed: %s"
+msgstr "请求失败：%s"
+
+msgid "resolved alternate core path too long"
+msgstr "解析出的备用核心路径过长"
+
+msgid "resolved core path too long"
+msgstr "解析出的核心路径过长"
+
+msgid "resolved preferred core path too long"
+msgstr "解析出的首选核心路径过长"
+
+msgid "system missing from metadata"
+msgstr "元数据中缺少系统"
