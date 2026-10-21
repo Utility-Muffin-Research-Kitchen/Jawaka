@@ -21,14 +21,14 @@ const int jw_ss_media_types_count =
 
 const jw_ss_option jw_ss_regions[] = {
     {JW_UI("World"),         "wor"},
-    {"USA",           "us"},
-    {"Europe",        "eu"},
-    {"Japan",         "jp"},
-    {"France",        "fr"},
-    {"Germany",       "de"},
-    {"Spain",         "es"},
-    {"Italy",         "it"},
-    {"Portugal",      "pt"},
+    {JW_UI("USA"),           "us"},
+    {JW_UI("Europe"),        "eu"},
+    {JW_UI("Japan"),         "jp"},
+    {JW_UI("France"),        "fr"},
+    {JW_UI("Germany"),       "de"},
+    {JW_UI("Spain"),         "es"},
+    {JW_UI("Italy"),         "it"},
+    {JW_UI("Portugal"),      "pt"},
     {"ScreenScraper", "ss"},
 };
 const int jw_ss_regions_count =

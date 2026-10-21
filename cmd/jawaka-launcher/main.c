@@ -3528,7 +3528,11 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
                                               : state->pakrat_message)
                 : (state->pakrat_message[0] ? state->pakrat_message
                                             : JW_UI("No Pak Rat apps found"));
-            cat_draw_text_wrapped(body, msg,
+            /* pakrat_message is stored untranslated; look it up where it is
+             * actually drawn, like the header does. */
+            char msg_tr[256];
+            jw_i18n_message(msg, NULL, 0, msg_tr, sizeof msg_tr);
+            cat_draw_text_wrapped(body, msg_tr,
                 list.x + CAT_S(8), list.y + CAT_S(8),
                 list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
         } else {

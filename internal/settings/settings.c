@@ -3099,7 +3099,7 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     char hdmi_val[40];
     const char *hdmi_text;
     if (hdmi_avail && hdmi_idx != 0) {
-        snprintf(hdmi_val, sizeof(hdmi_val), "%s \xc2\xb7 %s", kHdmiVals[hdmi_idx],
+        snprintf(hdmi_val, sizeof(hdmi_val), "%s \xc2\xb7 %s", T(kHdmiVals[hdmi_idx]),
                  ui->refresh_rate_hz >= 120 ? "1080p120" : "720p60");
         hdmi_text = hdmi_val;
     } else if (hdmi_avail) {
@@ -3817,9 +3817,9 @@ static void jw__draw_scrape_edit_item(int idx, int ix, int iy, int iw, int ih,
     char label[64];
     if (is_included) {
         snprintf(label, sizeof(label), "%d. %s", idx + 1,
-                 catalog[order[idx]].display);
+                 T(catalog[order[idx]].display));
     } else {
-        snprintf(label, sizeof(label), "%s", catalog[order[idx]].display);
+        snprintf(label, sizeof(label), "%s", T(catalog[order[idx]].display));
     }
     cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c,
                              iw * 2 / 3);
@@ -4258,8 +4258,8 @@ static void jw__scrape_queue_summary(const jw_ipc_scrape_queue_info *q,
     if (q->row_count > 0 && q->row_count < q->total) {
         snprintf(shown, sizeof(shown), T(" | showing first %d"), q->row_count);
     }
-    const char *prefix = strcmp(q->state, "paused-quota") == 0 ? JW_UI("Quota paused, ") :
-                         strcmp(q->state, "paused-storage") == 0 ? JW_UI("Storage paused, ") : "";
+    const char *prefix = strcmp(q->state, "paused-quota") == 0 ? T("Quota paused, ") :
+                         strcmp(q->state, "paused-storage") == 0 ? T("Storage paused, ") : "";
     snprintf(buf, buf_size, T("%s%d/%d done, %d failed, %d busy%s%s%s%s"),
              prefix, q->done, q->total, failed, q->active + q->queued,
              api, threads, eta_part, shown);
@@ -4352,7 +4352,7 @@ static void jw__draw_scrape_queue_item(int i, int ix, int iy, int iw, int ih,
     const char *label = row->display_name[0] ? row->display_name : row->rom_path;
     char subtitle[160];
     snprintf(subtitle, sizeof(subtitle), "%s  -  %s", row->system,
-             jw__scrape_queue_state_label(row->state));
+             T(jw__scrape_queue_state_label(row->state)));
     cat_draw_text_ellipsized(body, label, tx, block_y, main_c, text_w);
     cat_draw_text_ellipsized(small, subtitle, tx,
                              block_y + TTF_FontHeight(body) + line_gap,
@@ -4378,10 +4378,10 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
     /* Full-width key/value rows: keys are drawn whole (never ellipsized), values
        ellipsize to the rest of the width. */
     const char *info[][2] = {
-        { JW_UI("Status"), jw__scrape_queue_state_label(row->state) },
+        { T("Status"), T(jw__scrape_queue_state_label(row->state)) },
         { T("platform|System"), row->system },
-        { JW_UI("ROM"),    row->rom_path },
-        { JW_UI("Output"), row->output_path[0] ? row->output_path : JW_UI("Not written") },
+        { T("ROM"),    row->rom_path },
+        { T("Output"), row->output_path[0] ? row->output_path : T("Not written") },
     };
     int key_w = 0;
     for (int i = 0; i < 4; i++) {
@@ -4600,7 +4600,7 @@ static void jw__render_games(const jw_settings_ui *ui, int x, int y, int w, int 
     char artwork_value[64];
     if (ui->scrape_artwork_included > 0) {
         snprintf(artwork_value, sizeof(artwork_value), T("%s first"),
-                 jw_ss_media_types[ui->scrape_artwork_order[0]].display);
+                 T(jw_ss_media_types[ui->scrape_artwork_order[0]].display));
     } else {
         snprintf(artwork_value, sizeof(artwork_value), T("None selected"));
     }
@@ -4610,7 +4610,7 @@ static void jw__render_games(const jw_settings_ui *ui, int x, int y, int w, int 
     char region_value[64];
     if (ui->scrape_region_included > 0) {
         snprintf(region_value, sizeof(region_value), T("%s first"),
-                 jw_ss_regions[ui->scrape_region_order[0]].display);
+                 T(jw_ss_regions[ui->scrape_region_order[0]].display));
     } else {
         snprintf(region_value, sizeof(region_value), T("None selected"));
     }

@@ -6676,3 +6676,27 @@ msgstr "解析出的首选核心路径过长"
 
 msgid "system missing from metadata"
 msgstr "元数据中缺少系统"
+
+msgid "USA"
+msgstr "美国"
+
+msgid "Europe"
+msgstr "欧洲"
+
+msgid "Japan"
+msgstr "日本"
+
+msgid "France"
+msgstr "法国"
+
+msgid "Germany"
+msgstr "德国"
+
+msgid "Spain"
+msgstr "西班牙"
+
+msgid "Italy"
+msgstr "意大利"
+
+msgid "Portugal"
+msgstr "葡萄牙"

@@ -2008,6 +2008,10 @@ msgstr ""
 msgid "Eucla"
 msgstr ""
 
+#: internal/scrape/scrape_catalog.c
+msgid "Europe"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Excluded entries cannot be reordered"
 msgstr ""
@@ -2130,6 +2134,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Fountain"
+msgstr ""
+
+#: internal/scrape/scrape_catalog.c
+msgid "France"
 msgstr ""
 
 #: internal/update/update.c
@@ -2262,6 +2270,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Games played"
+msgstr ""
+
+#: internal/scrape/scrape_catalog.c
+msgid "Germany"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2522,6 +2534,14 @@ msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "It is a scaling filter, not a CRT or LCD simulation."
+msgstr ""
+
+#: internal/scrape/scrape_catalog.c
+msgid "Italy"
+msgstr ""
+
+#: internal/scrape/scrape_catalog.c
+msgid "Japan"
 msgstr ""
 
 #: internal/settings/timezones.c
@@ -3514,6 +3534,10 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Ports"
+msgstr ""
+
+#: internal/scrape/scrape_catalog.c
+msgid "Portugal"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -4688,6 +4712,10 @@ msgstr ""
 msgid "Some releases could not be loaded"
 msgstr ""
 
+#: internal/scrape/scrape_catalog.c
+msgid "Spain"
+msgstr ""
+
 #: internal/platform/platform_common.c
 msgid "Speaker"
 msgstr ""
@@ -5274,6 +5302,10 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "US Pacific"
+msgstr ""
+
+#: internal/scrape/scrape_catalog.c
+msgid "USA"
 msgstr ""
 
 #: internal/settings/timezones.c
