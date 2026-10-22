@@ -583,12 +583,12 @@ void jw_i18n_shutdown(void) {
 
 const char *jw_i18n_exact(const char *text) {
     if (!text) return "";
-    /* A '|' can be a context prefix ("verb|Open") or just a character in the
-       text. jw_i18n() strips what precedes a no-space '|' on a miss, which
-       would silently truncate data -- a game called "A|B" would render "B".
-       Pass the text through, as jw_i18n_message() does; context keys are only
-       ever written inside T(), where the strip is intended. */
-    if (strchr(text, '|')) return text;
+    /* Skip only what jw_i18n() would strip. A no-space "prefix|" is a context
+       key when it is written inside T(), but the same shape at a draw site can
+       be data, and a game called "A|B" must not come back as "B". A spaced
+       pipe (" | %d thread") is not a prefix, so tail fragments still
+       translate. */
+    if (jw__i18n_strip_context(text) != text) return text;
     return jw_i18n(text);
 }
 
