@@ -79,7 +79,9 @@ const char *jw_i18n(const char *english);
  * draw site can pass a field that is sometimes empty, and never rebuilds a
  * template: a message composed with a runtime value ("Cannot open %s") comes
  * back unchanged, because rebuilding it needs the value handed back in. Those
- * are translated where they are composed, with T(). */
+ * are translated where they are composed, with T(). A string holding '|' is
+ * returned unchanged: stripping a context prefix in the wrong place would
+ * truncate data such as a game called "A|B". */
 const char *jw_i18n_exact(const char *text);
 
 /* Translate a message composed at runtime, typically by a process with no

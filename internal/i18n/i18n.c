@@ -582,7 +582,14 @@ void jw_i18n_shutdown(void) {
 }
 
 const char *jw_i18n_exact(const char *text) {
-    return text ? jw_i18n(text) : "";
+    if (!text) return "";
+    /* A '|' can be a context prefix ("verb|Open") or just a character in the
+       text. jw_i18n() strips what precedes a no-space '|' on a miss, which
+       would silently truncate data -- a game called "A|B" would render "B".
+       Pass the text through, as jw_i18n_message() does; context keys are only
+       ever written inside T(), where the strip is intended. */
+    if (strchr(text, '|')) return text;
+    return jw_i18n(text);
 }
 
 const char *jw_i18n(const char *english) {
