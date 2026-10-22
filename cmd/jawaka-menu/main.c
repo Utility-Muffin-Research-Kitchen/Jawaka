@@ -396,9 +396,7 @@ static void jw__render_menu(const jw_menu_state *state) {
         int line_h = TTF_FontHeight(body_font);
         if (state->status[0]) {
             int ty = pane_y + (pane_h - line_h) / 2;
-            char status_tr[sizeof(state->status)];
-            jw_i18n_message(state->status, NULL, 0, status_tr, sizeof status_tr);
-            cat_draw_text_wrapped(body_font, status_tr, detail_x, ty,
+            cat_draw_text_wrapped(body_font, jw_i18n_exact(state->status), detail_x, ty,
                                   detail_w, theme->hint, CAT_ALIGN_CENTER);
         } else if (state->summary_ready) {
             char l1[32], l2[32];
@@ -1531,9 +1529,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
     }
     if (state->show_hints && status_text[0]) {
         int status_y = content.y + content.h - small_h - CAT_S(10);
-        char status_tr[256];
-        jw_i18n_message(status_text, NULL, 0, status_tr, sizeof status_tr);
-        cat_draw_text_ellipsized(small, status_tr, x, status_y,
+        cat_draw_text_ellipsized(small, jw_i18n_exact(status_text), x, status_y,
                                  theme->hint, list_w);
     }
 
@@ -1778,9 +1774,8 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
 
     if (state->show_hints && state->status[0]) {
         int y = content.y + content.h - small_h - CAT_S(10);
-        char status_tr[sizeof(state->status)];
-        jw_i18n_message(state->status, NULL, 0, status_tr, sizeof status_tr);
-        cat_draw_text_ellipsized(small, status_tr, x, y, theme->hint, list_w);
+        cat_draw_text_ellipsized(small, jw_i18n_exact(state->status), x, y,
+                                 theme->hint, list_w);
     }
     if (state->show_hints) {
         cat_set_footer_bg_opacity(JW_INGAME_UNDERLAY_ALPHA);   /* match the underlay panels */

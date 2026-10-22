@@ -2637,9 +2637,8 @@ static void jw__render_services(const jw_settings_ui *ui, int x, int y, int w, i
     int dy = content.y;
 
     if (ui->services_msg[0]) {
-        char services_tr[sizeof(ui->services_msg)];
-        jw_i18n_message(ui->services_msg, NULL, 0, services_tr, sizeof services_tr);
-        cat_draw_text_ellipsized(small, services_tr, x + cat_scale(12), dy,
+        cat_draw_text_ellipsized(small, jw_i18n_exact(ui->services_msg),
+                                 x + cat_scale(12), dy,
                                  theme->emphasis, w - cat_scale(24));
         dy += line_h + cat_scale(6);
     } else {
@@ -4412,15 +4411,13 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
     if (animating) cat_request_frame();
 
     /* Error/cancel note below the info. */
-    char reason[256];   /* the ScreenScraper client's English, translated */
-    jw_i18n_message(row->message, NULL, 0, reason, sizeof(reason));
     const char *desc = NULL;
     if (row->state == JW_IPC_SCRAPE_ROW_NOT_FOUND)
         desc = T("Not found in the ScreenScraper.fr database.");
     else if (row->state == JW_IPC_SCRAPE_ROW_ERROR)
-        desc = row->message[0] ? reason : T("Artwork scrape failed.");
+        desc = row->message[0] ? jw_i18n_exact(row->message) : T("Artwork scrape failed.");
     else if (row->state == JW_IPC_SCRAPE_ROW_CANCELLED)
-        desc = row->message[0] ? reason : T("Scrape was cancelled before completion.");
+        desc = row->message[0] ? jw_i18n_exact(row->message) : T("Scrape was cancelled before completion.");
     if (desc) {
         ly += cat_scale(4);
         cat_draw_text_ellipsized(small, desc, c.x, ly, theme->hint, c.w);
@@ -8213,12 +8210,11 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                         jw__persist(ui, "screenscraper_maxthreads", "");
                         jw__persist(ui, "screenscraper_requests_today", "");
                         jw__persist(ui, "screenscraper_max_requests", "");
-                        char why[256];
-                        jw_i18n_message(rc == 0 && info.message[0] ? info.message
-                                                                   : JW_UI("daemon unavailable"),
-                                        NULL, 0, why, sizeof(why));
                         snprintf(status_buf, status_size,
-                                 T("Saved - could not verify: %s"), why);
+                                 T("Saved - could not verify: %s"),
+                                 jw_i18n_exact(rc == 0 && info.message[0]
+                                                   ? info.message
+                                                   : JW_UI("daemon unavailable")));
                     }
                     break;
                 }

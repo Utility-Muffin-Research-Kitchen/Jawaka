@@ -977,24 +977,14 @@ static int jw__system_activity_height(const jw_launcher_state *state) {
         ? TTF_FontHeight(cat_get_font(CAT_FONT_SMALL)) + CAT_S(8) : 0;
 }
 
-/* Draw-time message lookup for text composed at runtime (daemon replies,
- * snprintf'd status lines). T() only matches a whole literal; jw_i18n_message()
- * also rebuilds %d/%s templates, and returns the text unchanged on a miss. */
-static const char *jw__tr_msg(const char *text, char *buf, size_t size) {
-    if (!text || !text[0]) return text;
-    jw_i18n_message(text, NULL, 0, buf, size);
-    return buf;
-}
-
 static void jw__draw_system_activity(const jw_launcher_state *state) {
     int h = jw__system_activity_height(state);
     g_activity_strip_h = h;
     if (!h) return;
     int margin = CAT_S(12);
     int bottom = cat_get_screen_height() - jw__footer_height(state) - margin;
-    char activity_tr[256];
     cat_draw_text_ellipsized(cat_get_font(CAT_FONT_SMALL),
-        jw__tr_msg(jw__system_activity_text(state), activity_tr, sizeof activity_tr),
+        jw_i18n_exact(jw__system_activity_text(state)),
         margin + CAT_S(12), bottom - h + CAT_S(4),
         cat_get_theme()->hint, cat_get_screen_width() - 2 * (margin + CAT_S(12)));
 }
@@ -1010,11 +1000,9 @@ static int jw__launch_notice_measure(void *font, const char *text) {
    ellipsizes. */
 static void jw__draw_launch_notice(const jw_launcher_state *state) {
     if (!state) return;
-    const char *text = jw_launch_notice_text(&state->launch_notice, SDL_GetTicks());
+    const char *text = jw_i18n_exact(jw_launch_notice_text(&state->launch_notice,
+                                                           SDL_GetTicks()));
     if (!text[0]) return;
-    char text_tr[1024];
-    text = jw__tr_msg(text, text_tr, sizeof text_tr);
-
     ap_theme *theme = cat_get_theme();
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     int sw = cat_get_screen_width();
@@ -2184,9 +2172,6 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
     pthread_mutex_lock(&P->scrape_mu);
     s = P->scrape;
     pthread_mutex_unlock(&P->scrape_mu);
-    char reason[256];   /* the ScreenScraper client's English, translated */
-    jw_i18n_message(s.message, NULL, 0, reason, sizeof(reason));
-
     bool paused_storage = strcmp(s.state, "paused-storage") == 0;
     bool active = strcmp(s.state, "running") == 0 ||
                   strcmp(s.state, "paused-quota") == 0 || paused_storage;
@@ -2195,10 +2180,10 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
         activity->completion.text[0] = '\0';
         if (paused_storage) {
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping paused: %.200s"),
-                     s.message[0] ? reason : T("SD card is read-only"));
+                     s.message[0] ? jw_i18n_exact(s.message) : T("SD card is read-only"));
         } else if (strcmp(s.state, "paused-quota") == 0) {
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping paused: %.200s"),
-                     s.message[0] ? reason : T("daily quota exceeded"));
+                     s.message[0] ? jw_i18n_exact(s.message) : T("daily quota exceeded"));
         } else if (s.current_system[0]) {
             int shown = s.done < s.total ? s.done + 1 : s.total;
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping %s · %d/%d"),
@@ -2219,11 +2204,11 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
         if (paused_storage) {
             snprintf(state->status, sizeof(state->status),
                      T("Scraping paused: %.200s"),
-                     s.message[0] ? reason : T("SD card is read-only"));
+                     s.message[0] ? jw_i18n_exact(s.message) : T("SD card is read-only"));
         } else if (strcmp(s.state, "paused-quota") == 0) {
             snprintf(state->status, sizeof(state->status),
                      T("Scraping paused: %.200s"),
-                     s.message[0] ? reason : T("daily quota exceeded"));
+                     s.message[0] ? jw_i18n_exact(s.message) : T("daily quota exceeded"));
         } else if (item[0]) {
             int shown = s.done + 1 > s.total ? s.total : s.done + 1;
             snprintf(state->status, sizeof(state->status),
@@ -3226,13 +3211,10 @@ static int jw__draw_pakrat_header(const jw_launcher_state *state, const char *ti
     int title_max = w - CAT_S(8);
 
     if (state && state->pakrat_message[0] && small) {
-        char pakrat_tr[256];
         int msg_w = w / 2;
         int msg_x = margin + w - msg_w - CAT_S(4);
         int msg_y = y + (large_h - TTF_FontHeight(small)) / 2;
-        cat_draw_text_ellipsized(small,
-                                 jw__tr_msg(state->pakrat_message, pakrat_tr,
-                                            sizeof pakrat_tr),
+        cat_draw_text_ellipsized(small, jw_i18n_exact(state->pakrat_message),
                                  msg_x, msg_y, theme->hint, msg_w);
         title_max = msg_x - margin - CAT_S(12);
         if (title_max < CAT_S(96)) {
@@ -3528,11 +3510,7 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
                                               : state->pakrat_message)
                 : (state->pakrat_message[0] ? state->pakrat_message
                                             : JW_UI("No Pak Rat apps found"));
-            /* pakrat_message is stored untranslated; look it up where it is
-             * actually drawn, like the header does. */
-            char msg_tr[256];
-            jw_i18n_message(msg, NULL, 0, msg_tr, sizeof msg_tr);
-            cat_draw_text_wrapped(body, msg_tr,
+            cat_draw_text_wrapped(body, jw_i18n_exact(msg),
                 list.x + CAT_S(8), list.y + CAT_S(8),
                 list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
         } else {
@@ -3870,10 +3848,7 @@ static void jw__render_vertical(const jw_launcher_state *state) {
     /* Status line at bottom-left */
     int status_y = content_y + content_h - TTF_FontHeight(small);
     if (jw_settings_show_hints(&state->settings)) {
-        char status_tr[sizeof(state->status)];
-        cat_draw_text_ellipsized(small,
-                                 jw__tr_msg(state->status, status_tr,
-                                            sizeof status_tr),
+        cat_draw_text_ellipsized(small, jw_i18n_exact(state->status),
                                  margin, status_y, theme->hint, list_w - margin);
     }
 
@@ -4121,10 +4096,7 @@ static void jw__render_horizontal(jw_launcher_state *state) {
     /* Status line */
     int status_y = sh - fh - TTF_FontHeight(small);
     if (jw_settings_show_hints(&state->settings)) {
-        char status_tr[sizeof(state->status)];
-        cat_draw_text_ellipsized(small,
-                                 jw__tr_msg(state->status, status_tr,
-                                            sizeof status_tr),
+        cat_draw_text_ellipsized(small, jw_i18n_exact(state->status),
                                  CAT_S(12), status_y, theme->hint, sw / 2);
     }
 
@@ -6113,10 +6085,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
 
     int status_y = content_y + content_h - TTF_FontHeight(small);
     if (jw_settings_show_hints(&state->settings)) {
-        char status_tr[sizeof(state->status)];
-        cat_draw_text_ellipsized(small,
-                                 jw__tr_msg(state->status, status_tr,
-                                            sizeof status_tr),
+        cat_draw_text_ellipsized(small, jw_i18n_exact(state->status),
                                  margin, status_y, theme->hint, sw - margin * 2);
     }
 
@@ -6864,11 +6833,10 @@ static const char *jw__delete_source_name(const char *source) {
 
 static int jw__delete_line(const char *text, int x, int y, int w, bool draw) {
     TTF_Font *font = cat_get_font(CAT_FONT_SMALL);
-    char text_tr[2048];
-    jw_i18n_message(text, NULL, 0, text_tr, sizeof text_tr);
-    if (draw) cat_draw_text_wrapped(font, text_tr, x, y, w,
+    const char *shown = jw_i18n_exact(text);
+    if (draw) cat_draw_text_wrapped(font, shown, x, y, w,
                                    cat_get_theme()->text, CAT_ALIGN_LEFT);
-    return cat_measure_wrapped_text_height(font, text_tr, w) + CAT_S(10);
+    return cat_measure_wrapped_text_height(font, shown, w) + CAT_S(10);
 }
 
 static int jw__delete_body(jw_launcher_state *state, int x, int y, int w, bool draw) {
@@ -9968,13 +9936,11 @@ static void jw__rebuild_for_layout(jw_launcher_state *state);
 /* A one-button notice for something the user has to read, not just glimpse in
    the header. */
 static void jw__pakrat_notice(const char *message) {
-    char message_tr[1024];
-    jw_i18n_message(message, NULL, 0, message_tr, sizeof message_tr);
     cat_footer_item footer[] = {
         { .button = CAT_BTN_A, .label = T("OK"), .is_confirm = true },
     };
     cat_message_opts opts = {
-        .message = message_tr,
+        .message = jw_i18n_exact(message),
         .footer = footer,
         .footer_count = 1,
     };
@@ -13396,12 +13362,6 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
         "Sending 1080p120 over HDMI. If your TV stays blank it can't show this "
         "mode - leave it and Leaf reverts to a safe picture.");
     static const char *const keep_hint = JW_UI("Press L1 then R1 to keep");
-    /* Translate once: the prompt redraws every frame while the countdown runs. */
-    char body_tr[1024];
-    char keep_hint_tr[128];
-    jw_i18n_message(body, NULL, 0, body_tr, sizeof body_tr);
-    jw_i18n_message(keep_hint, NULL, 0, keep_hint_tr, sizeof keep_hint_tr);
-
     /* Drive the visible countdown from a local deadline so the bar animates every
        frame; re-sync with the daemon every couple of seconds. */
     int total = 0;
@@ -13450,7 +13410,7 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
         }
 
         cat_draw_background();
-        int body_h  = cat_measure_wrapped_text_height(font, body_tr, max_w);
+        int body_h  = cat_measure_wrapped_text_height(font, jw_i18n_exact(body), max_w);
         int bar_w   = sw * 3 / 5;
         int bar_h   = CAT_S(10);
         int gap     = CAT_S(24);
@@ -13460,7 +13420,8 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
         if (y < CAT_S(20)) {
             y = CAT_S(20);
         }
-        cat_draw_text_wrapped(font, body_tr, CAT_S(40), y, max_w, theme->text,
+        cat_draw_text_wrapped(font, jw_i18n_exact(body), CAT_S(40), y, max_w,
+                              theme->text,
                               CAT_ALIGN_CENTER);
         int by = y + body_h + gap;
         int bx = (sw - bar_w) / 2;
@@ -13474,8 +13435,8 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
                  remaining_s == 1 ? "" : "s");
         int cw = cat_measure_text(font, cd);
         cat_draw_text(font, cd, (sw - cw) / 2, by + bar_h + CAT_S(12), theme->text);
-        int kw = cat_measure_text(font, keep_hint_tr);
-        cat_draw_text(font, keep_hint_tr, (sw - kw) / 2,
+        int kw = cat_measure_text(font, jw_i18n_exact(keep_hint));
+        cat_draw_text(font, jw_i18n_exact(keep_hint), (sw - kw) / 2,
                       by + bar_h + CAT_S(12) + line_h + CAT_S(10), theme->highlight);
         jw__footer_direct(footer, 1);
         /* Request a frame so cat_present takes the active 60fps-paced path instead
@@ -13617,9 +13578,6 @@ static jw__rop_prompt_choice jw__raofflineproxy_prompt(bool retry_allowed) {
           "signs you in to RetroAchievements online, but unlocks can't be "
           "queued for offline play. To check the service, cancel and open "
           "Settings > System > Services.");
-    /* Translated once: this prompt redraws until the user answers. */
-    char body_tr[1024];
-    jw_i18n_message(body, NULL, 0, body_tr, sizeof body_tr);
     TTF_Font *font = cat_get_font(CAT_FONT_MEDIUM);
     if (!font) {
         return JW__ROP_PROMPT_CANCEL;
@@ -13659,12 +13617,13 @@ static jw__rop_prompt_choice jw__raofflineproxy_prompt(bool retry_allowed) {
             max_w = 1;
         }
         cat_draw_background();
-        int body_h = cat_measure_wrapped_text_height(font, body_tr, max_w);
+        int body_h = cat_measure_wrapped_text_height(font, jw_i18n_exact(body), max_w);
         int y = (sh - body_h - cat_get_footer_height()) / 2;
         if (y < CAT_S(20)) {
             y = CAT_S(20);
         }
-        cat_draw_text_wrapped(font, body_tr, CAT_S(40), y, max_w, theme->text,
+        cat_draw_text_wrapped(font, jw_i18n_exact(body), CAT_S(40), y, max_w,
+                              theme->text,
                               CAT_ALIGN_CENTER);
         /* jw__footer_direct translates labels in place; draw from a copy so
            the next frame does not translate an already translated label. */

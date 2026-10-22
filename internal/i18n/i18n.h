@@ -74,6 +74,14 @@ void jw_i18n_shutdown(void);
 /* Never returns NULL for a non-NULL argument; returns `english` on any miss. */
 const char *jw_i18n(const char *english);
 
+/* Translate a whole string that may be NULL, without guessing at templates.
+ * jw_i18n() already returns its key on a miss; this adds the NULL case so a
+ * draw site can pass a field that is sometimes empty, and never rebuilds a
+ * template: a message composed with a runtime value ("Cannot open %s") comes
+ * back unchanged, because rebuilding it needs the value handed back in. Those
+ * are translated where they are composed, with T(). */
+const char *jw_i18n_exact(const char *text);
+
 /* Translate a message composed at runtime, typically by a process with no
  * table of its own (jawakad, the ScreenScraper client). Tries the whole
  * message as a key; then each of `values` that appears in it exactly once,

@@ -581,6 +581,10 @@ void jw_i18n_shutdown(void) {
     jw__i18n_reset();
 }
 
+const char *jw_i18n_exact(const char *text) {
+    return text ? jw_i18n(text) : "";
+}
+
 const char *jw_i18n(const char *english) {
     if (!english) return NULL;
     if (g_i18n.count == 0) return jw__i18n_strip_context(english);
