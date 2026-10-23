@@ -18,8 +18,10 @@ the repo does not have. Percentages are of every extracted key, so they fall whe
 newly reachable strings are added rather than when a translation regresses.
 
 Starting a language, or finishing one, is [documented for
-translators](https://leaf.game/guide/translating/): take `i18n/leaf.pot`, fill in
-the `msgstr` lines, and test it on the device before sending it in.
+translators](https://leaf.game/guide/translating/): take your language's file in
+`i18n/` (or `i18n/leaf.pot` for a new one), fill in the empty `msgstr` lines, and
+test it on the device before sending it in. Every language file lists every
+string, so the untranslated ones are there to find.
 
 ## What Exists
 
