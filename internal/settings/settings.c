@@ -5513,6 +5513,7 @@ static const char *jw__language_label(const char *code) {
        it; a bare "ja" is kept for any table dropped on the card that way. */
     if (strcmp(code, "ja_JP") == 0) return "日本語";
     if (strcmp(code, "ja") == 0)    return "日本語";
+    if (strcmp(code, "ko_KR") == 0) return "한국어";
     if (strcmp(code, "ko") == 0)    return "한국어";
     return code;
 }
