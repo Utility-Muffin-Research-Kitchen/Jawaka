@@ -19,6 +19,14 @@ msgid "%d Hz"
 msgstr "%d Hz"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat app"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat apps"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d apps"
 msgstr "%d 个应用"
 
@@ -1734,6 +1742,10 @@ msgstr "不使用 BIOS 文件"
 #: internal/launcher/bios.c
 msgid "No BIOS file selected"
 msgstr "未选择 BIOS 文件"
+
+#: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat apps found"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "No apps found"
