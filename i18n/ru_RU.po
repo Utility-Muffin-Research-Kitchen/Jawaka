@@ -59,6 +59,14 @@ msgid "%d K"
 msgstr "%d K"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat app"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat apps"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d apps"
 msgstr "Приложения: %d"
 
@@ -2134,6 +2142,10 @@ msgstr "Файл BIOS не выбран"
 #: cmd/jawaka-launcher/main.c
 msgid "No Pak Rat app selected"
 msgstr "Приложение Pak Rat не выбрано"
+
+#: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat apps found"
+msgstr ""
 
 #: internal/scrape/ss_client.c
 msgid "No ScreenScraper username configured"
