@@ -3287,7 +3287,7 @@ msgstr "Stabil"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Stale"
-msgstr "Veraltet"
+msgstr "Fehlt"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start"
