@@ -3282,7 +3282,7 @@ msgstr "Stabiel"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Stale"
-msgstr "Verouderd"
+msgstr "Ontbreekt"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start"
