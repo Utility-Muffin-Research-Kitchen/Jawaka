@@ -1,4 +1,5 @@
 #include "internal/retroarch/catalog.h"
+#include "internal/i18n/i18n.h"
 #include "internal/catalog/effective.h"
 #include "internal/platform/platform_id.h"
 
@@ -608,7 +609,7 @@ static int jw_ra_metadata_signature_load(const char *sdcard_root,
     struct stat systems_st;
     if (stat(out->cores_path, &cores_st) != 0 ||
         stat(out->systems_path, &systems_st) != 0) {
-        jw_ra_set_error(error, error_size, "expanded RetroArch metadata missing");
+        jw_ra_set_error(error, error_size, JW_UI("expanded RetroArch metadata missing"));
         return -1;
     }
     out->cores_size = cores_st.st_size;
@@ -634,7 +635,7 @@ static int jw_ra_validate_catalog(const jw_ra_catalog *catalog, char *error, siz
 jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t error_size) {
     jw_ra_set_error(error, error_size, "");
     if (!sdcard_root || !sdcard_root[0]) {
-        jw_ra_set_error(error, error_size, "missing SD-card root");
+        jw_ra_set_error(error, error_size, JW_UI("missing SD-card root"));
         return NULL;
     }
 
@@ -644,7 +645,7 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
                                                     sizeof(defaults_dir),
                                                     resolution, sizeof(resolution));
     if (is_generation < 0) {
-        jw_ra_set_error(error, error_size, "could not resolve catalog path");
+        jw_ra_set_error(error, error_size, JW_UI("could not resolve catalog path"));
         return NULL;
     }
 
@@ -657,7 +658,7 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
             (int)sizeof(cores_v2_path) ||
         snprintf(systems_path, sizeof(systems_path), "%s/systems.json", defaults_dir) >=
             (int)sizeof(systems_path)) {
-        jw_ra_set_error(error, error_size, "metadata path too long");
+        jw_ra_set_error(error, error_size, JW_UI("metadata path too long"));
         return NULL;
     }
 
@@ -679,7 +680,7 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
         cJSON_Delete(systems_doc);
         free(cores_text);
         free(systems_text);
-        jw_ra_set_error(error, error_size, "expanded RetroArch metadata missing or invalid");
+        jw_ra_set_error(error, error_size, JW_UI("expanded RetroArch metadata missing or invalid"));
         return NULL;
     }
 
@@ -690,7 +691,7 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
         cJSON_Delete(systems_doc);
         free(cores_text);
         free(systems_text);
-        jw_ra_set_error(error, error_size, "expanded RetroArch metadata has wrong shape");
+        jw_ra_set_error(error, error_size, JW_UI("expanded RetroArch metadata has wrong shape"));
         return NULL;
     }
 
@@ -704,7 +705,7 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
         cJSON_Delete(systems_doc);
         free(cores_text);
         free(systems_text);
-        jw_ra_set_error(error, error_size, "expanded RetroArch metadata platform mismatch");
+        jw_ra_set_error(error, error_size, JW_UI("expanded RetroArch metadata platform mismatch"));
         return NULL;
     }
 
@@ -777,7 +778,7 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
             cJSON_Delete(systems_doc);
             free(cores_text);
             free(systems_text);
-            jw_ra_set_error(error, error_size, "invalid core row in RetroArch metadata");
+            jw_ra_set_error(error, error_size, JW_UI("invalid core row in RetroArch metadata"));
             return NULL;
         }
         catalog->core_count++;
@@ -790,7 +791,7 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
             cJSON_Delete(systems_doc);
             free(cores_text);
             free(systems_text);
-            jw_ra_set_error(error, error_size, "invalid system row in RetroArch metadata");
+            jw_ra_set_error(error, error_size, JW_UI("invalid system row in RetroArch metadata"));
             return NULL;
         }
         catalog->system_count++;
@@ -881,7 +882,7 @@ static int jw_ra_validate_unique_cores(const jw_ra_catalog *catalog, char *error
         for (size_t j = i + 1u; j < catalog->core_count; j++) {
             if (strcmp(catalog->cores[i].id, catalog->cores[j].id) == 0) {
                 char message[256];
-                snprintf(message, sizeof(message), "duplicate core id in RetroArch metadata: %s",
+                snprintf(message, sizeof(message), JW_UI("duplicate core id in RetroArch metadata: %s"),
                          catalog->cores[i].id);
                 jw_ra_set_error(error, error_size, message);
                 return -1;
@@ -896,7 +897,7 @@ static int jw_ra_validate_unique_systems(const jw_ra_catalog *catalog, char *err
         for (size_t j = i + 1u; j < catalog->system_count; j++) {
             if (strcmp(catalog->systems[i].id, catalog->systems[j].id) == 0) {
                 char message[256];
-                snprintf(message, sizeof(message), "duplicate system id in RetroArch metadata: %s",
+                snprintf(message, sizeof(message), JW_UI("duplicate system id in RetroArch metadata: %s"),
                          catalog->systems[i].id);
                 jw_ra_set_error(error, error_size, message);
                 return -1;
@@ -947,7 +948,7 @@ static int jw_ra_validate_core_folders(const jw_ra_catalog *catalog,
         if (!jw_ra_core_folder_is_safe(core->config_folder)) {
             char message[256];
             snprintf(message, sizeof(message),
-                     "packaged RetroArch core has unsafe config_folder: %s",
+                     JW_UI("packaged RetroArch core has unsafe config_folder: %s"),
                      core->id ? core->id : "(unknown)");
             jw_ra_set_error(error, error_size, message);
             return -1;
@@ -961,7 +962,7 @@ static int jw_ra_validate_core_folders(const jw_ra_catalog *catalog,
             }
             char message[256];
             snprintf(message, sizeof(message),
-                     "case-folding config_folder collision: %s and %s",
+                     JW_UI("case-folding config_folder collision: %s and %s"),
                      core->id ? core->id : "(unknown)",
                      other->id ? other->id : "(unknown)");
             jw_ra_set_error(error, error_size, message);
@@ -987,7 +988,7 @@ static int jw_ra_validate_system_defaults(const jw_ra_catalog *catalog, char *er
 
 static int jw_ra_validate_catalog(const jw_ra_catalog *catalog, char *error, size_t error_size) {
     if (!catalog || catalog->core_count == 0 || catalog->system_count == 0) {
-        jw_ra_set_error(error, error_size, "RetroArch metadata catalog is empty");
+        jw_ra_set_error(error, error_size, JW_UI("RetroArch metadata catalog is empty"));
         return -1;
     }
     if (jw_ra_validate_unique_cores(catalog, error, error_size) != 0 ||

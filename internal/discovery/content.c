@@ -1,4 +1,5 @@
 #include "internal/discovery/content.h"
+#include "internal/i18n/i18n.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -83,7 +84,7 @@ static int jw__locate(jw_content_reader *r, const char *path) {
 }
 
 static int jw__copy(jw_content_reader *r, char *out, size_t size, const char *text) {
-    if (strlen(text) >= size) return jw__fail(r, "Content path is too long: %.100s", text);
+    if (strlen(text) >= size) return jw__fail(r, JW_UI("Content path is too long: %.100s"), text);
     memcpy(out, text, strlen(text) + 1);
     return 0;
 }
@@ -92,7 +93,7 @@ static int jw__join(jw_content_reader *r, char *out, size_t size,
                      const char *parent, const char *name) {
     int n = snprintf(out, size, "%s%s%s", parent,
                      strcmp(parent, "/") == 0 ? "" : "/", name);
-    return n < 0 || (size_t)n >= size ? jw__fail(r, "Content path is too long") : 0;
+    return n < 0 || (size_t)n >= size ? jw__fail(r, JW_UI("Content path is too long")) : 0;
 }
 
 static const char *jw__extension(const char *path) {
@@ -188,9 +189,9 @@ static int jw__directory(jw_content_reader *r, const char *path, jw_content_dir 
     size_t found = jw__index_find(&r->dir_index, r->dirs, jw__dir_key, path);
     if (found != SIZE_MAX) { *out = r->dirs[found]; return 0; }
     if (r->dir_count == JW_CONTENT_MAX_DIRS)
-        return jw__fail(r, "Content uses too many directories");
+        return jw__fail(r, JW_UI("Content uses too many directories"));
     DIR *dir = opendir(path);
-    if (!dir) return jw__fail(r, "Cannot read directory %.160s: %s", path, strerror(errno));
+    if (!dir) return jw__fail(r, JW_UI("Cannot read directory %.160s: %s"), path, strerror(errno));
     jw_content_dir *cached = calloc(1, sizeof(*cached));
     jw_content_dir **dirs = cached ? jw__grow(r->dirs, &r->dir_capacity, r->dir_count + 1, sizeof(*dirs)) : NULL;
     if (dirs) r->dirs = dirs;
@@ -222,7 +223,7 @@ static int jw__directory(jw_content_reader *r, const char *path, jw_content_dir 
     /* Big directories get a name index so each lookup is not a scan. */
     for (size_t i = 0; !saved && cached->count >= JW_CONTENT_NAME_INDEX_MIN && i < cached->count; i++)
         if (jw__index_put(&cached->index, cached->names, jw__name_key, i, cached->names[i], i) < 0) saved = ENOMEM;
-    if (saved) return jw__fail(r, "Cannot read directory %.160s: %s", path, strerror(saved));
+    if (saved) return jw__fail(r, JW_UI("Cannot read directory %.160s: %s"), path, strerror(saved));
     *out = cached;
     return 0;
 }
@@ -252,21 +253,21 @@ static int jw__actual_spelling(jw_content_reader *r, const char *path,
         if (jw__join(r, candidate, sizeof(candidate), out, part) < 0) return -1;
         struct stat requested;
         if (lstat(candidate, &requested))
-            return jw__fail(r, "Cannot inspect %.160s: %s", candidate, strerror(errno));
+            return jw__fail(r, JW_UI("Cannot inspect %.160s: %s"), candidate, strerror(errno));
         const char *name = jw__find_name(dir, part);
         if (!name) {
             for (size_t i = 0; i < dir->count; i++) {
                 if (jw__join(r, candidate, sizeof(candidate), out, dir->names[i]) < 0) return -1;
                 struct stat actual;
                 if (lstat(candidate, &actual))
-                    return jw__fail(r, "Cannot inspect %.160s: %s", candidate, strerror(errno));
+                    return jw__fail(r, JW_UI("Cannot inspect %.160s: %s"), candidate, strerror(errno));
                 if (actual.st_dev == requested.st_dev && actual.st_ino == requested.st_ino) {
-                    if (name) return jw__fail(r, "Ambiguous filesystem name: %.160s", path);
+                    if (name) return jw__fail(r, JW_UI("Ambiguous filesystem name: %.160s"), path);
                     name = dir->names[i];
                 }
             }
         }
-        if (!name) return jw__fail(r, "Filesystem name changed during inspection: %.160s", path);
+        if (!name) return jw__fail(r, JW_UI("Filesystem name changed during inspection: %.160s"), path);
         if (jw__join(r, candidate, sizeof(candidate), out, name) < 0 ||
             jw__copy(r, out, out_size, candidate) < 0) return -1;
     }
@@ -275,14 +276,14 @@ static int jw__actual_spelling(jw_content_reader *r, const char *path,
 
 static int jw__normalize(jw_content_reader *r, const char *path,
                          char *out, size_t out_size, unsigned depth) {
-    if (depth > JW_CONTENT_MAX_DEPTH) return jw__fail(r, "Content path has too many missing directories");
+    if (depth > JW_CONTENT_MAX_DEPTH) return jw__fail(r, JW_UI("Content path has too many missing directories"));
     char resolved[JW_STORAGE_PATH_MAX];
     if (realpath(path, resolved)) return jw__actual_spelling(r, resolved, out, out_size);
-    if (errno != ENOENT) return jw__fail(r, "Cannot resolve %.160s: %s", path, strerror(errno));
+    if (errno != ENOENT) return jw__fail(r, JW_UI("Cannot resolve %.160s: %s"), path, strerror(errno));
     char parent[JW_STORAGE_PATH_MAX];
     if (jw__copy(r, parent, sizeof(parent), path) < 0) return -1;
     char *slash = strrchr(parent, '/');
-    if (!slash || !slash[1]) return jw__fail(r, "Invalid content path: %.160s", path);
+    if (!slash || !slash[1]) return jw__fail(r, JW_UI("Invalid content path: %.160s"), path);
     char name[JW_STORAGE_PATH_MAX];
     if (jw__copy(r, name, sizeof(name), slash + 1) < 0) return -1;
     if (slash == parent) slash[1] = '\0'; else *slash = '\0';
@@ -290,7 +291,7 @@ static int jw__normalize(jw_content_reader *r, const char *path,
     if (!strcmp(name, ".") || !strcmp(name, "..")) {
         struct stat st;
         if (stat(resolved, &st) || !S_ISDIR(st.st_mode))
-            return jw__fail(r, "Cannot traverse missing directory: %.160s", resolved);
+            return jw__fail(r, JW_UI("Cannot traverse missing directory: %.160s"), resolved);
     }
     if (!strcmp(name, ".")) return jw__copy(r, out, out_size, resolved);
     if (!strcmp(name, "..")) {
@@ -330,7 +331,7 @@ static int jw__origin_source(jw_content_reader *r, const char *path) {
 /* The file owns copies of its normalized path and ROM-relative key. */
 static int jw__own(jw_content_reader *r, jw_content_file *file, const char *path, const char *relative) {
     if (strlen(relative) >= JW_CONTENT_RELPATH_MAX)
-        return jw__fail(r, "Content path is too long: %.100s", relative);
+        return jw__fail(r, JW_UI("Content path is too long: %.100s"), relative);
     file->path = strdup(path);
     file->rom_relpath = strdup(relative);
     return file->path && file->rom_relpath ? 0 : jw__fail(r, "Out of memory inspecting files");
@@ -346,38 +347,38 @@ static int jw__resolve(jw_content_reader *r, const char *parent, const char *ref
                        jw_content_file *file) {
     char ref[JW_STORAGE_PATH_MAX], candidate[JW_STORAGE_PATH_MAX], path[JW_STORAGE_PATH_MAX];
     if (!reference[0] || jw__copy(r, ref, sizeof(ref), reference) < 0)
-        return jw__fail(r, "Empty or oversized content reference");
+        return jw__fail(r, JW_UI("Empty or oversized content reference"));
     for (char *p = ref; *p; p++) if (*p == '\\') *p = '/';
     if (ref[0] == '/') {
         if (jw__copy(r, candidate, sizeof(candidate), ref) < 0) return -1;
     } else {
         if (isalpha((unsigned char)ref[0]) && ref[1] == ':')
-            return jw__fail(r, "Windows drive paths cannot be resolved here: %.160s", ref);
+            return jw__fail(r, JW_UI("Windows drive paths cannot be resolved here: %.160s"), ref);
         if (jw__join(r, candidate, sizeof(candidate), parent, ref) < 0) return -1;
     }
     if (jw__normalize(r, candidate, path, sizeof(path), 0) < 0) return -1;
     int source_index = -1;
     for (int i = 0; i < r->sources->count; i++) {
         if (r->roots[i][0] && jw__inside(path, r->roots[i])) {
-            if (source_index >= 0) return jw__fail(r, "Ambiguous ROM source: %.160s", path);
+            if (source_index >= 0) return jw__fail(r, JW_UI("Ambiguous ROM source: %.160s"), path);
             source_index = i;
         }
     }
-    if (source_index < 0) return jw__fail(r, "Content is outside the mounted ROM roots: %.160s", reference);
+    if (source_index < 0) return jw__fail(r, JW_UI("Content is outside the mounted ROM roots: %.160s"), reference);
     /* Relative traversal and symlinks cannot escape their original ROM root;
        an explicit absolute reference may name another mounted source. */
     int origin = jw__origin_source(r, candidate);
     if (origin >= 0 && origin != source_index)
-        return jw__fail(r, "Content reference escapes its ROM source: %.160s", reference);
+        return jw__fail(r, JW_UI("Content reference escapes its ROM source: %.160s"), reference);
     const jw_storage_source *source = &r->sources->sources[source_index];
     if (jw__copy(r, file->source_id, sizeof(file->source_id), source->id) < 0 ||
         jw__own(r, file, path, path + strlen(r->roots[source_index]) + 1) < 0) return -1;
     struct stat st;
     if (lstat(file->path, &st)) {
-        if (errno != ENOENT) return jw__fail(r, "Cannot inspect %.160s: %s", file->path, strerror(errno));
+        if (errno != ENOENT) return jw__fail(r, JW_UI("Cannot inspect %.160s: %s"), file->path, strerror(errno));
         file->missing = true;
     } else {
-        if (!S_ISREG(st.st_mode)) return jw__fail(r, "Content is not a regular file: %.160s", file->path);
+        if (!S_ISREG(st.st_mode)) return jw__fail(r, JW_UI("Content is not a regular file: %.160s"), file->path);
         file->size = (uint64_t)st.st_size;
     }
     return 0;
@@ -400,12 +401,12 @@ static int jw__token(jw_content_reader *r, const char **cursor, char *out, size_
     while (*p && (quoted || !isspace((unsigned char)*p))) {
         if (*p == '"') quoted = !quoted;
         else {
-            if (n + 1 >= size) return jw__fail(r, "Descriptor argument is too long");
+            if (n + 1 >= size) return jw__fail(r, JW_UI("Descriptor argument is too long"));
             out[n++] = *p;
         }
         p++;
     }
-    if (quoted) return jw__fail(r, "Descriptor has an unterminated quote");
+    if (quoted) return jw__fail(r, JW_UI("Descriptor has an unterminated quote"));
     out[n] = '\0';
     *cursor = p;
     return 1;
@@ -454,13 +455,13 @@ static int jw__parse_m3u(jw_content_reader *r, char *data, const char *parent, u
         s = jw__trim(s);
         size_t n = strlen(s);
         if (n && s[0] == '"') {
-            if (n < 2 || s[n - 1] != '"') return jw__fail(r, "Playlist has an unterminated quote");
+            if (n < 2 || s[n - 1] != '"') return jw__fail(r, JW_UI("Playlist has an unterminated quote"));
             s[n - 1] = '\0'; s++;
         }
         char *member = jw__archive_delimiter(s);
         if (member) {
             *member++ = '\0';
-            if (!*member) return jw__fail(r, "Playlist has an empty archive member");
+            if (!*member) return jw__fail(r, JW_UI("Playlist has an empty archive member"));
         }
         size_t index;
         if (jw__visit(r, parent, s, depth + 1, &index) < 0) return -1;
@@ -485,37 +486,37 @@ static int jw__parse_tracks(jw_content_reader *r, char *data, const char *parent
             errno = 0;
             long number = strtol(token, &end, 10);
             if (errno || *end || number < 1 || number > 999)
-                return jw__fail(r, "GDI has an invalid track count or number");
+                return jw__fail(r, JW_UI("GDI has an invalid track count or number"));
             if (expected < 0) {
-                if (*jw__trim((char *)cursor)) return jw__fail(r, "GDI track count has extra fields");
+                if (*jw__trim((char *)cursor)) return jw__fail(r, JW_UI("GDI track count has extra fields"));
                 expected = number;
                 continue;
             }
             /* Track, LBA, type, sector size, filename, offset. */
             for (int field = 0; field < 3; field++) {
                 if (jw__token(r, &cursor, token, sizeof(token)) != 1)
-                    return jw__fail(r, "GDI has an incomplete track record");
+                    return jw__fail(r, JW_UI("GDI has an incomplete track record"));
                 errno = 0;
                 (void)strtol(token, &end, 10);
-                if (errno || *end || !token[0]) return jw__fail(r, "GDI has an invalid track field");
+                if (errno || *end || !token[0]) return jw__fail(r, JW_UI("GDI has an invalid track field"));
             }
             if (jw__token(r, &cursor, token, sizeof(token)) != 1 || !token[0])
-                return jw__fail(r, "GDI has no track filename");
+                return jw__fail(r, JW_UI("GDI has no track filename"));
             char offset[64];
             if (jw__token(r, &cursor, offset, sizeof(offset)) != 1)
-                return jw__fail(r, "GDI has no track offset");
+                return jw__fail(r, JW_UI("GDI has no track offset"));
             errno = 0;
             (void)strtol(offset, &end, 10);
             if (errno || *end || !offset[0] || *jw__trim((char *)cursor))
-                return jw__fail(r, "GDI has an invalid track offset");
+                return jw__fail(r, JW_UI("GDI has an invalid track offset"));
         } else {
             if (strcasecmp(token, "FILE") && !(kind == 4 && !strcasecmp(token, "DATAFILE"))) continue;
             if (jw__token(r, &cursor, token, sizeof(token)) != 1 || !token[0])
-                return jw__fail(r, "Disc descriptor has no FILE filename");
+                return jw__fail(r, JW_UI("Disc descriptor has no FILE filename"));
             if (kind == 2) {
                 char type[64];
                 if (jw__token(r, &cursor, type, sizeof(type)) != 1 || !type[0])
-                    return jw__fail(r, "CUE FILE record has no file type");
+                    return jw__fail(r, JW_UI("CUE FILE record has no file type"));
             }
         }
         size_t index;
@@ -523,17 +524,17 @@ static int jw__parse_tracks(jw_content_reader *r, char *data, const char *parent
         references++;
     }
     if (!references || (kind == 3 && (long)references != expected))
-        return jw__fail(r, "Disc descriptor has missing or inconsistent track records");
+        return jw__fail(r, JW_UI("Disc descriptor has missing or inconsistent track records"));
     return 0;
 }
 
 static int jw__parse_cmd(jw_content_reader *r, char *data, const char *parent, unsigned depth) {
     const jw_ra_system *system = r->system;
-    if (!system) return jw__fail(r, "CMD inspection needs the system's file formats");
+    if (!system) return jw__fail(r, JW_UI("CMD inspection needs the system's file formats"));
     const char *cursor = data;
     char token[JW_STORAGE_PATH_MAX];
     if (jw__token(r, &cursor, token, sizeof(token)) != 1 || !token[0])
-        return jw__fail(r, "CMD has no executable name");
+        return jw__fail(r, JW_UI("CMD has no executable name"));
     int got;
     while ((got = jw__token(r, &cursor, token, sizeof(token))) > 0) {
         if (!token[0] || token[0] == '-' || !jw__cmd_file(system, token)) continue;
@@ -568,13 +569,13 @@ static int jw__reserve_file(jw_content_reader *r) {
 
 static int jw__visit(jw_content_reader *r, const char *parent, const char *reference,
                      unsigned depth, size_t *out_index) {
-    if (depth > JW_CONTENT_MAX_DEPTH) return jw__fail(r, "Content descriptors are nested too deeply");
+    if (depth > JW_CONTENT_MAX_DEPTH) return jw__fail(r, JW_UI("Content descriptors are nested too deeply"));
     jw_content_file file = {0};
     if (jw__resolve(r, parent, reference, &file) < 0) { jw__release(&file); return -1; }
     size_t seen = jw__index_find(&r->file_index, r->out->files, jw__file_key, file.path);
     if (seen != SIZE_MAX) {
         if (r->state[seen] == 1) {
-            jw__fail(r, "Content descriptors contain a cycle: %.160s", file.rom_relpath);
+            jw__fail(r, JW_UI("Content descriptors contain a cycle: %.160s"), file.rom_relpath);
             jw__release(&file);
             return -1;
         }
@@ -584,7 +585,7 @@ static int jw__visit(jw_content_reader *r, const char *parent, const char *refer
     }
     if (r->out->file_count == JW_CONTENT_MAX_FILES) {
         jw__release(&file);
-        return jw__fail(r, "Content references too many files");
+        return jw__fail(r, JW_UI("Content references too many files"));
     }
     size_t index = r->out->file_count;
     if (jw__reserve_file(r) < 0 ||
@@ -602,17 +603,17 @@ static int jw__visit(jw_content_reader *r, const char *parent, const char *refer
     int kind = jw__descriptor_kind(file.path);
     if (!file.missing && kind) {
         if (file.size > 4 * 1024 * 1024 || file.size > JW_CONTENT_MAX_BYTES - r->bytes_read)
-            return jw__fail(r, "Content descriptors exceed the inspection size limit: %.160s", file.path);
+            return jw__fail(r, JW_UI("Content descriptors exceed the inspection size limit: %.160s"), file.path);
         FILE *fp = fopen(file.path, "rb");
-        if (!fp) return jw__fail(r, "Cannot read descriptor %.160s: %s", file.path, strerror(errno));
+        if (!fp) return jw__fail(r, JW_UI("Cannot read descriptor %.160s: %s"), file.path, strerror(errno));
         char *data = malloc((size_t)file.size + 1);
         if (!data) { fclose(fp); return jw__fail(r, "Out of memory reading descriptor"); }
         size_t count = fread(data, 1, (size_t)file.size, fp);
         int extra = fgetc(fp);
         bool bad = count != file.size || extra != EOF || ferror(fp);
         if (fclose(fp)) bad = true;
-        if (bad) { free(data); return jw__fail(r, "Could not read complete descriptor: %.160s", file.path); }
-        if (memchr(data, '\0', count)) { free(data); return jw__fail(r, "Descriptor contains binary data: %.160s", file.path); }
+        if (bad) { free(data); return jw__fail(r, JW_UI("Could not read complete descriptor: %.160s"), file.path); }
+        if (memchr(data, '\0', count)) { free(data); return jw__fail(r, JW_UI("Descriptor contains binary data: %.160s"), file.path); }
         data[count] = '\0';
         r->bytes_read += count;
         char *body = data;
@@ -662,17 +663,17 @@ int jw_content_inspect(const jw_storage_source_list *sources,
         if (jw__normalize(&reader, sources->sources[i].roms_path, reader.roots[i],
                           sizeof(reader.roots[i]), 0) < 0) goto done;
         if (stat(reader.roots[i], &reader.root_stats[i]) && errno != ENOENT) {
-            jw__fail(&reader, "Cannot inspect ROM source %s: %s", sources->sources[i].id, strerror(errno));
+            jw__fail(&reader, JW_UI("Cannot inspect ROM source %s: %s"), sources->sources[i].id, strerror(errno));
             goto done;
         }
     }
     if (selected < 0 || !sources->sources[selected].available) {
-        jw__fail(&reader, "ROM source is not mounted: %s", source_id);
+        jw__fail(&reader, JW_UI("ROM source is not mounted: %s"), source_id);
         goto done;
     }
     if (jw__visit(&reader, reader.roots[selected], rom_relpath, 0, &out->launch_file) < 0) goto done;
     if (strcmp(out->files[out->launch_file].source_id, source_id)) {
-        jw__fail(&reader, "Launch file escapes the selected ROM source");
+        jw__fail(&reader, JW_UI("Launch file escapes the selected ROM source"));
         goto done;
     }
     result = 0;

@@ -7,6 +7,7 @@
 #endif
 
 #include "internal/services/supervisor.h"
+#include "internal/i18n/i18n.h"
 
 #include "cJSON.h"
 #include "internal/core/log.h"
@@ -233,14 +234,14 @@ static bool jw__stop_is_deliberate(jw_svc_stop_reason_kind kind) {
 
 const char *jw_svc_effective_state_name(jw_svc_effective_state state) {
     switch (state) {
-    case JW_SVC_STATE_UNAVAILABLE:      return "unavailable";
-    case JW_SVC_STATE_DISABLED:         return "disabled";
-    case JW_SVC_STATE_STOPPED:          return "stopped";
-    case JW_SVC_STATE_STALE_GENERATION: return "stale-generation";
-    case JW_SVC_STATE_STARTING:         return "starting";
-    case JW_SVC_STATE_RUNNING:          return "running";
-    case JW_SVC_STATE_STOPPING:         return "stopping";
-    case JW_SVC_STATE_BACKOFF:          return "backoff";
+    case JW_SVC_STATE_UNAVAILABLE:      return JW_UI("unavailable");
+    case JW_SVC_STATE_DISABLED:         return JW_UI("disabled");
+    case JW_SVC_STATE_STOPPED:          return JW_UI("stopped");
+    case JW_SVC_STATE_STALE_GENERATION: return JW_UI("stale-generation");
+    case JW_SVC_STATE_STARTING:         return JW_UI("starting");
+    case JW_SVC_STATE_RUNNING:          return JW_UI("running");
+    case JW_SVC_STATE_STOPPING:         return JW_UI("stopping");
+    case JW_SVC_STATE_BACKOFF:          return JW_UI("backoff");
     case JW_SVC_STATE_FAILED:           return "failed";
     }
     return "unavailable";
