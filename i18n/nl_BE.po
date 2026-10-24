@@ -37,6 +37,14 @@ msgid "%d K"
 msgstr "%d K"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat app"
+msgstr "%d Pak Rat-app"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat apps"
+msgstr "%d Pak Rat-apps"
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d apps"
 msgstr "%d apps"
 
@@ -2108,6 +2116,10 @@ msgstr "Geen BIOS-bestand geselecteerd"
 msgid "No Pak Rat app selected"
 msgstr "Geen Pak Rat-app geselecteerd"
 
+#: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat apps found"
+msgstr "Geen Pak Rat-apps gevonden"
+
 #: internal/scrape/ss_client.c
 msgid "No ScreenScraper username configured"
 msgstr "Geen ScreenScraper-gebruikersnaam ingesteld"
@@ -3282,7 +3294,7 @@ msgstr "Stabiel"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Stale"
-msgstr "Verouderd"
+msgstr "Ontbreekt"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start"

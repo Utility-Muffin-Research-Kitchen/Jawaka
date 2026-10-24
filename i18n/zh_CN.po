@@ -19,6 +19,14 @@ msgid "%d Hz"
 msgstr "%d Hz"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat app"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat apps"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d apps"
 msgstr "%d 个应用"
 
@@ -1734,6 +1742,10 @@ msgstr "不使用 BIOS 文件"
 #: internal/launcher/bios.c
 msgid "No BIOS file selected"
 msgstr "未选择 BIOS 文件"
+
+#: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat apps found"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "No apps found"
@@ -3805,3 +3817,843 @@ msgstr "无法确认结果。请检查你的游戏库。"
 #: cmd/jawaka-launcher/main.c
 msgid "Not deleted"
 msgstr "未删除"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s changed; refresh failed"
+msgstr "%.120s 已变更，但刷新失败"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s has no compatible install action"
+msgstr "%.120s 没有兼容的安装操作"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s is not installed by Pak Rat"
+msgstr "%.120s 不是由 Pak Rat 安装的"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s is release-managed"
+msgstr "%.120s 由版本管理"
+
+#: cmd/jawaka-launcher/main.c
+msgid ", %d cancelled"
+msgstr "，%d 个已取消"
+
+#: cmd/jawaka-launcher/main.c
+msgid ", %d failed"
+msgstr "，%d 个失败"
+
+#: cmd/jawaka-launcher/main.c
+msgid "App"
+msgstr "应用"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Blocked"
+msgstr "已阻止"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Cancel Scraping"
+msgstr "取消刮削"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Catalog version: %s"
+msgstr "目录版本：%s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Could not inspect retained data for %.100s"
+msgstr "无法检查 %.100s 的残留数据"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Couldn't resume: Hardcore mode doesn't allow loading a save."
+msgstr "无法继续游戏：硬核模式不允许读取存档。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Install cancelled: %.120s"
+msgstr "已取消安装：%.120s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Installing Pak Rat app"
+msgstr "正在安装 Pak Rat 应用"
+
+#: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat app selected"
+msgstr "未选择 Pak Rat 应用"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat action failed"
+msgstr "Pak Rat 操作失败"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat runtime paths unavailable"
+msgstr "Pak Rat 运行时路径不可用"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reinstall cancelled: %.120s"
+msgstr "已取消重新安装：%.120s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reinstalling Pak Rat app"
+msgstr "正在重新安装 Pak Rat 应用"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reset System Overrides"
+msgstr "重置平台设置"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restore"
+msgstr "恢复"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restored %s"
+msgstr "已恢复 %s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restoring Pak Rat app"
+msgstr "正在恢复 Pak Rat 应用"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scanned"
+msgstr "已扫描"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping %s: %d/%d - %.160s"
+msgstr "正在刮削 %s：%d/%d - %.160s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s"
+msgstr "搜索：%s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s  (%d results)"
+msgstr "搜索：%s（%d 个结果）"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s  (1 result)"
+msgstr "搜索：%s（1 个结果）"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: (empty)"
+msgstr "搜索：（空）"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Stale"
+msgstr "待恢复"
+
+#: cmd/jawaka-launcher/main.c
+msgid "System Options: %s"
+msgstr "平台选项：%s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Tools"
+msgstr "工具"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstall cancelled: %.120s"
+msgstr "已取消卸载：%.120s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %.100s and removed retained data"
+msgstr "已卸载 %.100s，并清除了残留数据"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %.100s; retained-data removal failed"
+msgstr "已卸载 %.100s；残留数据清除失败"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalling Pak Rat app"
+msgstr "正在卸载 Pak Rat 应用"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Updated %s"
+msgstr "已更新 %s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Updating Pak Rat app"
+msgstr "正在更新 Pak Rat 应用"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version %.40s is missing from catalog history"
+msgstr "版本 %.40s 不在目录历史中"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version %.40s requires Leaf v%.40s"
+msgstr "版本 %.40s 需要 Leaf v%.40s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|custom"
+msgstr "自定义"
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|default"
+msgstr "默认"
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|game"
+msgstr "游戏"
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|system"
+msgstr "平台"
+
+#: cmd/jawakad/main.c
+msgid "Service supervisor unavailable; update not started"
+msgstr "服务监管器不可用；更新未启动"
+
+#: internal/scrape/scrape_worker.c
+msgid "Artwork saved"
+msgstr "封面已保存"
+
+#: internal/scrape/scrape_worker.c
+msgid "Daily quota exhausted (%d/%d)"
+msgstr "已达每日配额（%d/%d）"
+
+#: internal/scrape/ss_client.c
+msgid "Failed to finalize media file"
+msgstr "无法完成媒体文件保存"
+
+#: internal/scrape/ss_client.c
+msgid "Failed to parse ScreenScraper response"
+msgstr "无法解析 ScreenScraper 响应"
+
+#: internal/scrape/ss_client.c
+msgid "Failed to write media file"
+msgstr "无法写入媒体文件"
+
+#: internal/scrape/ss_client.c
+msgid "Media download returned HTTP %d"
+msgstr "媒体下载返回 HTTP %d"
+
+#: internal/scrape/ss_client.c
+msgid "Media download returned an empty body"
+msgstr "媒体下载返回了空内容"
+
+#: internal/scrape/ss_client.c
+msgid "No ScreenScraper username configured"
+msgstr "未配置 ScreenScraper 用户名"
+
+#: internal/scrape/ss_client.c
+msgid "Scraping is unavailable in this build (no API credentials)"
+msgstr "此版本不支持刮削（没有 API 凭据）"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper rejected the credentials"
+msgstr "ScreenScraper 拒绝了该凭据"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper request failed"
+msgstr "ScreenScraper 请求失败"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper returned HTTP %d"
+msgstr "ScreenScraper 返回 HTTP %d"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper returned an empty response"
+msgstr "ScreenScraper 返回了空响应"
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper validation failed"
+msgstr "ScreenScraper 校验失败"
+
+#: internal/settings/settings.c
+msgid "%s (current)"
+msgstr "%s（当前）"
+
+#: internal/settings/settings.c
+msgid "ADB disable failed"
+msgstr "ADB 禁用失败"
+
+#: internal/settings/settings.c
+msgid "ADB enable failed"
+msgstr "ADB 启用失败"
+
+#: internal/settings/settings.c
+msgid "Already on the latest version"
+msgstr "已是最新版本"
+
+#: internal/settings/settings.c
+msgid "Artwork scrape failed."
+msgstr "封面刮削失败。"
+
+#: internal/settings/settings.c
+msgid "Battery Low"
+msgstr "电量过低"
+
+#: internal/settings/settings.c
+msgid "Beta"
+msgstr "测试版"
+
+#: internal/settings/settings.c
+msgid "Bluetooth done"
+msgstr "蓝牙操作完成"
+
+#: internal/settings/settings.c
+msgid "Bluetooth failed"
+msgstr "蓝牙操作失败"
+
+#: internal/settings/settings.c
+msgid "Cancel %d%%"
+msgstr "取消（%d%%）"
+
+#: internal/settings/settings.c
+msgid "Cannot load releases"
+msgstr "无法加载版本列表"
+
+#: internal/settings/settings.c
+msgid "Check for updates first"
+msgstr "请先检查更新"
+
+#: internal/settings/settings.c
+msgid "Check releases first"
+msgstr "请先获取版本列表"
+
+#: internal/settings/settings.c
+msgid "Checking..."
+msgstr "检查中…"
+
+#: internal/settings/settings.c
+msgid "Close Apps"
+msgstr "请关闭应用"
+
+#: internal/settings/settings.c
+msgid "Compatible releases"
+msgstr "兼容的版本"
+
+#: internal/settings/settings.c
+msgid "Connected: %s"
+msgstr "已连接：%s"
+
+#: internal/settings/settings.c
+msgid "Download First"
+msgstr "请先下载"
+
+#: internal/settings/settings.c
+msgid "Download update first"
+msgstr "请先下载更新"
+
+#: internal/settings/settings.c
+msgid "Downloaded"
+msgstr "已下载"
+
+#: internal/settings/settings.c
+msgid "Finish the current update before switching channels"
+msgstr "请先完成当前更新，再切换通道"
+
+#: internal/settings/settings.c
+msgid "Idle"
+msgstr "空闲"
+
+#: internal/settings/settings.c
+msgid "Incompatible"
+msgstr "不兼容"
+
+#: internal/settings/settings.c
+msgid "Install Again"
+msgstr "请重新安装"
+
+#: internal/settings/settings.c
+msgid "Install in progress"
+msgstr "正在安装"
+
+#: internal/settings/settings.c
+msgid "Install update even though checks are incomplete?"
+msgstr "检查尚未完成，仍要安装更新吗？"
+
+#: internal/settings/settings.c
+msgid "Installing"
+msgstr "安装中"
+
+#: internal/settings/settings.c
+msgid "Last: %s"
+msgstr "上次：%s"
+
+#: internal/settings/settings.c
+msgid "Leaf update"
+msgstr "Leaf 更新"
+
+#: internal/settings/settings.c
+msgid "Loading releases..."
+msgstr "正在加载版本列表…"
+
+#: internal/settings/settings.c
+msgid "No"
+msgstr "否"
+
+#: internal/settings/settings.c
+msgid "No Space"
+msgstr "空间不足"
+
+#: internal/settings/settings.c
+msgid "No games to scrape"
+msgstr "没有可刮削的游戏"
+
+#: internal/settings/settings.c
+msgid "No jobs match this filter."
+msgstr "没有符合此筛选条件的任务。"
+
+#: internal/settings/settings.c
+msgid "No missing artwork"
+msgstr "没有缺失的封面"
+
+#: internal/settings/settings.c
+msgid "No releases available"
+msgstr "没有可用的版本"
+
+#: internal/settings/settings.c
+msgid "No scrape jobs."
+msgstr "暂无刮削任务。"
+
+#: internal/settings/settings.c
+msgid "No update release selected"
+msgstr "未选择要更新的版本"
+
+#: internal/settings/settings.c
+msgid "Not checked"
+msgstr "未检查"
+
+#: internal/settings/settings.c
+msgid "Older"
+msgstr "较早"
+
+#: internal/settings/settings.c
+msgid "Primary Slot"
+msgstr "主卡槽"
+
+#: internal/settings/settings.c
+msgid "Queue full: queued %d of %d"
+msgstr "队列已满：已排队 %d/%d"
+
+#: internal/settings/settings.c
+msgid "Ready Check"
+msgstr "就绪检查"
+
+#: internal/settings/settings.c
+msgid "Releases are still loading"
+msgstr "版本列表仍在加载"
+
+#: internal/settings/settings.c
+msgid "Restart Needed"
+msgstr "需要重启"
+
+#: internal/settings/settings.c
+msgid "Restart canceled"
+msgstr "已取消重启"
+
+#: internal/settings/settings.c
+msgid "Restart failed"
+msgstr "重启失败"
+
+#: internal/settings/settings.c
+msgid "Restart needed"
+msgstr "需要重启"
+
+#: internal/settings/settings.c
+msgid "Restarting"
+msgstr "正在重启"
+
+#: internal/settings/settings.c
+msgid "Saved - could not verify: %s"
+msgstr "已保存，但无法确认：%s"
+
+#: internal/settings/settings.c
+msgid "Saved: %s"
+msgstr "已保存：%s"
+
+#: internal/settings/settings.c
+msgid "Saved: %s (unverified)"
+msgstr "已保存：%s（未验证）"
+
+#: internal/settings/settings.c
+msgid "Scrape was cancelled before completion."
+msgstr "刮削在完成前被取消。"
+
+#: internal/settings/settings.c
+msgid "Selected"
+msgstr "已选中"
+
+#: internal/settings/settings.c
+msgid "Up to date"
+msgstr "已是最新"
+
+#: internal/settings/settings.c
+msgid "Update already downloaded"
+msgstr "更新已下载"
+
+#: internal/settings/settings.c
+msgid "Update check failed"
+msgstr "更新检查失败"
+
+#: internal/settings/settings.c
+msgid "Update download failed"
+msgstr "更新下载失败"
+
+#: internal/settings/settings.c
+msgid "Update install blocked"
+msgstr "更新安装被阻止"
+
+#: internal/settings/settings.c
+msgid "Update install canceled"
+msgstr "已取消更新安装"
+
+#: internal/settings/settings.c
+msgid "Update install failed"
+msgstr "更新安装失败"
+
+#: internal/settings/settings.c
+msgid "Update is not ready to install"
+msgstr "更新尚未准备好安装"
+
+#: internal/settings/settings.c
+msgid "Update ready check failed"
+msgstr "更新就绪检查失败"
+
+#: internal/settings/settings.c
+msgid "Update selection canceled"
+msgstr "已取消更新选择"
+
+#: internal/settings/settings.c
+msgid "Update selection failed"
+msgstr "更新选择失败"
+
+#: internal/settings/settings.c
+msgid "Update service unavailable"
+msgstr "更新服务不可用"
+
+#: internal/settings/settings.c
+msgid "Update status refreshed"
+msgstr "更新状态已刷新"
+
+#: internal/settings/settings.c
+msgid "Verified"
+msgstr "已验证"
+
+#: internal/settings/settings.c
+msgid "Wait for the release check to finish before switching channels"
+msgstr "请等待版本检查完成后再切换通道"
+
+#: internal/settings/settings.c
+msgid "Yes"
+msgstr "是"
+
+#: internal/settings/settings.c
+msgid "daemon unavailable"
+msgstr "守护进程不可用"
+
+#: internal/settings/settings.c
+msgid "update|Missing"
+msgstr "缺失"
+
+#: internal/store/pakrat.c
+msgid "%s is installed on Secondary. Uninstall it there first, then install the service pak on Primary."
+msgstr "%s 已安装在副卡上。请先在副卡上卸载它，再在主卡上安装服务 pak。"
+
+#: internal/store/pakrat.c
+msgid "%s is no longer available in Pak Rat"
+msgstr "%s 已不再在 Pak Rat 中提供"
+
+#: internal/store/pakrat.c
+msgid "Confirmed uninstall could not be completed"
+msgstr "已确认的卸载未能完成"
+
+#: internal/store/pakrat.c
+msgid "Could not build package mutation request"
+msgstr "无法构建包变更请求"
+
+#: internal/store/pakrat.c
+msgid "Could not read the Themes folder"
+msgstr "无法读取 Themes 文件夹"
+
+#: internal/store/pakrat.c
+msgid "Could not read the bundled theme list for %s"
+msgstr "无法读取 %s 的自带主题列表"
+
+#: internal/store/pakrat.c
+msgid "Could not record confirmed uninstall intent"
+msgstr "无法记录已确认的卸载意图"
+
+#: internal/store/pakrat.c
+msgid "Could not reload confirmed uninstall intent"
+msgstr "无法重新读取已确认的卸载意图"
+
+#: internal/store/pakrat.c
+msgid "Installed package metadata does not match ownership"
+msgstr "已安装包的元数据与归属不符"
+
+#: internal/store/pakrat.c
+msgid "Installed package metadata is corrupt or unavailable"
+msgstr "已安装包的元数据已损坏或不可用"
+
+#: internal/store/pakrat.c
+msgid "Installed package source is absent; uninstall will resume when it returns"
+msgstr "已安装包的来源卡不在；该卡恢复后卸载会继续"
+
+#: internal/store/pakrat.c
+msgid "Installed package source is unavailable"
+msgstr "已安装包的来源卡不可用"
+
+#: internal/store/pakrat.c
+msgid "Installed theme is not on the primary card"
+msgstr "已安装的主题不在主卡上"
+
+#: internal/store/pakrat.c
+msgid "Jawaka did not complete package quiescence"
+msgstr "Jawaka 未能完成安装前的准备工作"
+
+#: internal/store/pakrat.c
+msgid "Jawaka refused package mutation"
+msgstr "Jawaka 拒绝对包执行变更"
+
+#: internal/store/pakrat.c
+msgid "Jawaka service supervisor is unavailable"
+msgstr "Jawaka 服务监管器不可用"
+
+#: internal/store/pakrat.c
+msgid "Package was removed, but library refresh failed"
+msgstr "包已移除，但游戏库刷新失败"
+
+#: internal/store/pakrat.c
+msgid "Pak Rat Primary source is unavailable"
+msgstr "Pak Rat 主卡来源不可用"
+
+#: internal/store/pakrat.c
+msgid "The Themes folder already holds %d themes, the most Leaf lists"
+msgstr "Themes 文件夹中已有 %d 个主题，已达 Leaf 可显示的上限"
+
+#: internal/store/pakrat.c
+msgid "The launcher does not list the installed theme %s"
+msgstr "启动器未列出已安装的主题 %s"
+
+#: internal/store/pakrat.c
+msgid "Theme folder %s belongs to a theme Leaf ships"
+msgstr "主题文件夹 %s 属于 Leaf 自带的主题"
+
+#: internal/store/pakrat.c
+msgid "Theme package does not match the catalog entry"
+msgstr "主题包与目录中的条目不符"
+
+#: internal/update/update.c
+msgid "Battery must be at least %d%% or charging"
+msgstr "电量需达到 %d%% 以上，或正在充电"
+
+#: internal/update/update.c
+msgid "Battery status is unknown; confirmation required"
+msgstr "无法获知电池状态；需要确认"
+
+#: internal/update/update.c
+msgid "Cannot download update artifact"
+msgstr "无法下载更新文件"
+
+#: internal/update/update.c
+msgid "Cannot fetch Leaf releases"
+msgstr "无法获取 Leaf 版本列表"
+
+#: internal/update/update.c
+msgid "Cannot prepare update download directory"
+msgstr "无法准备更新下载目录"
+
+#: internal/update/update.c
+msgid "Cannot prepare update state directory"
+msgstr "无法准备更新状态目录"
+
+#: internal/update/update.c
+msgid "Cannot read update manifest"
+msgstr "无法读取更新清单"
+
+#: internal/update/update.c
+msgid "Cannot start update download"
+msgstr "无法启动更新下载"
+
+#: internal/update/update.c
+msgid "Cannot verify update artifact"
+msgstr "无法校验更新文件"
+
+#: internal/update/update.c
+msgid "Cannot write update install request"
+msgstr "无法写入更新安装请求"
+
+#: internal/update/update.c
+msgid "Checking for updates"
+msgstr "正在检查更新"
+
+#: internal/update/update.c
+msgid "Close running games or apps before installing"
+msgstr "安装前请关闭正在运行的游戏或应用"
+
+#: internal/update/update.c
+msgid "Downloaded update SHA-256 does not match metadata"
+msgstr "已下载更新的 SHA-256 与元数据不符"
+
+#: internal/update/update.c
+msgid "Downloaded update artifact is missing"
+msgstr "已下载的更新文件已丢失"
+
+#: internal/update/update.c
+msgid "Downloaded update size does not match metadata"
+msgstr "已下载更新的大小与元数据不符"
+
+#: internal/update/update.c
+msgid "Free space could not be checked; confirmation required"
+msgstr "无法检查可用空间；需要确认"
+
+#: internal/update/update.c
+msgid "Leaf %s downloaded and verified"
+msgstr "Leaf %s 已下载并验证"
+
+#: internal/update/update.c
+msgid "Leaf %s installed"
+msgstr "Leaf %s 已安装"
+
+#: internal/update/update.c
+msgid "Leaf %s is already installed"
+msgstr "Leaf %s 已经是当前版本"
+
+#: internal/update/update.c
+msgid "Leaf %s is available"
+msgstr "Leaf %s 可用"
+
+#: internal/update/update.c
+msgid "Leaf %s is available; installed release is unknown"
+msgstr "Leaf %s 可用；已安装的版本未知"
+
+#: internal/update/update.c
+msgid "Leaf %s selected"
+msgstr "已选择 Leaf %s"
+
+#: internal/update/update.c
+msgid "Leaf releases response was not a JSON array"
+msgstr "Leaf 版本列表的响应不是 JSON 数组"
+
+#: internal/update/update.c
+msgid "Local manifest artifact URL must use HTTPS"
+msgstr "本地清单中的文件 URL 必须使用 HTTPS"
+
+#: internal/update/update.c
+msgid "No downloadable update artifact is selected"
+msgstr "未选择可下载的更新文件"
+
+#: internal/update/update.c
+msgid "No update check has been run"
+msgstr "尚未执行更新检查"
+
+#: internal/update/update.c
+msgid "No update download is active"
+msgstr "没有正在进行的更新下载"
+
+#: internal/update/update.c
+msgid "No update manifest path was provided"
+msgstr "未提供更新清单路径"
+
+#: internal/update/update.c
+msgid "Not enough free space for update download"
+msgstr "可用空间不足，无法下载更新"
+
+#: internal/update/update.c
+msgid "Not enough free space to install update"
+msgstr "可用空间不足，无法安装更新"
+
+#: internal/update/update.c
+msgid "Platform artifact metadata is incomplete"
+msgstr "平台文件元数据不完整"
+
+#: internal/update/update.c
+msgid "Preparing update install"
+msgstr "正在准备安装更新"
+
+#: internal/update/update.c
+msgid "Release %s requires a newer updater"
+msgstr "版本 %s 需要更高版本的更新程序"
+
+#: internal/update/update.c
+msgid "Restart to finish installing"
+msgstr "重启以完成安装"
+
+#: internal/update/update.c
+msgid "Selected update is no longer available"
+msgstr "所选更新已不可用"
+
+#: internal/update/update.c
+msgid "Some releases could not be loaded"
+msgstr "部分版本无法加载"
+
+#: internal/update/update.c
+msgid "Update artifact has not been downloaded"
+msgstr "更新文件尚未下载"
+
+#: internal/update/update.c
+msgid "Update download already in progress"
+msgstr "更新下载已在进行中"
+
+#: internal/update/update.c
+msgid "Update download cancelled"
+msgstr "更新下载已取消"
+
+#: internal/update/update.c
+msgid "Update download is still in progress"
+msgstr "更新下载仍在进行中"
+
+#: internal/update/update.c
+msgid "Update download path is too long"
+msgstr "更新下载路径过长"
+
+#: internal/update/update.c
+msgid "Update download process disappeared"
+msgstr "更新下载进程已消失"
+
+#: internal/update/update.c
+msgid "Update install could not be prepared"
+msgstr "无法准备安装更新"
+
+#: internal/update/update.c
+msgid "Update install is already in progress"
+msgstr "更新安装已在进行中"
+
+#: internal/update/update.c
+msgid "Update install state path is too long"
+msgstr "更新安装状态路径过长"
+
+#: internal/update/update.c
+msgid "Update is ready to install"
+msgstr "更新已准备好安装"
+
+#: internal/update/update.c
+msgid "Update manifest is missing platforms"
+msgstr "更新清单缺少 platforms"
+
+#: internal/update/update.c
+msgid "Update manifest is missing release_id"
+msgstr "更新清单缺少 release_id"
+
+#: internal/update/update.c
+msgid "Update manifest is missing schema"
+msgstr "更新清单缺少 schema"
+
+#: internal/update/update.c
+msgid "Update manifest is not valid JSON"
+msgstr "更新清单不是有效的 JSON"
+
+#: internal/update/update.c
+msgid "Update manifest product is not leaf"
+msgstr "更新清单的 product 不是 leaf"
+
+#: internal/update/update.c
+msgid "Update runner did not write a result file"
+msgstr "更新运行器未写入结果文件"
+
+#: internal/update/update.c
+msgid "Update runner is not available"
+msgstr "更新运行器不可用"
+
+#: internal/update/update.c
+msgid "Update runner process disappeared"
+msgstr "更新运行器进程已消失"
+
+#: internal/update/update.c
+msgid "Update runner result was not valid JSON"
+msgstr "更新运行器的结果不是有效的 JSON"
+
+#: internal/update/update.c
+msgid "Update temporary path is too long"
+msgstr "更新临时路径过长"
+
+#: internal/update/update.c
+msgid "Update was prepared on the other SD slot; install again"
+msgstr "更新已在另一张 SD 卡上准备好；请再次安装"

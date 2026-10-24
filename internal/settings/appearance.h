@@ -34,6 +34,9 @@ int jw_appearance_font_family_index_from_db(const char *db_path);
 /* Japanese glyph forms for the same codepoints (compare 直 or 骨). It covers
    every character the Chinese face does, so Chinese titles still render. */
 #define JW_APPEARANCE_JA_FONT_PATH  "fonts/LeafHanSansJP/LeafHanSansJP-Regular.otf"
+/* Latin and Hangul, which neither CJK face has. Catastrophe sends a string with
+   Hangul here in any language; a Korean UI also uses it as the UI face. */
+#define JW_APPEARANCE_KO_FONT_PATH  "fonts/LeafHanSansKR/LeafHanSansKR-Regular.otf"
 
 const char *jw_appearance_font_path_for_index(int index);
 

@@ -135,3 +135,117 @@ void jw_scrape_identity_build(const char *descriptor_path,
     jw_scrape__add(out, rom_name);
     jw_scrape__add_with_extension(out, effective_title, lookup_extension, true);
 }
+
+static bool jw_scrape__is_digit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+static bool jw_scrape__is_letter(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+/* True when token is a whole version: "v2", "V1_20", "ver1.2", "1.1",
+   "0.123c". Without a "v" it needs a dotted number, so "2" and "2D" are not
+   versions. */
+static bool jw_scrape__is_version(const char *token) {
+    const char *p = token;
+    bool prefixed = false;
+    static const char *const prefixes[] = { "version", "ver", "v" };
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+        size_t len = strlen(prefixes[i]);
+        if (strncasecmp(p, prefixes[i], len) == 0 && jw_scrape__is_digit(p[len])) {
+            p += len;
+            prefixed = true;
+            break;
+        }
+    }
+    size_t groups = 0;
+    while (jw_scrape__is_digit(*p)) {
+        while (jw_scrape__is_digit(*p)) p++;
+        groups++;
+        if ((*p == '.' || *p == '_') && jw_scrape__is_digit(p[1])) {
+            p++;
+        }
+    }
+    if (groups == 0 || (!prefixed && groups < 2)) {
+        return false;
+    }
+    if (jw_scrape__is_letter(*p)) {
+        p++;
+    }
+    return *p == '\0';
+}
+
+static bool jw_scrape__is_separator(char c) {
+    return c == ' ' || c == '_' || c == '-';
+}
+
+void jw_scrape_identity_build_folder(const char *folder_name,
+                                     jw_scrape_identity_candidates *out) {
+    memset(out, 0, sizeof(*out));
+    jw_scrape__add(out, folder_name);
+    if (!folder_name) {
+        return;
+    }
+    size_t len = strlen(folder_name);
+    if (len >= JW_SCRAPE_IDENTITY_NAME_MAX) {
+        return;
+    }
+    /* The version can hold a separator itself ("V1_20"), so try every
+       separator from the right until the rest is one whole version. */
+    for (size_t i = len; i-- > 1;) {
+        if (!jw_scrape__is_separator(folder_name[i]) ||
+            !jw_scrape__is_version(folder_name + i + 1)) {
+            continue;
+        }
+        size_t keep = i;
+        while (keep > 0 && jw_scrape__is_separator(folder_name[keep - 1])) {
+            keep--;
+        }
+        if (keep > 0) {
+            char stripped[JW_SCRAPE_IDENTITY_NAME_MAX];
+            memcpy(stripped, folder_name, keep);
+            stripped[keep] = '\0';
+            jw_scrape__add(out, stripped);
+        }
+        return;
+    }
+}
+
+void jw_scrape_identity_build_filename(const char *rom_name,
+                                       jw_scrape_identity_candidates *out) {
+    memset(out, 0, sizeof(*out));
+    jw_scrape__add(out, rom_name);
+}
+
+bool jw_scrape_identity_add_manual_name(jw_scrape_identity_candidates *names,
+                                        const char *manual_title,
+                                        const char *extension) {
+    if (!names) {
+        return false;
+    }
+    const char *start = manual_title ? manual_title : "";
+    while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') {
+        start++;
+    }
+    size_t length = strlen(start);
+    while (length > 0u && (start[length - 1u] == ' ' || start[length - 1u] == '\t' ||
+                           start[length - 1u] == '\r' || start[length - 1u] == '\n')) {
+        length--;
+    }
+    char title[JW_SCRAPE_IDENTITY_NAME_MAX];
+    if (length == 0u || length >= sizeof(title)) {
+        return false;
+    }
+    memcpy(title, start, length);
+    title[length] = '\0';
+
+    /* The add helpers skip a name equal to one already in the list. */
+    size_t sent = names->count;
+    if (extension && extension[0]) {
+        jw_scrape__add_with_extension(names, title, extension, true);
+    } else {
+        jw_scrape__add(names, title);
+    }
+    return names->count > sent;
+}

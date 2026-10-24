@@ -9,12 +9,40 @@ msgid " Some damaged files were changed."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "%.120s changed; refresh failed"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s has no compatible install action"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s is not installed by Pak Rat"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%.120s is release-managed"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d %s games"
 msgstr "%d %s ゲーム"
 
 #: internal/settings/settings.c
 msgid "%d Hz"
 msgstr "%d Hz"
+
+#: internal/settings/settings.c
+msgid "%d K"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat app"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat apps"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d apps"
@@ -76,6 +104,10 @@ msgstr "%ld時間前"
 msgid "%ldm ago"
 msgstr "%ld分前"
 
+#: internal/settings/settings.c
+msgid "%s (current)"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid ""
 "%s can't be installed because Leaf could not read it as a theme.\n"
@@ -124,11 +156,19 @@ msgstr "%s を先頭"
 msgid "%s is already your theme"
 msgstr ""
 
+#: internal/store/pakrat.c
+msgid "%s is installed on Secondary. Uninstall it there first, then install the service pak on Primary."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid ""
 "%s is installed.\n"
 "\n"
 "Apply it now?"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "%s is no longer available in Pak Rat"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -181,6 +221,22 @@ msgstr ""
 msgid "%s: %d icons over %dpx skipped, %d off-size"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "%s: Not in your library"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%zu files, %s, on your %s."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid ", %d cancelled"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid ", %d failed"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid ", %d not found"
 msgstr "、%d 件未検出"
@@ -188,6 +244,10 @@ msgstr "、%d 件未検出"
 #: internal/settings/settings.c
 msgid "-"
 msgstr "-"
+
+#: cmd/jawaka-launcher/main.c
+msgid "1 file, %s, on your %s."
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "1 min"
@@ -222,12 +282,20 @@ msgid "10 min"
 msgstr "10分"
 
 #: internal/settings/settings.c
+msgid "10 sec"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "100/120 Hz only"
 msgstr "100/120 Hz のみ"
 
 #: internal/settings/settings.c
 msgid "12 Hour"
 msgstr "12時間制"
+
+#: internal/settings/settings.c
+msgid "12 sec"
+msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "120Hz BFI measured 59.249 FPS and further reduces brightness."
@@ -296,6 +364,10 @@ msgstr ""
 msgid "528 MHz"
 msgstr "528 MHz"
 
+#: internal/settings/settings.c
+msgid "6 sec"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "600 MHz"
 msgstr "600 MHz"
@@ -307,6 +379,10 @@ msgstr "700 MHz"
 #: cmd/jawaka-menu/main.c
 msgid "780 MHz"
 msgstr "780 MHz"
+
+#: internal/settings/settings.c
+msgid "8 sec"
+msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "800 MHz"
@@ -361,8 +437,16 @@ msgid "ADB disable canceled"
 msgstr "ADB の無効化をキャンセルしました"
 
 #: internal/settings/settings.c
+msgid "ADB disable failed"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "ADB enable canceled"
 msgstr "ADB の有効化をキャンセルしました"
+
+#: internal/settings/settings.c
+msgid "ADB enable failed"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "ADB unavailable on this platform"
@@ -449,6 +533,10 @@ msgstr "調整"
 msgid "Advanced RetroArch menu"
 msgstr "RetroArch 詳細メニュー"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Affected Files"
+msgstr ""
+
 #: internal/settings/timezones.c
 msgid "Afghanistan"
 msgstr ""
@@ -474,6 +562,14 @@ msgstr "すべてのシステム"
 msgid "All rights reserved, redistribution permitted"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Already missing"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Already on the latest version"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Already used by %s"
 msgstr "%s がすでに使用中"
@@ -488,6 +584,10 @@ msgstr "Amiga"
 
 #: cmd/jawaka-launcher/main.c
 msgid "An image in the theme is not a supported PNG or JPEG, or is too large."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "App"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -525,6 +625,14 @@ msgstr "並べ替え"
 #: internal/settings/settings.c
 msgid "Artwork Priority"
 msgstr "アートワークの優先順位"
+
+#: internal/scrape/scrape_worker.c
+msgid "Artwork saved"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Artwork scrape failed."
+msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Atari 2600"
@@ -626,14 +734,34 @@ msgstr ""
 msgid "Battery"
 msgstr "バッテリー"
 
+#: internal/settings/settings.c
+msgid "Battery Level"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Battery Low"
+msgstr ""
+
 #: internal/platform/platform_common.c
 msgid "Battery Saver"
 msgstr "バッテリー節約"
+
+#: internal/update/update.c
+msgid "Battery must be at least %d%% or charging"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Battery status is unknown; confirmation required"
+msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid ""
 "Best at integer or near-integer scaling; the upstream shader can look uneven "
 "at arbitrary scales."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Beta"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -660,6 +788,10 @@ msgstr "黒フレーム挿入には 100 または 120 Hz が必要です"
 msgid "Black Frame Insertion off"
 msgstr "黒フレーム挿入: オフ"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Blocked"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Bluetooth"
 msgstr "Bluetooth"
@@ -667,6 +799,14 @@ msgstr "Bluetooth"
 #: internal/settings/settings.c
 msgid "Bluetooth Name"
 msgstr "Bluetooth 名"
+
+#: internal/settings/settings.c
+msgid "Bluetooth done"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Bluetooth failed"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Board"
@@ -759,8 +899,52 @@ msgid "Cancel"
 msgstr "キャンセル"
 
 #: internal/settings/settings.c
+msgid "Cancel %d%%"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Cancel Scraping"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Cancelled"
 msgstr "キャンセルしました"
+
+#: internal/update/update.c
+msgid "Cannot download update artifact"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot fetch Leaf releases"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Cannot load releases"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot prepare update download directory"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot prepare update state directory"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot read update manifest"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot start update download"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot verify update artifact"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Cannot write update install request"
+msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Cape Verde"
@@ -774,6 +958,10 @@ msgstr ""
 msgid ""
 "Carries a Leaf local patch until upstream fixes its GLSL ES precision "
 "mismatch."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Catalog version: %s"
 msgstr ""
 
 #: internal/settings/timezones.c
@@ -790,6 +978,26 @@ msgstr "リリースを確認"
 
 #: internal/settings/storage_ui.c
 msgid "Check SD card"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Check for updates first"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Check releases first"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Checking for updates"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Checking your game's files..."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Checking..."
 msgstr ""
 
 #: internal/settings/timezones.c
@@ -816,6 +1024,14 @@ msgstr "完了項目をクリア"
 msgid "Clock"
 msgstr "時計"
 
+#: internal/settings/settings.c
+msgid "Close Apps"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Close running games or apps before installing"
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid "Close the game or app first, then try again."
 msgstr ""
@@ -833,6 +1049,22 @@ msgid "Color Scheme"
 msgstr "配色"
 
 #: internal/settings/settings.c
+msgid "Color Temperature"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Color temperature change failed"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Color temperature unavailable on this platform"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Color temperature unavailable while HDMI is active"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Colors"
 msgstr "色"
 
@@ -848,9 +1080,17 @@ msgstr "コマンド: %s"
 msgid "Commodore 64"
 msgstr "Commodore 64"
 
+#: internal/settings/settings.c
+msgid "Compatible releases"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Confirm"
 msgstr "確認"
+
+#: internal/store/pakrat.c
+msgid "Confirmed uninstall could not be completed"
+msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Connect to power or charge the battery to at least 30 percent and try again."
@@ -864,9 +1104,17 @@ msgstr ""
 msgid "Connected"
 msgstr "接続済み"
 
+#: internal/settings/settings.c
+msgid "Connected: %s"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Continue"
 msgstr "続行"
+
+#: internal/settings/settings.c
+msgid "Continue your game when you turn on your console after saving with the power button. Hold B during startup to skip."
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Controller setup failed. Restart Leaf and try again."
@@ -876,12 +1124,60 @@ msgstr ""
 msgid "Core"
 msgstr "コア"
 
+#: internal/store/pakrat.c
+msgid "Could not build package mutation request"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Could not hide this game"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Could not inspect retained data for %.100s"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Could not read the Themes folder"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Could not read the bundled theme list for %s"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Could not record confirmed uninstall intent"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Could not reload confirmed uninstall intent"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Could not save"
 msgstr "保存できませんでした"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Couldn't confirm the result. Check your library."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Couldn't install %s"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Couldn't load hidden games."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Couldn't resume your game. Open it to try loading your save."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Couldn't resume: Hardcore mode doesn't allow loading a save."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Couldn't unhide your selection."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -912,6 +1208,10 @@ msgstr "十字キー: 値/位置   B: 戻る   A: 次へ"
 msgid "DMC"
 msgstr "DMC"
 
+#: internal/scrape/scrape_worker.c
+msgid "Daily quota exhausted (%d/%d)"
+msgstr ""
+
 #: internal/settings/timezones.c
 msgid "Darwin"
 msgstr ""
@@ -923,6 +1223,34 @@ msgstr "デフォルト"
 #: internal/settings/settings.c
 msgid "Defaults"
 msgstr "デフォルト"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Delete Game"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted %zu files."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted %zu of %zu files."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleted 1 file."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deleting your game. Keep your cards inserted."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deletion finished. Library refresh failed."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Deletion is permanent. This might not delete every file your game uses."
+msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "Designed for handheld content."
@@ -988,6 +1316,30 @@ msgid "Download"
 msgstr "ダウンロード"
 
 #: internal/settings/settings.c
+msgid "Download First"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Download update first"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Downloaded"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Downloaded update SHA-256 does not match metadata"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Downloaded update artifact is missing"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Downloaded update size does not match metadata"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Downloading"
 msgstr "ダウンロード中"
 
@@ -1051,6 +1403,18 @@ msgstr "特大"
 msgid "Failed"
 msgstr "失敗"
 
+#: internal/scrape/ss_client.c
+msgid "Failed to finalize media file"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "Failed to parse ScreenScraper response"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "Failed to write media file"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Famicom Disk System"
 msgstr "ファミコンディスクシステム"
@@ -1068,8 +1432,20 @@ msgid "Fernando de Noronha"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Files"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Filter"
 msgstr "フィルター"
+
+#: internal/settings/settings.c
+msgid "Finish the current update before switching channels"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Fixed"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Flat"
@@ -1091,6 +1467,10 @@ msgstr "フォント"
 msgid "Font Size"
 msgstr "文字サイズ"
 
+#: internal/settings/settings.c
+msgid "Force Off Hold"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Forget"
 msgstr "忘れる"
@@ -1098,6 +1478,10 @@ msgstr "忘れる"
 #: internal/settings/settings.c
 msgid "Fountain"
 msgstr "ファウンテン"
+
+#: internal/update/update.c
+msgid "Free space could not be checked; confirmation required"
+msgstr ""
 
 #: internal/platform/platform_common.c
 msgid "Frontend"
@@ -1160,6 +1544,30 @@ msgid "Game Switcher"
 msgstr "ゲーム切替"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Game hidden. Library refresh failed."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Game hidden. Unhide it in Settings > Games > Hidden Games."
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Game not saved"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Game saved"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Game unhidden"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Game unhidden. Library refresh failed."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Games"
 msgstr "ゲーム"
 
@@ -1220,8 +1628,24 @@ msgid "Hidden"
 msgstr "非表示"
 
 #: internal/settings/settings.c
+msgid "Hidden Games"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Hide Game"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Hold Menu, then press the button.   X: Disable"
 msgstr "メニューを押しながらボタンを押します。   X: 無効化"
+
+#: internal/settings/settings.c
+msgid "Hold power to shut down, then release to save"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hold the power button %d seconds to force off"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Home Layout"
@@ -1263,6 +1687,14 @@ msgstr "IPv6"
 msgid "Icon"
 msgstr "アイコン"
 
+#: internal/settings/settings.c
+msgid "Idle"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Incompatible"
+msgstr ""
+
 #: internal/settings/timezones.c
 msgid "India"
 msgstr "インド"
@@ -1275,14 +1707,30 @@ msgstr "情報"
 msgid "Install"
 msgstr "インストール"
 
+#: internal/settings/settings.c
+msgid "Install Again"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Install cancelled: %.120s"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Install cancelled: %s"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Install in progress"
 msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid ""
 "Install the matching Leaf system update before checking this card on your "
 "device."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Install update even though checks are incomplete?"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1293,8 +1741,36 @@ msgstr ""
 msgid "Installed %s"
 msgstr ""
 
+#: internal/store/pakrat.c
+msgid "Installed package metadata does not match ownership"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Installed package metadata is corrupt or unavailable"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Installed package source is absent; uninstall will resume when it returns"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Installed package source is unavailable"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Installed theme is not on the primary card"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Installed version: %s"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Installing"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Installing Pak Rat app"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1312,6 +1788,18 @@ msgstr ""
 #: internal/settings/timezones.c
 msgid "Japan / Korea"
 msgstr "日本 / 韓国"
+
+#: internal/store/pakrat.c
+msgid "Jawaka did not complete package quiescence"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Jawaka refused package mutation"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Jawaka service supervisor is unavailable"
+msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Keep"
@@ -1376,6 +1864,10 @@ msgid "Last update: %s"
 msgstr "最終更新: %s"
 
 #: internal/settings/settings.c
+msgid "Last: %s"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Later"
 msgstr "後で"
 
@@ -1395,8 +1887,36 @@ msgstr ""
 msgid "Leaf"
 msgstr "Leaf"
 
+#: internal/update/update.c
+msgid "Leaf %s downloaded and verified"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf %s installed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf %s is already installed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf %s is available"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf %s is available; installed release is unknown"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf %s selected"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Leaf can't find %s in the Themes folder"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Leaf checked this card and found file system errors, usually left by a shutdown that didn't finish saving. To keep your files safe, you can't save to this card until it's repaired."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1414,9 +1934,21 @@ msgid "Leaf couldn't identify this card."
 msgstr ""
 
 #: internal/settings/storage_ui.c
+msgid "Leaf couldn't repair this card on your device. Turn off your device, repair the card on a computer, then check it here to save to it again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
 msgid ""
 "Leaf couldn't safely check this card, so nothing was changed. Check the card "
 "on a computer."
+msgstr ""
+
+#: internal/update/update.c
+msgid "Leaf releases response was not a JSON array"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Leaf update"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1477,6 +2009,14 @@ msgstr "ステートを読み込む"
 msgid "Loading preview"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Loading releases..."
+msgstr ""
+
+#: internal/update/update.c
+msgid "Local manifest artifact URL must use HTTPS"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Lock"
 msgstr "ロック"
@@ -1503,6 +2043,14 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Marquesas Islands"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "Media download returned HTTP %d"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "Media download returned an empty body"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1590,6 +2138,10 @@ msgid "Network: %s"
 msgstr "ネットワーク: %s"
 
 #: internal/settings/settings.c
+msgid "Neutral"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Never"
 msgstr ""
 
@@ -1621,6 +2173,10 @@ msgstr "Nintendo DS"
 msgid "Nintendo Entertainment System"
 msgstr "Nintendo Entertainment System"
 
+#: internal/settings/settings.c
+msgid "No"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "No BIOS file"
 msgstr ""
@@ -1630,8 +2186,28 @@ msgid "No BIOS file selected"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat app selected"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat apps found"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "No ScreenScraper username configured"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "No Space"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "No apps found"
 msgstr "アプリが見つかりません"
+
+#: internal/update/update.c
+msgid "No downloadable update artifact is selected"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "No favorites yet — open a game and press Y to add one"
@@ -1649,9 +2225,25 @@ msgstr "利用できるゲームがありません"
 msgid "No games found"
 msgstr "ゲームが見つかりません"
 
+#: internal/settings/settings.c
+msgid "No games to scrape"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "No hidden games."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "No jobs match this filter."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "No lock"
 msgstr "ロックなし"
+
+#: internal/settings/settings.c
+msgid "No missing artwork"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "No playtime recorded yet."
@@ -1664,6 +2256,10 @@ msgstr ""
 #: cmd/jawaka-launcher/main.c
 msgid "No recent games yet — play something and it'll show up here"
 msgstr "最近のゲームはまだありません。ゲームをプレイするとここに表示されます"
+
+#: internal/settings/settings.c
+msgid "No releases available"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "No results"
@@ -1689,6 +2285,10 @@ msgstr "読み込めるセーブがありません"
 msgid "No saves yet"
 msgstr "セーブはまだありません"
 
+#: internal/settings/settings.c
+msgid "No scrape jobs."
+msgstr ""
+
 #: internal/retroarch/shader_strings.c
 msgid "No screen curvature; use CRT Curved for that."
 msgstr ""
@@ -1705,6 +2305,22 @@ msgstr "ステートなし"
 msgid "No themes in Pak Rat yet"
 msgstr ""
 
+#: internal/update/update.c
+msgid "No update check has been run"
+msgstr ""
+
+#: internal/update/update.c
+msgid "No update download is active"
+msgstr ""
+
+#: internal/update/update.c
+msgid "No update manifest path was provided"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "No update release selected"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "None"
 msgstr "なし"
@@ -1714,8 +2330,24 @@ msgid "Not Found"
 msgstr "見つかりません"
 
 #: internal/settings/settings.c
+msgid "Not checked"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Not connected"
 msgstr "未接続"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Not deleted"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Not enough free space for update download"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Not enough free space to install update"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Not enough memory to open the BIOS picker"
@@ -1754,6 +2386,10 @@ msgid "Offsets are standard time; regions adjust for DST"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Older"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "On"
 msgstr "オン"
 
@@ -1785,6 +2421,10 @@ msgstr "PIN"
 msgid "PINs did not match - try again"
 msgstr "PIN が一致しません。もう一度試してください"
 
+#: internal/store/pakrat.c
+msgid "Package was removed, but library refresh failed"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Paired"
 msgstr "ペアリング済み"
@@ -1793,12 +2433,28 @@ msgstr "ペアリング済み"
 msgid "Pak Rat"
 msgstr "Pak Rat"
 
+#: internal/store/pakrat.c
+msgid "Pak Rat Primary source is unavailable"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat Themes"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat action failed"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat runtime paths unavailable"
+msgstr ""
+
 #: internal/settings/timezones.c
 msgid "Pakistan"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Panel only"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1835,6 +2491,10 @@ msgstr "更新を選択"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pick another Saturn BIOS from the options menu."
+msgstr ""
+
+#: internal/update/update.c
+msgid "Platform artifact metadata is incomplete"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1881,9 +2541,25 @@ msgstr "電源"
 msgid "Power Off"
 msgstr "電源オフ"
 
+#: internal/settings/settings.c
+msgid "Power off will not save your game"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Powering off"
+msgstr ""
+
 #: internal/retroarch/shader_strings.c
 msgid ""
 "Prefer this over Sharp Pixels when non-integer scrolling visibly shimmers."
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Preparing to save"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Preparing update install"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1898,9 +2574,21 @@ msgstr ""
 msgid "Previous page"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Primary Slot"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Profile"
 msgstr "プロファイル"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Progress stored inside a writable game image is erased with that image."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Queue full: queued %d of %d"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Queued"
@@ -1928,6 +2616,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reading folder..."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Ready Check"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1988,12 +2680,28 @@ msgid "Reinstall"
 msgstr "再インストール"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Reinstall cancelled: %.120s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Reinstalled %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reinstalling Pak Rat app"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Release"
 msgstr "リリース"
+
+#: internal/update/update.c
+msgid "Release %s requires a newer updater"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Release the power button"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Release-managed path"
@@ -2003,12 +2711,20 @@ msgstr "リリース管理パス"
 msgid "Releases"
 msgstr "リリース"
 
+#: internal/settings/settings.c
+msgid "Releases are still loading"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Remove"
 msgstr "削除"
 
 #: cmd/jawaka-menu/main.c
 msgid "Remove the saved preset at the selected scope and turn shaders off."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Removed"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2029,6 +2745,10 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Repair isn't installed on this device."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Repair on battery"
 msgstr ""
 
 #: internal/settings/storage_ui.c
@@ -2067,6 +2787,10 @@ msgstr "上書きをリセット"
 msgid "Reset RetroArch Config"
 msgstr "RetroArch 設定をリセット"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Reset System Overrides"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Reset shared RetroArch config to packaged defaults?"
 msgstr "共有 RetroArch 設定をパッケージの初期値に戻しますか？"
@@ -2074,6 +2798,10 @@ msgstr "共有 RetroArch 設定をパッケージの初期値に戻しますか�
 #: internal/settings/settings.c
 msgid "Restart"
 msgstr "再起動"
+
+#: internal/settings/settings.c
+msgid "Restart Needed"
+msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Restart and check"
@@ -2084,8 +2812,28 @@ msgid "Restart and repair"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Restart canceled"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Restart failed"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Restart needed"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Restart now to finish installing?"
 msgstr "インストールを完了するため今すぐ再起動しますか？"
+
+#: internal/update/update.c
+msgid "Restart to finish installing"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Restarting"
+msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Restarting to check your SD card"
@@ -2096,8 +2844,28 @@ msgid "Restarting to repair your SD card"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Restore"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restored %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restoring Pak Rat app"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Resume"
 msgstr "再開"
+
+#: internal/settings/settings.c
+msgid "Resume Game on Boot"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Resuming your game"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "RetroAchievements"
@@ -2190,6 +2958,10 @@ msgstr ""
 msgid "Save & Quit"
 msgstr "保存して終了"
 
+#: internal/settings/settings.c
+msgid "Save Before Power Off"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Save State"
 msgstr "ステートを保存"
@@ -2207,12 +2979,28 @@ msgid "Save your edits in RetroArch before you leave."
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Saved - could not verify: %s"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Saved: %s"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Saved: %s (unverified)"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Saved; active after restart"
 msgstr "保存しました。再起動後に有効になります"
 
 #: internal/settings/settings.c
 msgid "Saving"
 msgstr "保存中"
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Saving game"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scan"
@@ -2234,6 +3022,10 @@ msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "Scanlines reduce brightness, especially when combined with BFI."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scanned"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2276,8 +3068,20 @@ msgstr "取得結果"
 msgid "Scrape finished: %d found"
 msgstr "取得完了: %d 件検出"
 
+#: internal/settings/settings.c
+msgid "Scrape was cancelled before completion."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s · %d/%d"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping %s: %d/%d - %.160s"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "Scraping is unavailable in this build (no API credentials)"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2286,6 +3090,26 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping: %d/%d"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper rejected the credentials"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper request failed"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper returned HTTP %d"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper returned an empty response"
+msgstr ""
+
+#: internal/scrape/ss_client.c
+msgid "ScreenScraper validation failed"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2311,6 +3135,22 @@ msgstr "検索"
 #: cmd/jawaka-launcher/main.c
 msgid "Search This System"
 msgstr "このシステムを検索"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s  (%d results)"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: %s  (1 result)"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search: (empty)"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Searching"
@@ -2352,6 +3192,10 @@ msgstr "Sega Saturn"
 msgid "Select"
 msgstr "選択"
 
+#: internal/settings/settings.c
+msgid "Selected"
+msgstr ""
+
 #: internal/launcher/bios.c
 msgid "Selected BIOS card is not mounted"
 msgstr ""
@@ -2384,9 +3228,17 @@ msgstr ""
 msgid "Selected BIOS path is not usable"
 msgstr ""
 
+#: internal/update/update.c
+msgid "Selected update is no longer available"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Selection"
 msgstr "選択項目"
+
+#: cmd/jawakad/main.c
+msgid "Service supervisor unavailable; update not started"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Services"
@@ -2495,6 +3347,10 @@ msgstr "ソフト"
 msgid "Solomon Islands"
 msgstr ""
 
+#: internal/update/update.c
+msgid "Some releases could not be loaded"
+msgstr ""
+
 #: internal/platform/platform_common.c
 msgid "Speaker"
 msgstr "スピーカー"
@@ -2518,6 +3374,10 @@ msgstr "正方形"
 #: internal/settings/settings.c
 msgid "Stable"
 msgstr "安定版"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Stale"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start"
@@ -2587,6 +3447,10 @@ msgstr "スタイル"
 msgid "Subtle Scanlines"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Summary"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Super Famicom"
 msgstr "スーパーファミコン"
@@ -2647,6 +3511,10 @@ msgid "System Icons"
 msgstr "システムアイコン"
 
 #: cmd/jawaka-launcher/main.c
+msgid "System Options: %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "System Update"
 msgstr "システム更新"
 
@@ -2704,6 +3572,10 @@ msgid ""
 "to install this theme."
 msgstr ""
 
+#: internal/store/pakrat.c
+msgid "The Themes folder already holds %d themes, the most Leaf lists"
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid ""
 "The card passed the check but couldn't be made writable. Restart your "
@@ -2720,6 +3592,14 @@ msgstr ""
 msgid ""
 "The last check or repair did not finish. Restart your device to check the "
 "card before saving is enabled again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "The last check took too long and stopped. Restart your device to check the card again before saving is enabled."
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "The launcher does not list the installed theme %s"
 msgstr ""
 
 #: internal/settings/storage_ui.c
@@ -2825,6 +3705,14 @@ msgstr ""
 msgid "Theme colors"
 msgstr "テーマの色"
 
+#: internal/store/pakrat.c
+msgid "Theme folder %s belongs to a theme Leaf ships"
+msgstr ""
+
+#: internal/store/pakrat.c
+msgid "Theme package does not match the catalog entry"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Themes"
 msgstr ""
@@ -2900,6 +3788,10 @@ msgstr ""
 msgid "Tonga"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Tools"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Total"
 msgstr "合計"
@@ -2918,6 +3810,10 @@ msgstr "TurboGrafx-CD"
 
 #: internal/settings/storage_ui.c
 msgid "Turn off your device and check the card on a computer."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Turn on Save Before Power Off first"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2969,6 +3865,10 @@ msgid "Unavailable"
 msgstr "利用不可"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Unhide"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Uninstall"
 msgstr "アンインストール"
 
@@ -2988,7 +3888,19 @@ msgid ""
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Uninstall cancelled: %.120s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Uninstall cancelled: %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %.100s and removed retained data"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %.100s; retained-data removal failed"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2997,6 +3909,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalled %s. Switched to no theme."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalling Pak Rat app"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3031,6 +3947,10 @@ msgstr "未対応"
 msgid "Up one level"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Up to date"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Up/Down"
 msgstr "上下"
@@ -3044,11 +3964,151 @@ msgid "Update Channel"
 msgstr "更新チャンネル"
 
 #: internal/settings/settings.c
+msgid "Update already downloaded"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update artifact has not been downloaded"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update check failed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update download already in progress"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update download cancelled"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update download failed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update download is still in progress"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update download path is too long"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update download process disappeared"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update install blocked"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update install canceled"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update install could not be prepared"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update install failed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update install is already in progress"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update install state path is too long"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update is not ready to install"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update is ready to install"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update manifest is missing platforms"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update manifest is missing release_id"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update manifest is missing schema"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update manifest is not valid JSON"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update manifest product is not leaf"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update ready check failed"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update runner did not write a result file"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update runner is not available"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update runner process disappeared"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update runner result was not valid JSON"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update selection canceled"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update selection failed"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update service unavailable"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Update status refreshed"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Update status unavailable"
 msgstr "更新状態を取得できません"
 
+#: internal/update/update.c
+msgid "Update temporary path is too long"
+msgstr ""
+
+#: internal/update/update.c
+msgid "Update was prepared on the other SD slot; install again"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Updated %s"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Updated %s to version %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Updating Pak Rat app"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3087,6 +4147,18 @@ msgstr ""
 msgid "Vectrex"
 msgstr "Vectrex"
 
+#: internal/settings/settings.c
+msgid "Verified"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version %.40s is missing from catalog history"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version %.40s requires Leaf v%.40s"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Version %s needs Leaf %s or newer."
 msgstr ""
@@ -3106,6 +4178,10 @@ msgstr "表示"
 #: internal/settings/settings.c
 msgid "Volume"
 msgstr "音量"
+
+#: internal/settings/settings.c
+msgid "Wait for the release check to finish before switching channels"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Weak"
@@ -3134,6 +4210,10 @@ msgstr "X: 離す   十字キー: 移動"
 #: cmd/jawaka-launcher/main.c
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
 msgstr "X: つかむ   Y: 削除   B: 戻る   A: 次へ"
+
+#: internal/settings/settings.c
+msgid "Yes"
+msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "You can save files again."
@@ -3211,6 +4291,10 @@ msgid ""
 msgstr ""
 
 #: internal/settings/storage_ui.c
+msgid "Your device will restart to check and repair this card on battery power. If the battery drops below 30 percent before repair starts, it won't run. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first."
+msgstr ""
+
+#: internal/settings/storage_ui.c
 msgid ""
 "Your device will restart to check and repair this card. Damaged files may be "
 "shortened, renamed, or recovered under new names. Back up important files on "
@@ -3230,13 +4314,29 @@ msgid ""
 "computer instead."
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Your game will not resume at startup"
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid "Your last shutdown didn't finish saving."
 msgstr ""
 
 #: internal/settings/storage_ui.c
+msgid "Your library is read-only. You can't save changes. Open Settings > System > SD Cards to check your card."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Your library is read-only. Your selection is still hidden."
+msgstr ""
+
+#: internal/settings/storage_ui.c
 msgid ""
 "Your other SD card is still read-only, so your library can't update yet."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Your save files, states and artwork are kept."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3265,6 +4365,10 @@ msgstr "明るさの変更に失敗しました"
 #: internal/settings/settings.c
 msgid "count|Systems"
 msgstr "システム数"
+
+#: internal/settings/settings.c
+msgid "daemon unavailable"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "daily quota exceeded"
@@ -3322,6 +4426,22 @@ msgstr "リフレッシュレートの変更に失敗しました"
 msgid "refresh rate unavailable on this platform"
 msgstr "このプラットフォームではリフレッシュレートを利用できません"
 
+#: cmd/jawaka-launcher/main.c
+msgid "scope|custom"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|default"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|game"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "scope|system"
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid "second SD card"
 msgstr ""
@@ -3345,6 +4465,10 @@ msgstr "未保存 · %d / %d"
 #: cmd/jawaka-menu/main.c
 msgid "unsaved · %s · %d of %d"
 msgstr "未保存 · %s · %d / %d"
+
+#: internal/settings/settings.c
+msgid "update|Missing"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "volume failed"

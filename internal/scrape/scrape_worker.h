@@ -29,7 +29,7 @@ typedef struct {
     int  cancelled;
     int  queued;              /* still waiting (excludes in-flight) */
     int  active;              /* in-flight worker slots */
-    char current_name[256];   /* rom filename being processed ("" when idle) */
+    char current_name[256];   /* title of the game being processed ("" when idle) */
     char current_system[64];
     char message[256];        /* last error / quota message ("" when none) */
 } jw_scrape_status_info;

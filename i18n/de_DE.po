@@ -4,8 +4,9 @@
 # throughout, menu items in the infinitive, progress messages that read
 # as commands rewritten, and terms aligned with RetroArch's German menus
 # (Core, Savestate, Spielstand, Voreinstellung, Scanlinien, Akku).
-# The 209 strings added with Jawaka#244 (2026-10-16) are drafts by Claude,
-# awaiting review in Jawaka#242.
+# The 209 strings added with Jawaka#244 (2026-10-16) and the three Pak Rat
+# app-count strings from Jawaka#257 are drafts by Claude, awaiting review
+# in Jawaka#242.
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
@@ -40,6 +41,14 @@ msgstr "%d Hz"
 #: internal/settings/settings.c
 msgid "%d K"
 msgstr "%d K"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat app"
+msgstr "%d Pak-Rat-App"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat apps"
+msgstr "%d Pak-Rat-Apps"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d apps"
@@ -621,7 +630,7 @@ msgstr "Audioausgabe"
 msgid "Author: %s"
 msgstr "Autor: %s"
 
-#: cmd/jawaka-launcher/main.c
+#: internal/platform/platform_common.c
 msgid "Auto"
 msgstr "Auto"
 
@@ -1437,7 +1446,7 @@ msgstr "GBC-Farbe"
 msgid "GPU"
 msgstr "GPU"
 
-#: cmd/jawaka-launcher/main.c
+#: cmd/jawaka-menu/main.c
 msgid "Game"
 msgstr "Spiel"
 
@@ -2113,6 +2122,10 @@ msgstr "Keine BIOS-Datei ausgewählt"
 msgid "No Pak Rat app selected"
 msgstr "Keine Pak-Rat-App ausgewählt"
 
+#: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat apps found"
+msgstr "Keine Pak-Rat-Apps gefunden"
+
 #: internal/scrape/ss_client.c
 msgid "No ScreenScraper username configured"
 msgstr "Kein ScreenScraper-Benutzername eingerichtet"
@@ -2385,7 +2398,7 @@ msgstr "Pfad: Apps/%s"
 msgid "Percent"
 msgstr "Prozent"
 
-#: cmd/jawaka-launcher/main.c
+#: cmd/jawaka-menu/main.c
 msgid "Performance"
 msgstr "Leistung"
 
@@ -2961,7 +2974,7 @@ msgstr "Bereich"
 msgid "Scrape"
 msgstr "Abrufen"
 
-#: cmd/jawaka-launcher/main.c
+#: internal/settings/settings.c
 msgid "Scrape Artwork"
 msgstr "Grafiken abrufen"
 
@@ -3321,7 +3334,7 @@ msgstr "Statusleiste"
 msgid "Status: %s"
 msgstr "Status: %s"
 
-#: cmd/jawaka-launcher/main.c
+#: internal/settings/settings.c
 msgid "Stop"
 msgstr "Stoppen"
 

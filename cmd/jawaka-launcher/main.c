@@ -2202,8 +2202,6 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
         if (s.current_name[0]) {
             snprintf(item, sizeof(item), "%.*s",
                      (int)sizeof(item) - 1, s.current_name);
-            char *dot = strrchr(item, '.');
-            if (dot && dot != item) *dot = '\0';
         }
         if (paused_storage) {
             snprintf(state->status, sizeof(state->status),
@@ -2483,7 +2481,7 @@ static void jw__pakrat_build_view(jw_launcher_state *state) {
                  count == 1 ? T("%d theme") : T("%d themes"), count);
     } else {
         snprintf(state->pakrat_message, sizeof(state->pakrat_message),
-                 "%d Pak Rat app%s", count, count == 1 ? "" : "s");
+                 count == 1 ? T("%d Pak Rat app") : T("%d Pak Rat apps"), count);
     }
 }
 
@@ -3513,7 +3511,7 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
                 ? (state->pakrat_load_rc == 0 ? T("No themes in Pak Rat yet")
                                               : state->pakrat_message)
                 : (state->pakrat_message[0] ? state->pakrat_message
-                                            : "No Pak Rat apps found");
+                                            : T("No Pak Rat apps found"));
             cat_draw_text_wrapped(body, msg,
                 list.x + CAT_S(8), list.y + CAT_S(8),
                 list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
