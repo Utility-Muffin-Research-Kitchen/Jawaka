@@ -3323,7 +3323,7 @@ msgstr "Стабильный"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Stale"
-msgstr "Устарело"
+msgstr "Отсутствует"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start"
