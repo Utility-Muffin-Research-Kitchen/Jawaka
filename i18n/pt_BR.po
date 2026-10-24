@@ -3,8 +3,9 @@
 # Changed on import: the eight context keys (count|, platform|, scope|,
 # status|, update|) had the key copied in place of a translation and now
 # carry Portuguese words drafted by Claude; an added leading space is gone;
-# strings left in English are empty, so Leaf shows them in English and the
-# coverage badge counts them as untranslated.
+# strings left fully or partly in English are empty, so Leaf shows them in
+# English and the coverage badge counts them as untranslated; and "Exit
+# 5-Game Mode?" uses the translator's own "Modo 5 Jogos".
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
@@ -934,7 +935,7 @@ msgstr "Buscar por atualizações primeiro"
 
 #: internal/settings/settings.c
 msgid "Check releases first"
-msgstr "Verificar lançamentos first"
+msgstr ""
 
 #: internal/update/update.c
 msgid "Checking for updates"
@@ -1334,7 +1335,7 @@ msgstr "Eucla"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Exit 5-Game Mode?"
-msgstr "Sair do 5-Game Mode?"
+msgstr "Sair do Modo 5 Jogos?"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Exit to Stock"
@@ -3130,7 +3131,7 @@ msgstr "Arquivo de BIOS não pode ser lido"
 
 #: internal/launcher/bios.c
 msgid "Selected BIOS file is missing"
-msgstr "Arquivo de BIOS is missing"
+msgstr ""
 
 #: internal/launcher/bios.c
 msgid "Selected BIOS file is not a 512 KiB image"
@@ -3182,7 +3183,7 @@ msgstr "Sombreador"
 
 #: cmd/jawaka-menu/main.c
 msgid "Shader failed and the previous shader could not be restored. Reopen the game."
-msgstr "Sombreador failed and the previous shader could not be restored. Reopen the game."
+msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Shader is active for this session, but could not be saved for %s."
@@ -4178,7 +4179,7 @@ msgstr "Seu dispositivo irá reiniciar para verificar corrigir o cartão. Arquiv
 
 #: internal/settings/storage_ui.c
 msgid "Your device will restart to check this card. If the check passes, you can save files again."
-msgstr "Seu dispositivo irá reiniciar para verificar this card. If the check passes, you can save files again."
+msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Your device's internal storage can't record the repair. Check the card on a computer instead."
