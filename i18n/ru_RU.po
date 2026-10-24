@@ -60,11 +60,11 @@ msgstr "%d K"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d Pak Rat app"
-msgstr ""
+msgstr "Приложение Pak Rat: %d"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d Pak Rat apps"
-msgstr ""
+msgstr "Приложения Pak Rat: %d"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d apps"
@@ -2145,7 +2145,7 @@ msgstr "Приложение Pak Rat не выбрано"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No Pak Rat apps found"
-msgstr ""
+msgstr "Приложения Pak Rat не найдены"
 
 #: internal/scrape/ss_client.c
 msgid "No ScreenScraper username configured"
@@ -3323,7 +3323,7 @@ msgstr "Стабильный"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Stale"
-msgstr "Устарело"
+msgstr "Отсутствует"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start"
