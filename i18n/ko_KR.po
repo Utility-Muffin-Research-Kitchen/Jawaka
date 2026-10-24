@@ -2,8 +2,8 @@
 # The submitted file came through a .tsv conversion: the twelve two-paragraph
 # strings had their line breaks escaped twice and are restored, and
 # " Some damaged files were changed." keeps its leading space. The 209
-# strings added with Jawaka#244 are drafts by Claude, awaiting review in
-# Jawaka#254.
+# strings added with Jawaka#244 and the three Pak Rat app-count strings from
+# Jawaka#257 are drafts by Claude, awaiting review in Jawaka#254.
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
@@ -41,11 +41,11 @@ msgstr "%d K"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d Pak Rat app"
-msgstr ""
+msgstr "%d개 Pak Rat 앱"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d Pak Rat apps"
-msgstr ""
+msgstr "%d개 Pak Rat 앱"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d apps"
@@ -2121,7 +2121,7 @@ msgstr "선택된 Pak Rat 앱이 없습니다"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No Pak Rat apps found"
-msgstr ""
+msgstr "Pak Rat 앱을 찾을 수 없음"
 
 #: internal/scrape/ss_client.c
 msgid "No ScreenScraper username configured"
