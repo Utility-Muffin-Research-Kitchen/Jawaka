@@ -37,6 +37,14 @@ msgid "%d K"
 msgstr "%d K"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat app"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat apps"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d apps"
 msgstr "%d ứng dụng"
 
@@ -2106,6 +2114,10 @@ msgstr "Chưa chọn tệp BIOS"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No Pak Rat app selected"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat apps found"
 msgstr ""
 
 #: internal/scrape/ss_client.c
