@@ -92,6 +92,7 @@ static const jw__platform_entry jw__platforms[] = {
     {"PICO8",              234},  /* == PICO / P8 */
     {"MAME2003",           75},   /* == MAME / ARCADE */
     {"MAME2010",           75},
+    {"POKEMINI",           211},  /* == PKM  */
 
     /* Systems with no prior table entry; ids verified against ScreenScraper's
        systemesListe (PC Engine CD-Rom 114, Bandai WonderSwan 45 / Color 46,

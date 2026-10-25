@@ -289,6 +289,17 @@ def gw(a):
     return a
 
 
+def pokemini(a):
+    a.ground()
+    a.rr((32, 16, 96, 112), 16, "body")
+    a.dot(64, 47, 27, "dark")
+    a.rr((50, 36, 78, 57), 1, "screen")
+    a.cross(46, 90, 8, 5.5, "accent")
+    a.dot(64, 88, 3, "trim")
+    a.dot(76, 96, 5, "accent"); a.dot(86, 86, 5, "accent")
+    return a
+
+
 # ── Computers and catch-alls ────────────────────────────────────────────────
 
 def keyboard(a):
@@ -349,6 +360,7 @@ PAL = {
     "nds":      (nds,      dict(GRAY, bg="#3C4048", panel="#474C55", body="#CFD1CB", trim="#969993", accent="#B0343A", screen="#8FA8B8", dark="#2B2F33")),
     "psp":      (psp,      dict(GRAY, bg="#66707E", panel="#7C8794", body="#2B2F33", trim="#B9BBB5", accent="#C9CBC4", screen="#7FA8C4", dark="#1A1D21")),
     "gw":       (gw,       dict(GRAY, bg="#45403A", panel="#514B44", body="#B9B7AE", accent="#B0343A", screen="#9AA89A", dark="#2B2F33")),
+    "pokemini": (pokemini, dict(GRAY, bg="#2E3E52", panel="#384A60", body="#B7C7D4", trim="#8A9AA8", accent="#2F6FB8", screen="#A8B8A0", dark="#24272C")),
     "keyboard": (keyboard, dict(GRAY, bg="#38424A", panel="#434E57", body="#C4C1B6", dark="#3A3D42")),
     "generic":  (generic,  dict(GRAY, bg="#3A4440", panel="#45504B", body="#C4C6C0", accent="#5D9E76")),
     "apps":     (apps,     dict(GRAY, bg="#26301F", panel="#2F3B26", body="#C9D6BE", accent="#7FB069")),
@@ -376,6 +388,7 @@ CODES = {
     "nds": ["NDS"],
     "psp": ["PSP"],
     "gw": ["GW"],
+    "pokemini": ["POKEMINI"],
     "keyboard": ["DOS", "PC98"],
     "generic": ["EASYRPG", "PICO8", "PORTS"],
     "apps": ["_apps"],

@@ -31,6 +31,11 @@ They add a white canvas and contain no image-model output.
 - **VB:** Nintendo's Virtual Boy logo.
   [Commons source](https://commons.wikimedia.org/wiki/File:Virtualboy_logo.svg),
   designated public domain as simple text/shapes.
+- **POKEMINI:** Nintendo's Pokémon mini logo, vectorized in Inkscape by Twili
+  on the German Wikipedia. [Commons source](https://commons.wikimedia.org/wiki/File:Pokemon_mini_logo.svg),
+  designated PD-textlogo, with a trademark notice. The card keeps the
+  complete logo, including its black band, so the white "Pokémon" stays
+  legible on the white card. Added from umrk-assets revision `4de2fd167b5a2131ae76df0b4ae11860422e7590`.
 - **VECTREX:** Smith Engineering's Vectrex logo.
   [Commons source](https://commons.wikimedia.org/wiki/File:Vectrex_vector_logo.svg).
   The source page designates it public domain, citing John Ross's release of
@@ -49,7 +54,7 @@ They add a white canvas and contain no image-model output.
   Catastrophe's `res/fonts/Lexend/Lexend-Bold.ttf`; the paths are embedded, so
   consumers need no font installation.
 
-Source page URLs, downloaded SVG URLs and revision IDs for the five additional
+Source page URLs, downloaded SVG URLs and revision IDs for the six additional
 Commons vectors are retained in [the included source records](commons.json). Brand names and marks
 remain their respective owners' trademarks; these credits do not imply endorsement.
 
@@ -63,6 +68,7 @@ remain their respective owners' trademarks; these credits do not imply endorseme
 - `GW.png`: `61b321ef0ead901629796e14ee21cb7b3232c7314c5b87307a8597d2ca570204`
 - `PC98.png`: `1b7c34ddff1e8232fe17e371de611b010ae6fa85f81f5dc55311767154054b35`
 - `PICO8.png`: `17278410a9f6ebf8e68ec3b0c82dedaee3ef1ea38c7f087dd849e117b9dde7b5`
+- `POKEMINI.png`: `1b0e59314c484cc42c3a91e5bda7d2dd64cb5629ae6316024cfdf2741672eabc`
 - `PORTS.png`: `64b7d5b0923c5768a931643b91f8c5c9b66a75493834bd4701ec7a034aaaf151`
 - `SCUMMVM.png`: `f68d07fa5f0ed6f125e4609da243c3af1232f0c296ca02d43ae84eaf8d55a248`
 - `VB.png`: `333df29369b80f3033529b4fc4422535397450537a4e184036b6258f72525a94`

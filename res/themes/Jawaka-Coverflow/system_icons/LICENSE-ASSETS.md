@@ -1,7 +1,7 @@
 # Asset attribution
 
 The console icons in this directory (`system_icons/`, excluding
-`AMIGA.png`, `ATOMISWAVE.png`, `NAOMI.png`, `PC98.png`, `PICO8.png`, and the UI badge glyph `_tools.png`)
+`AMIGA.png`, `ATOMISWAVE.png`, `NAOMI.png`, `PC98.png`, `PICO8.png`, `POKEMINI.png`, and the UI badge glyph `_tools.png`)
 are derived from public-domain video game hardware photography by **Evan Amos**.
 
   Author:  Evan Amos
@@ -51,6 +51,19 @@ is distributed under that photograph's terms:
 
 Console trade dress remains the property of the respective rights holders and
 appears here to identify the platform, as it does in the photographs above.
+
+`POKEMINI.png` is a Google Gemini render of a clear-blue Pokémon mini, supplied
+by the user on October 25, 2026. Reference-image details were not supplied.
+The original JPEG and the keyed full-resolution PNG are kept in umrk-assets
+under `Systems/ICONS/` (revision `f8dc20b7f07576069d09b67411d33ba6fa4e372e`), with the keying recipe in
+that directory's `LICENSE-ASSETS.md`. The 1200x1200 master in
+`artwork/Jawaka-Coverflow/system_icons` trims the keyed render to its alpha and
+scales it with Pillow Lanczos filtering on premultiplied alpha to 92% of the
+canvas height, the Game Boy framing; the 384x384 runtime copy is that master
+downscaled the same way. Google marks Gemini output with an invisible SynthID
+watermark. Purely AI-generated images carry no copyright of their own, and no
+rights are claimed in the render. Nintendo's Pokémon mini trade dress and the
+Nintendo and Pokémon marks remain their owners' and identify the platform.
 
 `_tools.png` is an original Leaf UI badge, not derived from the above.
 

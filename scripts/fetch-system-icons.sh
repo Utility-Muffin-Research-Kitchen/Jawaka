@@ -40,6 +40,7 @@ declare -a DOWNLOADS=(
   "N64|Nintendo - Nintendo 64"
   "NDS|Nintendo - Nintendo DS"
   "VB|Nintendo - Virtual Boy"
+  "POKEMINI|Nintendo - Pokemon Mini"
   # Sega
   "MD|Sega - Mega Drive - Genesis"
   "32X|Sega - 32X"

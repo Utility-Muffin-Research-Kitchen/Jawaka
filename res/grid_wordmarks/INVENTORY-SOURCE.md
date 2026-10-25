@@ -13,6 +13,7 @@ requirement or runtime network dependency in these files.
 | ATOMISWAVE | Sammy, [Atomiswave vector](https://commons.wikimedia.org/wiki/File:Atomiswave_logo.svg), from Arcade Otaku, uploaded by Pancho507 | Wordmark retains the lettering; grid card retains the full colored symbol. The small TM suffix uses outlined Lexend glyphs to remove the upstream font dependency. |
 | FDS | Nintendo, [Family Computer Disk System vector](https://commons.wikimedia.org/wiki/File:Family_Computer_Disk_System_logo.svg) | White lettering, retaining the family/disk-system identity and Japanese subtitle. |
 | NAOMI | Sega, [Worldvectorlogo vector](https://worldvectorlogo.com/logo/naomi); [Commons identity reference](https://commons.wikimedia.org/wiki/File:Sega_NAOMI_logo.png) | Tightened canvas; white wordmark, original black/red grid treatment. |
+| POKEMINI | Nintendo, [Pokémon mini logo vector](https://commons.wikimedia.org/wiki/File:Pokemon_mini_logo.svg), vectorized by Twili (PD-textlogo) | Drops the black background band; the white "Pokémon" and yellow "mini" letter faces become one white wordmark. |
 | AMIGA, COLECO, GW, VB, VECTREX | The documented sources in [grid icon attribution](https://github.com/Utility-Muffin-Research-Kitchen/Jawaka/blob/main/res/user_themes/Sample/grid/icons/GRID-ICON-SOURCE.md) | White artwork; ColecoVision isolates colored letter faces to preserve their counters and remove the outline. |
 | EASYRPG | EasyRPG Team, [official vector](https://easyrpg.org/downloads/logos/logo_with_text_dark_right.svg), [branding license](https://blog.easyrpg.org/2023/04/) | Retains the lettering in white; removes the emblem and gloss for the narrow slot. CC BY-SA 4.0, including this adaptation. |
 | ARCADE, PORTS | Original UMRK lettering, outlined Lexend Bold | White lettering. UMRK composition is CC0 1.0; font is SIL OFL 1.1, retained in Lexend-OFL.txt. |
@@ -82,3 +83,13 @@ checked-in files and do not fetch that repository.
 | VECTREX | `949f668a23b77711faf344a0540f3d94416f0b654818d982c9b3f5686516b985` |
 | WS | `612e834a9ac1689720714a4616b6db3df26ae0fc540a6892d34f3fec2295d6ed` |
 | WSC | `e83a4fea2745a3e7c05692c540657a668d0586ec543c163705e91501a3f19ce2` |
+
+## Pokémon mini
+
+`POKEMINI.png` was added later, from umrk-assets revision `4de2fd167b5a2131ae76df0b4ae11860422e7590`
+(`Systems/WORDMARKS/exports/POKEMINI.png`). Its Commons download record is
+the `POKEMINI` entry in `SOURCE-RECORDS.json`.
+
+| ID | PNG SHA-256 |
+| --- | --- |
+| POKEMINI | `4ff16887561d4b3f2e4845db0b660438b77a3bb1dc2cb16ed56c5e6ceeeb3787` |
