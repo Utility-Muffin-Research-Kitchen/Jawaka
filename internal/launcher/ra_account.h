@@ -37,13 +37,15 @@ const char *jw_ra_account_state_name(jw_ra_account_state state);
      enough, and a provider-bound core never takes this branch.
 
    - DSperate: a provider-bound core with provider "mlp1/DSperate.pak", core
-     id "dsperate", resolved launcher exactly <pak>/scripts/run.sh, an
-     installed <pak>/pak.json with id "org.umrk.dsperate" and
-     pak_version >= 2.1.1, and the capability record the pak ships,
-     <pak>/ra-account-v1, holding exactly the contract id (one trailing
-     newline allowed, the same rule as the Flycast record). The published
-     2.0.0 build does not consume the contract, so it receives no
-     credentials; a build without the record receives none either.
+     id "dsperate" or "dsperate_tate", resolved launcher exactly
+     <pak>/scripts/run.sh (both cores share it), an installed <pak>/pak.json
+     with id "org.umrk.dsperate" and pak_version >= 2.1.1 for "dsperate" or
+     >= 3.0.5 for "dsperate_tate" (the first build that ships it), and the
+     capability record the pak ships, <pak>/ra-account-v1, holding exactly
+     the contract id (one trailing newline allowed, the same rule as the
+     Flycast record). The published 2.0.0 build does not consume the
+     contract, so it receives no credentials; a build without the record
+     receives none either.
 
    Everything else, and every check that cannot be positively established
    (missing files, unreadable manifests, malformed versions), is refused. */

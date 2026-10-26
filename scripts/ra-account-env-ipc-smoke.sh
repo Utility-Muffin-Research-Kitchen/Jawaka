@@ -18,7 +18,9 @@
 #   7. with PLATFORM=mlp1, the DSperate pak (provider mlp1/DSperate.pak, id
 #      org.umrk.dsperate, scripts/run.sh) receives the snapshot only at
 #      pak_version >= 2.1.1 AND with its shipped ra-account-v1 record; 2.0.0,
-#      a missing record and a wrong record all receive nothing.
+#      a missing record and a wrong record all receive nothing. Its second
+#      core, dsperate_tate, on the same run.sh, receives the snapshot from
+#      3.0.5 and nothing at 3.0.3.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -395,6 +397,43 @@ printf '%s\n' "standalone-ra-account-v1" > "$DSPERATE/ra-account-v1"
 dsperate_manifest 2.0.0
 dsperate_launch
 expect_no_account_vars "$RUNTIME/env-DSperate.pak.txt"
+
+# 7e. 3.0.5 adds the TATE core beside dsperate on the same run.sh. The
+# daemon restarts so the scan picks the second core up.
+dsperate_tate_manifest() { # pak_version
+    printf '%s\n' "{\"id\":\"org.umrk.dsperate\",\"name\":\"DSperate\",\"platform\":\"mlp1\",\"pak_version\":\"$1\",\"provides\":{\"schema\":1,\"systems\":[],\"system_extensions\":[{\"system_id\":\"DC\",\"add_alternate_cores\":[\"dsperate\",\"dsperate_tate\"]}],\"cores\":[{\"id\":\"dsperate\",\"display_name\":\"DSperate\",\"type\":\"path\",\"path\":\"scripts/run.sh\",\"supports_menu\":false,\"supports_savestate\":false,\"supports_disk_control\":false},{\"id\":\"dsperate_tate\",\"display_name\":\"DSperate TATE\",\"type\":\"path\",\"path\":\"scripts/run.sh\",\"supports_menu\":false,\"supports_savestate\":false,\"supports_disk_control\":false}]}}" \
+        > "$DSPERATE/pak.json"
+}
+dsperate_tate_launch() {
+    rm -f "$RUNTIME/env-DSperate.pak.txt" "$RUNTIME/argv-DSperate.pak.txt"
+    launch_game DC "Roms/DC/Smoke Game.cdi" dsperate_tate
+    wait_env_dump DSperate.pak
+    wait_child_done DSperate.pak
+}
+stop_daemon
+dsperate_tate_manifest 3.0.5
+start_daemon mlp1
+dsperate_tate_launch
+expect_var "JAWAKA_GAME_CORE_ID" "dsperate_tate" "$RUNTIME/env-DSperate.pak.txt"
+expect_var "UMRK_RA_ACCOUNT_VERSION" "1" "$RUNTIME/env-DSperate.pak.txt"
+expect_var "UMRK_RA_ACCOUNT_STATE" "configured" "$RUNTIME/env-DSperate.pak.txt"
+expect_var "UMRK_RA_ACCOUNT_USERNAME" "$USER_NAME" "$RUNTIME/env-DSperate.pak.txt"
+expect_var "UMRK_RA_ACCOUNT_PASSWORD" "$PASS_VALUE" "$RUNTIME/env-DSperate.pak.txt"
+expect_var "UMRK_RA_ACCOUNT_REVISION" "3" "$RUNTIME/env-DSperate.pak.txt"
+! has_var JAWAKA_CHEEVOS_USERNAME "$RUNTIME/env-DSperate.pak.txt" ||
+    fail "RetroArch credential channel reached DSperate TATE"
+! grep -qF "$PASS_VALUE" "$RUNTIME/argv-DSperate.pak.txt" ||
+    fail "password present in DSperate TATE argv"
+
+# 7f. A 3.0.3 manifest declaring the TATE core: nothing for it, while plain
+# dsperate keeps its 2.1.1 floor on the same install.
+dsperate_tate_manifest 3.0.3
+dsperate_tate_launch
+expect_var "JAWAKA_GAME_CORE_ID" "dsperate_tate" "$RUNTIME/env-DSperate.pak.txt"
+expect_no_account_vars "$RUNTIME/env-DSperate.pak.txt"
+dsperate_launch
+expect_var "JAWAKA_GAME_CORE_ID" "dsperate" "$RUNTIME/env-DSperate.pak.txt"
+expect_var "UMRK_RA_ACCOUNT_STATE" "configured" "$RUNTIME/env-DSperate.pak.txt"
 
 ! grep -qF "$PASS_VALUE" "$LOG" || fail "password present in daemon log"
 

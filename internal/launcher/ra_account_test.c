@@ -1,7 +1,8 @@
 /* standalone-ra-account-v1 launch authorization tests: the exact target and
    capability checks that decide whether a standalone child receives the
    account snapshot. Covers the bundled-Flycast launcher/marker pair, the
-   DSperate provider/core/path/manifest/record matrix, the separate Flycast
+   DSperate provider/core/path/manifest/record matrix (dsperate and
+   dsperate_tate, each with its own version floor), the separate Flycast
    proxy route record, the spoof cases that must every time fall to refusal,
    and the child environment the producer builds from a stored account
    (never CONFIGURED without a revision). */
@@ -344,6 +345,123 @@ static void test_dsperate(void) {
     rename(saved, manifest);
 }
 
+/* A DSperate pak at pak_version, with the shipped record. */
+static void make_dsperate_pak_version(const char *version) {
+    char pak_json[256];
+    snprintf(pak_json, sizeof(pak_json),
+             "{ \"id\": \"org.umrk.dsperate\", \"platform\": \"mlp1\","
+             "  \"pak_version\": \"%s\" }\n", version);
+    make_dsperate_pak(pak_json);
+}
+
+static bool dsperate_target(const char *launcher, const char *core_id,
+                            const char *provider) {
+    char platform[PATH_MAX];
+    platform_dir(platform, sizeof(platform));
+    return jw_ra_account_target_authorized(launcher, core_id, &PROVIDER_BOUND,
+                                           provider, platform);
+}
+
+/* dsperate_tate shares DSperate's provider, run.sh, manifest id and record;
+   only its version floor differs, since the core first ships in 3.0.5. */
+static void test_dsperate_tate(void) {
+    char launcher[PATH_MAX];
+    dsperate_launcher(launcher, sizeof(launcher));
+
+    make_dsperate_pak_version("3.0.5");
+    expect(dsperate_target(launcher, "dsperate_tate", "mlp1/DSperate.pak"),
+           "dsperate_tate at 3.0.5 authorized");
+    expect(dsperate_target(launcher, "dsperate", "mlp1/DSperate.pak"),
+           "dsperate at 3.0.5 authorized");
+
+    /* Builds before 3.0.5 have no TATE core; plain dsperate keeps its 2.1.1
+       floor on the same installs. */
+    static const struct { const char *version; bool tate; bool plain; } floors[] = {
+        { "2.0.0", false, false },
+        { "2.1.1", false, true },
+        { "3.0.3", false, true },
+        { "3.0.4", false, true },
+        { "3.0.5", true, true },
+        { "3.1.0", true, true },
+        { "4.0.0", true, true },
+    };
+    for (size_t i = 0; i < sizeof(floors) / sizeof(floors[0]); i++) {
+        char what[128];
+        make_dsperate_pak_version(floors[i].version);
+        snprintf(what, sizeof(what), "dsperate_tate at %s %s",
+                 floors[i].version, floors[i].tate ? "authorized" : "denied");
+        expect(dsperate_target(launcher, "dsperate_tate",
+                               "mlp1/DSperate.pak") == floors[i].tate, what);
+        snprintf(what, sizeof(what), "dsperate at %s %s", floors[i].version,
+                 floors[i].plain ? "authorized" : "denied");
+        expect(dsperate_target(launcher, "dsperate", "mlp1/DSperate.pak") ==
+                   floors[i].plain, what);
+    }
+    make_dsperate_pak_version("3.0.5");
+
+    /* The launcher must be the pak's own scripts/run.sh. */
+    char wrong_launcher[PATH_MAX];
+    snprintf(wrong_launcher, sizeof(wrong_launcher),
+             "%s/apps/mlp1/DSperate.pak/scripts/run-tate.sh", root);
+    write_file("apps/mlp1/DSperate.pak/scripts/run-tate.sh", "#!/bin/sh\n");
+    expect(!dsperate_target(wrong_launcher, "dsperate_tate",
+                            "mlp1/DSperate.pak"),
+           "dsperate_tate with another launcher in the pak denied");
+    snprintf(wrong_launcher, sizeof(wrong_launcher),
+             "%s/apps/mlp1/DSperate.pak/launch.sh", root);
+    expect(!dsperate_target(wrong_launcher, "dsperate_tate",
+                            "mlp1/DSperate.pak"),
+           "dsperate_tate with a non-run.sh launcher denied");
+
+    /* Another provider, even one carrying the same files. */
+    expect(!dsperate_target(launcher, "dsperate_tate", "mlp1/Impostor.pak"),
+           "dsperate_tate under another provider denied");
+    write_file("apps/mlp1/DSperateTATE.pak/pak.json",
+               "{ \"id\": \"org.umrk.dsperate\", \"platform\": \"mlp1\","
+               "  \"pak_version\": \"3.0.5\" }\n");
+    write_file("apps/mlp1/DSperateTATE.pak/scripts/run.sh", "#!/bin/sh\n");
+    write_file("apps/mlp1/DSperateTATE.pak/ra-account-v1",
+               "standalone-ra-account-v1\n");
+    snprintf(wrong_launcher, sizeof(wrong_launcher),
+             "%s/apps/mlp1/DSperateTATE.pak/scripts/run.sh", root);
+    expect(!dsperate_target(wrong_launcher, "dsperate_tate",
+                            "mlp1/DSperateTATE.pak"),
+           "dsperate_tate from a look-alike pak denied");
+
+    /* Manifest id, record and policy rules are the plain core's. */
+    make_dsperate_pak(
+        "{ \"id\": \"org.umrk.impostor\", \"platform\": \"mlp1\","
+        "  \"pak_version\": \"3.0.5\" }\n");
+    expect(!dsperate_target(launcher, "dsperate_tate", "mlp1/DSperate.pak"),
+           "dsperate_tate with the wrong manifest id denied");
+    make_dsperate_pak_version("3.0.5");
+    char record[PATH_MAX];
+    snprintf(record, sizeof(record), "%s/apps/mlp1/DSperate.pak/ra-account-v1",
+             root);
+    unlink(record);
+    expect(!dsperate_target(launcher, "dsperate_tate", "mlp1/DSperate.pak"),
+           "dsperate_tate without the ra-account-v1 record denied");
+    make_dsperate_pak_version("3.0.5");
+    char platform[PATH_MAX];
+    platform_dir(platform, sizeof(platform));
+    expect(!jw_ra_account_target_authorized(launcher, "dsperate_tate",
+                                            &FLYCAST_RELEASE,
+                                            "mlp1/DSperate.pak", platform),
+           "dsperate_tate under a release policy denied");
+
+    /* Only the exact core id. */
+    static const char *const near_ids[] = {
+        "DSperate_tate", "dsperate_TATE", "dsperate_tat", "dsperate_tate2",
+        "dsperate_tate ", "dsperate-tate", "",
+    };
+    for (size_t i = 0; i < sizeof(near_ids) / sizeof(near_ids[0]); i++) {
+        char what[128];
+        snprintf(what, sizeof(what), "core id '%s' denied", near_ids[i]);
+        expect(!dsperate_target(launcher, near_ids[i], "mlp1/DSperate.pak"),
+               what);
+    }
+}
+
 /* UMRK_FLYCAST_RA_ROUTE authorization (proxy plan P2): the bundled Flycast
    target only, and only when its payload carries both the account record and
    the separate route record. */
@@ -461,6 +579,18 @@ static void test_flycast_route(void) {
                                                   "mlp1/DSperate.pak",
                                                   platform),
            "route: account-authorized dsperate denied the flycast route");
+    make_dsperate_pak_version("3.0.5");
+    write_file("apps/mlp1/DSperate.pak/ra-route-v1",
+               "umrk-flycast-ra-route-v1\n");
+    expect(jw_ra_account_target_authorized(dsperate, "dsperate_tate",
+                                           &PROVIDER_BOUND,
+                                           "mlp1/DSperate.pak", platform),
+           "route: dsperate_tate fixture is account-authorized");
+    expect(!jw_flycast_ra_route_target_authorized(dsperate, "dsperate_tate",
+                                                  &PROVIDER_BOUND,
+                                                  "mlp1/DSperate.pak",
+                                                  platform),
+           "route: account-authorized dsperate_tate denied the flycast route");
 
     expect(!jw_flycast_ra_route_target_authorized(NULL, "flycast_standalone",
                                                   &FLYCAST_RELEASE, NULL,
@@ -665,6 +795,7 @@ int main(void) {
 
     test_flycast();
     test_dsperate();
+    test_dsperate_tate();
     test_flycast_route();
     test_env_contract_names();
     test_env_guard();
