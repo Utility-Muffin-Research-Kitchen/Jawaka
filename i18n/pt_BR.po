@@ -1,11 +1,11 @@
-# Brazilian Portuguese -- contributed by muniz95 (GitHub, Jawaka#252),
-# 2026-10-22, as a first version; the translator is still working on it.
-# Changed on import: the eight context keys (count|, platform|, scope|,
-# status|, update|) had the key copied in place of a translation and now
-# carry Portuguese words drafted by Claude; an added leading space is gone;
-# strings left fully or partly in English are empty, so Leaf shows them in
-# English and the coverage badge counts them as untranslated; and "Exit
-# 5-Game Mode?" uses the translator's own "Modo 5 Jogos".
+# Brazilian Portuguese -- contributed by muniz95 (GitHub, Jawaka#252):
+# a first version on 2026-10-22, revised on 2026-10-26; the translator is
+# still working on it. Changed on import: the eight context keys keep only
+# the translation (the "count|", "scope|"... part is context, not text); a
+# shader note's hand-made line breaks are spaces, since the UI wraps; the
+# still half-English shader-restore error is empty, so Leaf shows it in
+# English; and three leftovers use the translator's own words: "Versão %s",
+# "CRT Curvo" in the CRT Lite note, and no stray "control" in the mGBA note.
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
@@ -27,7 +27,7 @@ msgstr "%.120s não está instalado pelo Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%.120s is release-managed"
-msgstr "%.120s é gerenciado pelo lançamento"
+msgstr "%.120s é gerenciado pela versão"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d %s games"
@@ -43,11 +43,11 @@ msgstr "%d K"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d Pak Rat app"
-msgstr ""
+msgstr "%d app do Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d Pak Rat apps"
-msgstr ""
+msgstr "%d apps do Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d apps"
@@ -279,15 +279,15 @@ msgstr "12 seg"
 
 #: internal/retroarch/shader_strings.c
 msgid "120Hz BFI measured 59.249 FPS and further reduces brightness."
-msgstr ""
+msgstr "A 120Hz com BFI ativado, a taxa de atualização medida foi de 59.249 FPS, e com isso o brilho é reduzido ainda mais."
 
 #: internal/retroarch/shader_strings.c
 msgid "120Hz cadence counters can report periodic drops for nominal 59.94/60fps content."
-msgstr ""
+msgstr "contadores de cadência a 120Hz podem reportar quedas periódicas para conteúdos a 59.94/60fps."
 
 #: internal/retroarch/shader_strings.c
 msgid "120Hz cadence counters can report periodic drops for nominal 60fps content."
-msgstr ""
+msgstr "contadores de cadência a 120Hz podem reportar quedas periódicas para conteúdos a 60fps."
 
 #: internal/settings/settings.c
 msgid "15 sec"
@@ -335,7 +335,7 @@ msgstr "5 min"
 
 #: cmd/jawaka-launcher/main.c
 msgid "512 KiB candidate"
-msgstr ""
+msgstr "candidato de 512 KiB"
 
 #: cmd/jawaka-menu/main.c
 msgid "528 MHz"
@@ -659,7 +659,7 @@ msgstr "B: Voltar   A: Próximo"
 
 #: internal/retroarch/shader_strings.c
 msgid "BFI further reduces brightness."
-msgstr ""
+msgstr "BFI reduz ainda mais o brilho."
 
 #: internal/launcher/bios.c
 msgid "BIOS file ready"
@@ -715,7 +715,7 @@ msgstr "Estado da bateria é desconhecido; confirmação necessária"
 
 #: internal/retroarch/shader_strings.c
 msgid "Best at integer or near-integer scaling; the upstream shader can look uneven at arbitrary scales."
-msgstr ""
+msgstr "Ideal em escalonamento por inteiros ou quase-inteiros; o sombreador pode parecer irregular em escalas arbitrárias."
 
 #: internal/settings/settings.c
 msgid "Beta"
@@ -767,7 +767,7 @@ msgstr "Board"
 
 #: internal/settings/settings.c
 msgid "Boot Splash"
-msgstr ""
+msgstr "Tela de Inicialização"
 
 #: internal/settings/settings.c
 msgid "Both"
@@ -831,15 +831,15 @@ msgstr "Temperatura de CPU"
 
 #: internal/retroarch/shader_strings.c
 msgid "CRT Curved"
-msgstr ""
+msgstr "CRT Curvo"
 
 #: internal/retroarch/shader_strings.c
 msgid "CRT Lite"
-msgstr "CRT Lite"
+msgstr "CRT Suave"
 
 #: internal/retroarch/shader_strings.c
 msgid "CRT Sharp"
-msgstr ""
+msgstr "CRT Afiado"
 
 #: internal/retroarch/shader_strings.c
 msgid "CRT effects reduce brightness; the preset uses a milder mask and scanline strength than upstream defaults."
@@ -907,7 +907,7 @@ msgstr "Cartão:"
 
 #: internal/retroarch/shader_strings.c
 msgid "Carries a Leaf local patch until upstream fixes its GLSL ES precision mismatch."
-msgstr ""
+msgstr "Traz um patch local do Leaf até uma correção para a discrepância de precisão do GLSL ES estar disponível."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Catalog version: %s"
@@ -923,7 +923,7 @@ msgstr "Ilhas Chatham"
 
 #: internal/settings/settings.c
 msgid "Check Releases"
-msgstr "Verificar lançamentos"
+msgstr "Verificar versões"
 
 #: internal/settings/storage_ui.c
 msgid "Check SD card"
@@ -935,7 +935,7 @@ msgstr "Buscar por atualizações primeiro"
 
 #: internal/settings/settings.c
 msgid "Check releases first"
-msgstr ""
+msgstr "Verificar versões primeiro"
 
 #: internal/update/update.c
 msgid "Checking for updates"
@@ -1019,7 +1019,7 @@ msgstr "Cores"
 
 #: internal/settings/settings.c
 msgid "Comet"
-msgstr ""
+msgstr "Cometa"
 
 #: cmd/jawaka-menu/main.c
 msgid "Command: %s"
@@ -1251,7 +1251,7 @@ msgstr "Nome da Tela"
 
 #: internal/retroarch/shader_strings.c
 msgid "Do not combine with BFI when using mGBA: the no-shader mGBA control falls to 38.499 FPS at 120Hz with BFI."
-msgstr ""
+msgstr "Não use junto do BFI ao usar mGBA: o controle sem sombreador do mGBA cai para 38.499 FPS em 120Hz com o BFI."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Done"
@@ -1443,7 +1443,7 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "GPU"
-msgstr "GPU"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Game"
@@ -1559,7 +1559,7 @@ msgstr "HLE, sem arquivo BIOS"
 
 #: internal/settings/settings.c
 msgid "Hashing"
-msgstr ""
+msgstr "Hashing"
 
 #: internal/platform/platform_common.c
 msgid "Headset"
@@ -1567,7 +1567,7 @@ msgstr "Fones de ouvido"
 
 #: internal/settings/settings.c
 msgid "Hiccup"
-msgstr ""
+msgstr "Soluço"
 
 #: internal/settings/settings.c
 msgid "Hidden"
@@ -1715,7 +1715,7 @@ msgstr "Instalando"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installing Pak Rat app"
-msgstr "Instalando aplicativo Pak Rat"
+msgstr "Instalando app do Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installing theme"
@@ -1879,7 +1879,7 @@ msgstr "Leaf não pôde verificar este cartão de forma segura, portanto nada fo
 
 #: internal/update/update.c
 msgid "Leaf releases response was not a JSON array"
-msgstr ""
+msgstr "Resposta de versões do Leaf não é um array JSON"
 
 #: internal/settings/settings.c
 msgid "Leaf update"
@@ -2043,7 +2043,7 @@ msgstr "Ao Redor"
 
 #: internal/settings/storage_ui.c
 msgid "Needs check"
-msgstr ""
+msgstr "Precisa de verificação"
 
 #: internal/settings/storage_ui.c
 msgid "Needs repair"
@@ -2119,7 +2119,7 @@ msgstr "Nenhum arquivo de BIOS selecionado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No Pak Rat app selected"
-msgstr "Nenhum aplicativo Pak Rat selecionado"
+msgstr "Nenhum app do Pak Rat selecionado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No Pak Rat apps found"
@@ -2223,7 +2223,7 @@ msgstr "Nenhuma tarefa de raspagem."
 
 #: internal/retroarch/shader_strings.c
 msgid "No screen curvature; use CRT Curved for that."
-msgstr "Nenhuma curvatura de tela; use CRT Curved para isso."
+msgstr "Nenhuma curvatura de tela; use CRT Curvo para isso."
 
 #: internal/settings/settings.c
 msgid "No services installed"
@@ -2483,7 +2483,7 @@ msgstr "Desligando"
 
 #: internal/retroarch/shader_strings.c
 msgid "Prefer this over Sharp Pixels when non-integer scrolling visibly shimmers."
-msgstr ""
+msgstr "Prefira este ao Sharp Pixels quando a rolagem por não-inteiros estiver tremida."
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Preparing to save"
@@ -2551,7 +2551,7 @@ msgstr "Lendo pasta..."
 
 #: internal/settings/settings.c
 msgid "Ready Check"
-msgstr ""
+msgstr "Verificação de prontidão"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reboot"
@@ -2619,7 +2619,7 @@ msgstr "Reinstalado %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reinstalling Pak Rat app"
-msgstr "Reinstalando aplicativo do Pak Rat"
+msgstr "Reinstalando app do Pak Rat"
 
 #: internal/settings/settings.c
 msgid "Release"
@@ -2679,7 +2679,7 @@ msgstr "Repair não está instalado."
 
 #: internal/settings/storage_ui.c
 msgid "Repair on battery"
-msgstr ""
+msgstr "Corrigir usando bateria"
 
 #: internal/settings/storage_ui.c
 msgid "Repair pending"
@@ -2783,7 +2783,7 @@ msgstr "Restaurado %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Restoring Pak Rat app"
-msgstr "Restaurando aplicativo do Pak Rat"
+msgstr "Restaurando app do Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Resume"
@@ -2971,7 +2971,7 @@ msgstr "Escopo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape"
-msgstr "Raspagem"
+msgstr "Raspar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape Artwork"
@@ -3131,7 +3131,7 @@ msgstr "Arquivo de BIOS não pode ser lido"
 
 #: internal/launcher/bios.c
 msgid "Selected BIOS file is missing"
-msgstr ""
+msgstr "Arquivo de BIOS está ausente"
 
 #: internal/launcher/bios.c
 msgid "Selected BIOS file is not a 512 KiB image"
@@ -3259,7 +3259,7 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "SoC"
-msgstr "SoC"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Soft"
@@ -3299,7 +3299,7 @@ msgstr "Estável"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Stale"
-msgstr "Expirado"
+msgstr "Corrompido"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start"
@@ -3455,7 +3455,7 @@ msgstr "Abas"
 
 #: internal/retroarch/shader_strings.c
 msgid "Tames colors authored for the original Game Boy Advance LCD."
-msgstr ""
+msgstr "Cores suaves elaboradas para o LCD original do Game Boy Advance."
 
 #: internal/settings/settings.c
 msgid "Test Sound"
@@ -3583,7 +3583,7 @@ msgstr "O nome, autor, versão ou descrição do tema não é válido."
 
 #: cmd/jawaka-launcher/main.c
 msgid "The theme's required Leaf version is missing or not valid."
-msgstr "A versão do Leaf exigida pelo tema's está ausente ou não é válida."
+msgstr "A versão do Leaf exigida pelo tema está ausente ou não é válida."
 
 #: cmd/jawaka-launcher/main.c
 msgid "The theme's theme.json has settings this version of Leaf does not know."
@@ -4051,7 +4051,7 @@ msgstr "Versão %.40s requer Leaf v%.40s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Version %s needs Leaf %s or newer."
-msgstr "Version %s requer Leaf %s ou mais recente."
+msgstr "Versão %s requer Leaf %s ou mais recente."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Version: %s"
@@ -4175,11 +4175,11 @@ msgstr "Seu dispositivo irá reiniciar para verificar e corrigir o cartão usand
 
 #: internal/settings/storage_ui.c
 msgid "Your device will restart to check and repair this card. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first if you need to recover them. Keep your device connected to power until the check finishes."
-msgstr "Seu dispositivo irá reiniciar para verificar corrigir o cartão. Arquivos danificados podem ser encurtados, renomeados ou recuperados sob novos nomes. Faça uma cópia de arquivos importantes para um computador primeiro. Mantenha seu dispositivo conectado a uma fonte de energia até que a verificação termine."
+msgstr "Seu dispositivo irá reiniciar para verificar e corrigir o cartão. Arquivos danificados podem ser encurtados, renomeados ou recuperados sob novos nomes. Faça uma cópia de arquivos importantes para um computador primeiro. Mantenha seu dispositivo conectado a uma fonte de energia até que a verificação termine."
 
 #: internal/settings/storage_ui.c
 msgid "Your device will restart to check this card. If the check passes, you can save files again."
-msgstr ""
+msgstr "Seu dispositivo irá reiniciar para verificar este cartão. Se a verificação passar, você pode salvar arquivos novamente."
 
 #: internal/settings/storage_ui.c
 msgid "Your device's internal storage can't record the repair. Check the card on a computer instead."
@@ -4263,7 +4263,7 @@ msgstr "agora mesmo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "launcher SD card"
-msgstr ""
+msgstr "cartão SD do lançador"
 
 #: cmd/jawaka-menu/main.c
 msgid "newest"
