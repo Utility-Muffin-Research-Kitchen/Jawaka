@@ -5555,7 +5555,7 @@ msgstr "删除 ROM 前请先返回启动器。"
 msgid "SD-card mounted noexec; switcher remount failed or regressed"
 msgstr "SD 卡以 noexec 挂载；切换器重新挂载失败或回退"
 
-msgid "Save & Quit quicksave \\xe2\\x80\\x94 A resumes, Y keeps it as a slot"
+msgid "Save & Quit quicksave — A resumes, Y keeps it as a slot"
 msgstr "退出并保存的快速存档 —— A 继续，Y 将其保留为存档位"
 
 msgid "Save failed - account unchanged"

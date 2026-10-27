@@ -2616,8 +2616,10 @@ static void jw__draw_service_item(int idx, int ix, int iy, int iw, int ih,
     cat_draw_text_ellipsized(body, short_id, ix + cat_scale(12), ty,
                              tc, iw / 2 - cat_scale(20));
 
+    /* svc->state stays the supervisor's English word for the strcmp()s in the
+       input handler; only the drawn copy is translated. */
     char value[96];
-    snprintf(value, sizeof(value), "%s%s", svc->state,
+    snprintf(value, sizeof(value), "%s%s", T(svc->state),
              svc->desired_enabled ? T(" · auto") : "");
     int vw = cat_measure_text(body, value);
     int vx = ix + iw - vw - cat_scale(16);
@@ -8950,7 +8952,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                                        status, sizeof(status)) == 0) {
                     snprintf(ui->services_msg, sizeof(ui->services_msg),
                              "%s %s",
-                             svc->desired_enabled ? "Disabled" : T("Enabled"),
+                             svc->desired_enabled ? T("Disabled") : T("Enabled"),
                              svc->id);
                 } else {
                     snprintf(ui->services_msg, sizeof(ui->services_msg),

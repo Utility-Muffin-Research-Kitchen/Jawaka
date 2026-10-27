@@ -109,7 +109,45 @@ RUN = re.compile(STR + r"(?:\s*" + STR + r")*")
 
 
 def run_to_text(run: str) -> str:
-    return "".join(m.group(1) for m in re.finditer(r'"((?:[^"\\]|\\.)*)"', run))
+    # Each literal is decoded on its own, as the compiler does: a \x escape ends
+    # at its literal's closing quote, so "\xe2" "abc" is not \xe2abc.
+    return "".join(c_literal(m.group(1)) for m in re.finditer(r'"((?:[^"\\]|\\.)*)"', run))
+
+
+_C_SIMPLE = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f",
+             "v": "\v", "\\": "\\", '"': '"', "'": "'", "?": "?"}
+
+
+def c_literal(body: str) -> str:
+    """The text one C string literal holds, with every escape decoded.
+
+    The runtime looks up the bytes the compiler produced, so the key must be
+    those bytes too. Hex and octal escapes are bytes, not characters: UTF-8
+    written as \\xe2\\x80\\x94 decodes to the em dash it encodes. Reading them
+    as text put a literal backslash-x into leaf.pot, a key that never matches."""
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c != "\\" or i + 1 == len(body):
+            out += c.encode("utf-8")
+            i += 1
+            continue
+        e = body[i + 1]
+        if e == "x":
+            m = re.match(r"[0-9a-fA-F]+", body[i + 2:])
+            if not m or int(m.group(0), 16) > 0xFF:
+                raise ValueError(f"bad hex escape in C literal: {body!r}")
+            out.append(int(m.group(0), 16))
+            i += 2 + len(m.group(0))
+        elif e in "01234567":
+            m = re.match(r"[0-7]{1,3}", body[i + 1:])
+            out.append(int(m.group(0), 8) & 0xFF)
+            i += 1 + len(m.group(0))
+        else:
+            out += _C_SIMPLE.get(e, "\\" + e).encode("utf-8")
+            i += 2
+    return out.decode("utf-8")
 
 
 # Struct-initializer shapes. Positional footers ({ CAT_BTN_X, "Label" }) and the
@@ -239,8 +277,7 @@ def array_literals(src: str, name: str, mode: str):
 def extract():
     keys = {}
 
-    def add(lit, where):
-        text = c_unescape(lit)
+    def add(text, where):
         if not text or text == "%s":
             return
         # These backend messages reach the UI as completed strings, where they
@@ -287,7 +324,7 @@ def extract():
         for arr_file, arr_name, mode in ARRAYS:
             if rel == arr_file:
                 for lit in array_literals(src, arr_name, mode):
-                    add(lit, rel)
+                    add(c_literal(lit), rel)
         # JW_UI("...") marks a UI string that cannot be wrapped in T() where it
         # is written, because it sits in a `static const` initializer. Preferred
         # over adding a table to ARRAYS: the mark lives next to the string, so a
