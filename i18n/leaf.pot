@@ -77,7 +77,11 @@ msgid "%d K"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "%d Pak Rat app%s"
+msgid "%d Pak Rat app"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat apps"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -85,15 +89,35 @@ msgid "%d apps"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "%d artwork job%s already queued"
+msgid "%d artwork job already queued"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%d artwork jobs already queued"
 msgstr ""
 
 #: internal/store/pakrat_state.c
-msgid "%d core%s"
+msgid "%d core"
 msgstr ""
 
 #: internal/store/pakrat_state.c
-msgid "%d core%s for %d existing system%s"
+msgid "%d core for %d existing system"
+msgstr ""
+
+#: internal/store/pakrat_state.c
+msgid "%d core for %d existing systems"
+msgstr ""
+
+#: internal/store/pakrat_state.c
+msgid "%d cores"
+msgstr ""
+
+#: internal/store/pakrat_state.c
+msgid "%d cores for %d existing system"
+msgstr ""
+
+#: internal/store/pakrat_state.c
+msgid "%d cores for %d existing systems"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -141,7 +165,11 @@ msgid "%d results"
 msgstr ""
 
 #: internal/store/pakrat_state.c
-msgid "%d system extension%s"
+msgid "%d system extension"
+msgstr ""
+
+#: internal/store/pakrat_state.c
+msgid "%d system extensions"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -185,15 +213,27 @@ msgid "%lld days ago"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "%lld month%s ago"
+msgid "%lld month ago"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "%lld week%s ago"
+msgid "%lld months ago"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "%lld year%s ago"
+msgid "%lld week ago"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%lld weeks ago"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%lld year ago"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%lld years ago"
 msgstr ""
 
 #: internal/catalog/merge.c
@@ -209,7 +249,11 @@ msgid "%s (current)"
 msgstr ""
 
 #: internal/store/pakrat_state.c
-msgid "%s and %d core%s"
+msgid "%s and %d core"
+msgstr ""
+
+#: internal/store/pakrat_state.c
+msgid "%s and %d cores"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -274,10 +318,6 @@ msgstr ""
 
 #: internal/platform/device_mlp1.c
 msgid "%s output unavailable"
-msgstr ""
-
-#: cmd/jawaka-launcher/main.c
-msgid "%s unavailable: version %s is missing from catalog history."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -724,14 +764,6 @@ msgstr ""
 msgid "Also remove retained data for %.180s?\n\nThis separately deletes every declared retained directory on cards that are present now. Absent cards remain unchanged. This cannot be undone."
 msgstr ""
 
-#: internal/discovery/content.c
-msgid "Ambiguous ROM source: %.160s"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Ambiguous filesystem name: %.160s"
-msgstr ""
-
 #: internal/settings/timezones.c
 msgid "American Samoa"
 msgstr ""
@@ -1140,10 +1172,6 @@ msgstr ""
 msgid "CRT effects reduce brightness; the preset uses a milder mask and scanline strength than upstream defaults."
 msgstr ""
 
-#: cmd/jawakad/main.c
-msgid "CTL-1 response exceeds 64 KiB"
-msgstr ""
-
 #: internal/discovery/content.c
 msgid "CUE FILE record has no file type"
 msgstr ""
@@ -1192,14 +1220,6 @@ msgstr ""
 msgid "Cannot fetch release manifest"
 msgstr ""
 
-#: internal/discovery/content.c
-msgid "Cannot inspect %.160s: %s"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Cannot inspect ROM source %s: %s"
-msgstr ""
-
 #: internal/settings/settings.c
 msgid "Cannot load releases"
 msgstr ""
@@ -1224,20 +1244,8 @@ msgstr ""
 msgid "Cannot promote update payload"
 msgstr ""
 
-#: internal/discovery/content.c
-msgid "Cannot read descriptor %.160s: %s"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Cannot read directory %.160s: %s"
-msgstr ""
-
 #: internal/update/update.c
 msgid "Cannot read update manifest"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Cannot resolve %.160s: %s"
 msgstr ""
 
 #: internal/update/update.c
@@ -1250,14 +1258,6 @@ msgstr ""
 
 #: internal/update/update.c
 msgid "Cannot start update runner: %s"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Cannot traverse missing directory: %.160s"
-msgstr ""
-
-#: cmd/jawakad/main.c
-msgid "Cannot unmount: service %s could not be verified stopped"
 msgstr ""
 
 #: internal/update/update.c
@@ -1493,35 +1493,11 @@ msgid "Content descriptors are nested too deeply"
 msgstr ""
 
 #: internal/discovery/content.c
-msgid "Content descriptors contain a cycle: %.160s"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Content descriptors exceed the inspection size limit: %.160s"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Content is not a regular file: %.160s"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Content is outside the mounted ROM roots: %.160s"
-msgstr ""
-
-#: internal/discovery/content.c
 msgid "Content path has too many missing directories"
 msgstr ""
 
 #: internal/discovery/content.c
 msgid "Content path is too long"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Content path is too long: %.100s"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Content reference escapes its ROM source: %.160s"
 msgstr ""
 
 #: internal/discovery/content.c
@@ -1624,10 +1600,6 @@ msgstr ""
 msgid "Could not lock package mutation: %s"
 msgstr ""
 
-#: internal/discovery/content.c
-msgid "Could not read complete descriptor: %.160s"
-msgstr ""
-
 #: internal/store/pakrat.c
 msgid "Could not read the Themes folder"
 msgstr ""
@@ -1646,10 +1618,6 @@ msgstr ""
 
 #: internal/store/pakrat.c
 msgid "Could not reload confirmed uninstall intent"
-msgstr ""
-
-#: internal/scrape/scrape_worker.c
-msgid "Could not resolve paths for %.200s"
 msgstr ""
 
 #: internal/discovery/delete_job.c
@@ -1672,24 +1640,12 @@ msgstr ""
 msgid "Could not start deleting your game."
 msgstr ""
 
-#: internal/discovery/delete.c
-msgid "Couldn't check %.160s: %s"
-msgstr ""
-
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't confirm the result. Check your library."
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Couldn't connect — check password"
-msgstr ""
-
-#: internal/discovery/delete.c
-msgid "Couldn't delete %.160s: %s"
-msgstr ""
-
-#: internal/discovery/delete.c
-msgid "Couldn't delete %.160s: it's no longer a regular file"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1706,10 +1662,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't resume: Hardcore mode doesn't allow loading a save."
-msgstr ""
-
-#: internal/discovery/delete.c
-msgid "Couldn't save the removal of %.160s: %s"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1806,10 +1758,6 @@ msgstr ""
 
 #: internal/discovery/content.c
 msgid "Descriptor argument is too long"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Descriptor contains binary data: %.160s"
 msgstr ""
 
 #: internal/discovery/content.c
@@ -2082,10 +2030,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Files"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "Filesystem name changed during inspection: %.160s"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2520,16 +2464,8 @@ msgstr ""
 msgid "Invalid content identity"
 msgstr ""
 
-#: internal/discovery/content.c
-msgid "Invalid content path: %.160s"
-msgstr ""
-
 #: cmd/jawakad/main.c
 msgid "Invalid game identity."
-msgstr ""
-
-#: internal/discovery/delete.c
-msgid "Invalid path for %.160s"
 msgstr ""
 
 #: internal/retroarch/shader_strings.c
@@ -2742,10 +2678,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Library"
-msgstr ""
-
-#: internal/discovery/delete_job.c
-msgid "Library cleanup failed after %d files were removed. Refresh the library."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3621,7 +3553,11 @@ msgid "Queued"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "Queued %d artwork job%s"
+msgid "Queued %d artwork job"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Queued %d artwork jobs"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -3658,10 +3594,6 @@ msgstr ""
 
 #: cmd/jawakad/main.c
 msgid "ROM path missing"
-msgstr ""
-
-#: internal/discovery/content.c
-msgid "ROM source is not mounted: %s"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -3750,6 +3682,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reinstall cancelled: %.120s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reinstall unavailable: version %s is missing from catalog history."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3945,6 +3881,10 @@ msgid "Restore"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Restore unavailable: version %s is missing from catalog history."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Restored %s"
 msgstr ""
 
@@ -4085,7 +4025,11 @@ msgid "Revert"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "Reverting in %d second%s"
+msgid "Reverting in %d second"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reverting in %d seconds"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -4313,7 +4257,11 @@ msgid "Scrape was cancelled before completion."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "Scraping %d game%s in %.140s"
+msgid "Scraping %d game in %.140s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping %d games in %.140s"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -4329,7 +4277,11 @@ msgid "Scraping artwork: %.180s"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "Scraping cancelled (%d item%s stopped)"
+msgid "Scraping cancelled (%d item stopped)"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping cancelled (%d items stopped)"
 msgstr ""
 
 #: internal/scrape/ss_client.c
@@ -4552,14 +4504,6 @@ msgstr ""
 msgid "Service is still stopping"
 msgstr ""
 
-#: cmd/jawakad/main.c
-msgid "Service quiesce failed: %s"
-msgstr ""
-
-#: cmd/jawakad/main.c
-msgid "Service quiesce failed: %s (%s)"
-msgstr ""
-
 #: internal/settings/settings.c
 msgid "Service status unavailable"
 msgstr ""
@@ -4633,7 +4577,11 @@ msgid "Signal: %s"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "Signed in - %d thread%s, quota %d/%d today"
+msgid "Signed in - %d thread, quota %d/%d today"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Signed in - %d threads, quota %d/%d today"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -4641,7 +4589,11 @@ msgid "Signed in as %s"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "Signed in as %s - %d thread%s%s"
+msgid "Signed in as %s - %d thread%s"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Signed in as %s - %d threads%s"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -4801,7 +4753,11 @@ msgid "Stop All"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "Stopped %d job%s"
+msgid "Stopped %d job"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Stopped %d jobs"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -4881,11 +4837,19 @@ msgid "Sydney"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "Sync before play — %d item%s, %s"
+msgid "Sync before play — %d item, %s"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
-msgid "Sync needs attention.\n\n%d item%s (%s) remained when waiting ended. Play anyway will stop Syncthing first; Cancel leaves syncing active."
+msgid "Sync before play — %d items, %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Sync needs attention.\n\n%d item (%s) remained when waiting ended. Play anyway will stop Syncthing first; Cancel leaves syncing active."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Sync needs attention.\n\n%d items (%s) remained when waiting ended. Play anyway will stop Syncthing first; Cancel leaves syncing active."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -5500,10 +5464,6 @@ msgstr ""
 msgid "Update download process disappeared"
 msgstr ""
 
-#: cmd/jawakad/main.c
-msgid "Update finished but service restore failed: %s"
-msgstr ""
-
 #: internal/settings/settings.c
 msgid "Update install blocked"
 msgstr ""
@@ -5752,10 +5712,6 @@ msgstr ""
 msgid "Wi-Fi unavailable on this platform"
 msgstr ""
 
-#: internal/discovery/content.c
-msgid "Windows drive paths cannot be resolved here: %.160s"
-msgstr ""
-
 #: internal/launcher/system_names.c
 msgid "WonderSwan"
 msgstr ""
@@ -5794,10 +5750,6 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "You can save files again."
-msgstr ""
-
-#: internal/discovery/delete_job.c
-msgid "Your %s storage is unavailable or read-only."
 msgstr ""
 
 #: cmd/jawakad/main.c
@@ -6048,10 +6000,6 @@ msgstr ""
 msgid "card absent; not inventoried"
 msgstr ""
 
-#: internal/retroarch/catalog.c
-msgid "case-folding config_folder collision: %s and %s"
-msgstr ""
-
 #: internal/discovery/discovery.c
 msgid "content contribution refused during manifest validation (%s)"
 msgstr ""
@@ -6078,10 +6026,6 @@ msgstr ""
 
 #: cmd/jawakad/main.c
 msgid "could not save language"
-msgstr ""
-
-#: cmd/jawakad/main.c
-msgid "could not serialize service status"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -6130,14 +6074,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "display name keyboard failed"
-msgstr ""
-
-#: internal/retroarch/catalog.c
-msgid "duplicate core id in RetroArch metadata: %s"
-msgstr ""
-
-#: internal/retroarch/catalog.c
-msgid "duplicate system id in RetroArch metadata: %s"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -6214,10 +6150,6 @@ msgstr ""
 
 #: internal/store/pakrat.c
 msgid "invalid"
-msgstr ""
-
-#: cmd/jawakad/main.c
-msgid "invalid CTL-1 request"
 msgstr ""
 
 #: cmd/jawakad/main.c
@@ -6310,10 +6242,6 @@ msgstr ""
 
 #: internal/ipc/ipc_client.c
 msgid "launch failed: missing game"
-msgstr ""
-
-#: internal/launcher/launch_notice_ui_test.c
-msgid "launch failed: standalone emulator missing"
 msgstr ""
 
 #: cmd/jawakad/main.c
@@ -6501,14 +6429,6 @@ msgid "overwrites"
 msgstr ""
 
 #: cmd/jawakad/main.c
-msgid "package mutation failed: %.127s"
-msgstr ""
-
-#: cmd/jawakad/main.c
-msgid "package mutation failed: %.127s (%.127s)"
-msgstr ""
-
-#: cmd/jawakad/main.c
 msgid "package mutation in progress"
 msgstr ""
 
@@ -6517,15 +6437,7 @@ msgid "package mutation operation mismatch"
 msgstr ""
 
 #: cmd/jawakad/main.c
-msgid "package mutation release failed: %.127s"
-msgstr ""
-
-#: cmd/jawakad/main.c
 msgid "package operation in progress"
-msgstr ""
-
-#: internal/retroarch/catalog.c
-msgid "packaged RetroArch core has unsafe config_folder: %s"
 msgstr ""
 
 #: internal/discovery/discovery.c
@@ -6766,10 +6678,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "second SD card"
-msgstr ""
-
-#: cmd/jawakad/main.c
-msgid "server supports CTL-1 v1 only"
 msgstr ""
 
 #: cmd/jawakad/main.c

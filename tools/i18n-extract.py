@@ -14,11 +14,18 @@ When a new funnel is added, add it here -- the CI check will not notice its
 strings otherwise. That is the maintenance contract, and it is spelled out in
 umrk-workspace/plans/leaf-i18n-chinese.md.
 
+Every translation also lists every string. The docs send translators to their
+language's own file, so a string missing from it is a string nobody can see to
+translate. Writing the .pot therefore adds each new string to every --po file
+as an empty entry, and --check fails on a file that is missing one.
+
 Usage:
     tools/i18n-extract.py                 # rewrite i18n/leaf.pot
+    tools/i18n-extract.py --po i18n/*.po  # ...and add new strings to each .po
     tools/i18n-extract.py --check         # fail if the committed .pot is stale
     tools/i18n-extract.py --check --po i18n/zh_CN.po
-                                          # ...and fail on orphan keys in the .po
+                                          # ...and fail if the .po has orphan
+                                          # keys or is missing a string
 """
 
 import argparse
@@ -236,6 +243,14 @@ def extract():
         text = c_unescape(lit)
         if not text or text == "%s":
             return
+        # These producers have no table, and their consumers use exact lookup.
+        # A format with inserted values can never be looked up there. The
+        # ScreenScraper client is intentionally separate: its UI consumers use
+        # jw_i18n_message() to translate numeric templates.
+        if where in ("cmd/jawakad/main.c", "internal/discovery/delete_job.c",
+                     "internal/discovery/content.c", "internal/discovery/delete.c"):
+            if re.search(r"%(?!%)[-+ #0\d.*hljztL]*[diuoxXfFeEgGaAcspn]", text):
+                return
         keys.setdefault(text, where)
 
     files = []
@@ -246,14 +261,15 @@ def extract():
         if any(part in rel for part in EXCLUDE_PARTS):
             continue
         src = strip_comments(f.read_text(encoding="utf-8", errors="replace"))
-        funnels = FUNNELS + [fn for file, fn in FILE_FUNNELS if rel == file]
+        is_test = rel.endswith("_test.c")
+        funnels = ([] if is_test else FUNNELS +
+                   [fn for file, fn in FILE_FUNNELS if rel == file])
         for fn in funnels:
             for span in call_spans(src, fn):
                 for m in RUN.finditer(span):
                     add(run_to_text(m.group(0)), rel)
         for m in FOOTER_RE.finditer(src):
             add(run_to_text(m.group(1)), rel)
-        is_test = rel.endswith("_test.c")
         for m in (DESIG_TEST_RE if is_test else DESIG_RE).finditer(src):
             add(run_to_text(m.group(1)), rel)
         # Calls where exactly one argument is UI text (the others carry states,
@@ -274,9 +290,16 @@ def extract():
         # over adding a table to ARRAYS: the mark lives next to the string, so a
         # missing one shows up in review rather than as a silent gap in a list
         # nobody reads. ARRAYS stays only for the tables that predate this.
-        for m in JW_UI_RE.finditer(src):
+        for m in ([] if is_test else JW_UI_RE.finditer(src)):
             add(run_to_text(m.group(1)), rel)
     return keys
+
+
+def pot_entry(key: str, where: str) -> str:
+    """One untranslated entry, exactly as the .pot writes it. Strings added to a
+    translation use the same text, so they read the same in both files."""
+    esc = key.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'#: {where}\nmsgid "{esc}"\nmsgstr ""'
 
 
 def write_pot(keys, path: Path):
@@ -289,10 +312,7 @@ def write_pot(keys, path: Path):
         "",
     ]
     for key in sorted(keys):
-        esc = key.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        lines.append(f"#: {keys[key]}")
-        lines.append(f'msgid "{esc}"')
-        lines.append('msgstr ""')
+        lines.append(pot_entry(key, keys[key]))
         lines.append("")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -323,35 +343,88 @@ def po_entries(path: Path):
     text = path.read_text(encoding="utf-8")
     all_keys, translated = set(), set()
     for block in re.split(r"\n\s*\n", text):
-        fuzzy = False
-        cur = None
-        parts = {"msgctxt": [], "msgid": [], "msgstr": []}
-        for line in block.splitlines():
-            if line.startswith("#~"):
-                cur = None
-                continue
-            if line.startswith("#,") and "fuzzy" in line:
-                fuzzy = True
-                continue
-            if line.startswith("#"):
-                continue
-            m = re.match(r'^(msgctxt|msgid|msgstr) "((?:[^"\\]|\\.)*)"', line)
-            if m:
-                cur = m.group(1)
-                parts[cur].append(m.group(2))
-                continue
-            m = re.match(r'^"((?:[^"\\]|\\.)*)"', line)
-            if m and cur:
-                parts[cur].append(m.group(1))
-        val = c_unescape("".join(parts["msgid"]))
-        if not val:
-            continue                      # the header entry, or no entry at all
-        ctx = c_unescape("".join(parts["msgctxt"]))
-        key = f"{ctx}|{val}" if ctx else val
+        key, is_translated = po_block_entry(block)
+        if key is None:
+            continue
         all_keys.add(key)
-        if "".join(parts["msgstr"]) and not fuzzy:
+        if is_translated:
             translated.add(key)
     return all_keys, translated
+
+
+def po_block_entry(block: str):
+    """(key, translated) for one blank-line-separated block of a .po, or
+    (None, False) for the header, an obsolete #~ entry, or a comment alone."""
+    fuzzy = False
+    cur = None
+    parts = {"msgctxt": [], "msgid": [], "msgstr": []}
+    for line in block.splitlines():
+        if line.startswith("#~"):
+            cur = None
+            continue
+        if line.startswith("#,") and "fuzzy" in line:
+            fuzzy = True
+            continue
+        if line.startswith("#"):
+            continue
+        m = re.match(r'^(msgctxt|msgid|msgstr) "((?:[^"\\]|\\.)*)"', line)
+        if m:
+            cur = m.group(1)
+            parts[cur].append(m.group(2))
+            continue
+        m = re.match(r'^"((?:[^"\\]|\\.)*)"', line)
+        if m and cur:
+            parts[cur].append(m.group(1))
+    val = c_unescape("".join(parts["msgid"]))
+    if not val:
+        return None, False
+    ctx = c_unescape("".join(parts["msgctxt"]))
+    key = f"{ctx}|{val}" if ctx else val
+    return key, bool("".join(parts["msgstr"])) and not fuzzy
+
+
+def is_comment_only(block: str) -> bool:
+    """A translator's note on its own, not the header or an obsolete entry."""
+    lines = block.splitlines()
+    return bool(lines) and all(line.startswith("#") and not line.startswith("#~")
+                               for line in lines)
+
+
+def add_missing_entries(path: Path, keys: dict) -> int:
+    """Add every extracted string the .po lacks as an empty entry, and return how
+    many were added. Each goes where the .pot's sorted order puts it: before
+    the first existing entry that sorts after it, and before any comments
+    written just above that entry. Existing entries are not touched, so a
+    translator's wrapping, comments and obsolete #~ entries all survive."""
+    blocks = path.read_text(encoding="utf-8").rstrip("\n").split("\n\n")
+    entry_keys = [po_block_entry(block)[0] for block in blocks]
+    missing = sorted(set(keys) - {k for k in entry_keys if k is not None})
+    if not missing:
+        return 0
+
+    out = []
+    pending = iter(missing)
+    nxt = next(pending, None)
+    last_entry = max(i for i, k in enumerate(entry_keys) if k is not None)
+    for i, block in enumerate(blocks):
+        key = entry_keys[i]
+        if key is not None:
+            # Comments on their own just above this entry belong to it, so new
+            # entries go in before them.
+            at = len(out)
+            while at > 0 and is_comment_only(out[at - 1]):
+                at -= 1
+            while nxt is not None and nxt < key:
+                out.insert(at, pot_entry(nxt, keys[nxt]))
+                at += 1
+                nxt = next(pending, None)
+        out.append(block)
+        if i == last_entry:
+            while nxt is not None:
+                out.append(pot_entry(nxt, keys[nxt]))
+                nxt = next(pending, None)
+    path.write_text("\n\n".join(out) + "\n", encoding="utf-8")
+    return len(missing)
 
 
 def main() -> int:
@@ -407,14 +480,24 @@ def main() -> int:
                   "string was probably renamed; msgmerge the translation forward",
                   file=sys.stderr)
             rc = 1
-        else:
-            covered = len(translated & universe)
-            print(f"{p.name}: {covered}/{len(universe)} translated "
-                  f"({covered * 100 // max(1, len(universe))}%)")
-            coverage[p.stem] = {
-                "translated": covered,
-                "percent": covered * 100 // max(1, len(universe)),
-            }
+            continue
+        absent = universe - pk
+        if absent and args.check:
+            for k in sorted(absent)[:20]:
+                print(f"  {p.name}: missing {k!r}", file=sys.stderr)
+            print(f"FAIL: {p.name} is missing {len(absent)} string(s) from leaf.pot; "
+                  "run `make i18n-pot` and commit it", file=sys.stderr)
+            rc = 1
+        elif absent:
+            added = add_missing_entries(p, keys)
+            print(f"{p.name}: added {added} new string(s) as empty entries")
+        covered = len(translated & universe)
+        print(f"{p.name}: {covered}/{len(universe)} translated "
+              f"({covered * 100 // max(1, len(universe))}%)")
+        coverage[p.stem] = {
+            "translated": covered,
+            "percent": covered * 100 // max(1, len(universe)),
+        }
 
     # Only rewrite the coverage document when every .po was inspected; a partial
     # run (one --po argument) would otherwise drop the languages it did not see.

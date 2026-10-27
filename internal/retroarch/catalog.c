@@ -882,7 +882,7 @@ static int jw_ra_validate_unique_cores(const jw_ra_catalog *catalog, char *error
         for (size_t j = i + 1u; j < catalog->core_count; j++) {
             if (strcmp(catalog->cores[i].id, catalog->cores[j].id) == 0) {
                 char message[256];
-                snprintf(message, sizeof(message), JW_UI("duplicate core id in RetroArch metadata: %s"),
+                snprintf(message, sizeof(message), "duplicate core id in RetroArch metadata: %s",
                          catalog->cores[i].id);
                 jw_ra_set_error(error, error_size, message);
                 return -1;
@@ -897,7 +897,7 @@ static int jw_ra_validate_unique_systems(const jw_ra_catalog *catalog, char *err
         for (size_t j = i + 1u; j < catalog->system_count; j++) {
             if (strcmp(catalog->systems[i].id, catalog->systems[j].id) == 0) {
                 char message[256];
-                snprintf(message, sizeof(message), JW_UI("duplicate system id in RetroArch metadata: %s"),
+                snprintf(message, sizeof(message), "duplicate system id in RetroArch metadata: %s",
                          catalog->systems[i].id);
                 jw_ra_set_error(error, error_size, message);
                 return -1;
@@ -948,7 +948,7 @@ static int jw_ra_validate_core_folders(const jw_ra_catalog *catalog,
         if (!jw_ra_core_folder_is_safe(core->config_folder)) {
             char message[256];
             snprintf(message, sizeof(message),
-                     JW_UI("packaged RetroArch core has unsafe config_folder: %s"),
+                     "packaged RetroArch core has unsafe config_folder: %s",
                      core->id ? core->id : "(unknown)");
             jw_ra_set_error(error, error_size, message);
             return -1;
@@ -962,7 +962,7 @@ static int jw_ra_validate_core_folders(const jw_ra_catalog *catalog,
             }
             char message[256];
             snprintf(message, sizeof(message),
-                     JW_UI("case-folding config_folder collision: %s and %s"),
+                     "case-folding config_folder collision: %s and %s",
                      core->id ? core->id : "(unknown)",
                      other->id ? other->id : "(unknown)");
             jw_ra_set_error(error, error_size, message);

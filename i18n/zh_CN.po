@@ -19,6 +19,14 @@ msgid "%d Hz"
 msgstr "%d Hz"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat app"
+msgstr "%d 个 Pak Rat 应用"
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d Pak Rat apps"
+msgstr "%d 个 Pak Rat 应用"
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d apps"
 msgstr "%d 个应用"
 
@@ -1734,6 +1742,10 @@ msgstr "不使用 BIOS 文件"
 #: internal/launcher/bios.c
 msgid "No BIOS file selected"
 msgstr "未选择 BIOS 文件"
+
+#: cmd/jawaka-launcher/main.c
+msgid "No Pak Rat apps found"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "No apps found"
@@ -4673,17 +4685,17 @@ msgstr " — 无应用可打开"
 msgid "%.180s is already installed manually.\n\nReplace it with the Pak Rat version so it can be updated? User data is preserved."
 msgstr "%.180s 已手动安装。\n\n要用 Pak Rat 版本替换它以便更新吗？用户数据会保留。"
 
-msgid "%d Pak Rat app%s"
-msgstr "%d 个 Pak Rat 应用%s"
+#~ msgid "%d Pak Rat app%s"
+#~ msgstr "%d 个 Pak Rat 应用%s"
 
-msgid "%d artwork job%s already queued"
-msgstr "%d 个封面任务%s已在队列中"
+#~ msgid "%d artwork job%s already queued"
+#~ msgstr "%d 个封面任务%s已在队列中"
 
-msgid "%d core%s"
-msgstr "%d 个核心%s"
+#~ msgid "%d core%s"
+#~ msgstr "%d 个核心%s"
 
-msgid "%d core%s for %d existing system%s"
-msgstr "%d 个核心%s，用于 %d 个现有系统%s"
+#~ msgid "%d core%s for %d existing system%s"
+#~ msgstr "%d 个核心%s，用于 %d 个现有系统%s"
 
 msgid "%d games across %d systems"
 msgstr "%d 个游戏，跨 %d 个系统"
@@ -4700,8 +4712,8 @@ msgstr "%d 个最近"
 msgid "%d results"
 msgstr "%d 个结果"
 
-msgid "%d system extension%s"
-msgstr "%d 个系统扩展%s"
+#~ msgid "%d system extension%s"
+#~ msgstr "%d 个系统扩展%s"
 
 msgid "%d total"
 msgstr "共 %d 项"
@@ -4709,14 +4721,14 @@ msgstr "共 %d 项"
 msgid "%lld days ago"
 msgstr "%lld 天前"
 
-msgid "%lld month%s ago"
-msgstr "%lld 个月%s前"
+#~ msgid "%lld month%s ago"
+#~ msgstr "%lld 个月%s前"
 
-msgid "%lld week%s ago"
-msgstr "%lld 周%s前"
+#~ msgid "%lld week%s ago"
+#~ msgstr "%lld 周%s前"
 
-msgid "%lld year%s ago"
-msgstr "%lld 年%s前"
+#~ msgid "%lld year%s ago"
+#~ msgstr "%lld 年%s前"
 
 msgid "%s %s claims %s already owned by the release catalog"
 msgstr "%s %s 声称 %s 已被发行目录占用"
@@ -4724,8 +4736,8 @@ msgstr "%s %s 声称 %s 已被发行目录占用"
 msgid "%s %s claims %s=%s, also claimed by %s; both refused"
 msgstr "%s %s 声称 %s=%s，同时被 %s 声称；两者都被拒绝"
 
-msgid "%s and %d core%s"
-msgstr "%s 和 %d 个核心%s"
+#~ msgid "%s and %d core%s"
+#~ msgstr "%s 和 %d 个核心%s"
 
 msgid "%s isn't saved"
 msgstr "%s 未保存"
@@ -4733,8 +4745,8 @@ msgstr "%s 未保存"
 msgid "%s output unavailable"
 msgstr "%s 输出不可用"
 
-msgid "%s unavailable: version %s is missing from catalog history."
-msgstr "%s 不可用：目录历史中缺少版本 %s。"
+#~ msgid "%s unavailable: version %s is missing from catalog history."
+#~ msgstr "%s 不可用：目录历史中缺少版本 %s。"
 
 msgid "%s%d/%d done, %d failed, %d busy%s%s%s%s"
 msgstr "%s%d/%d 已完成，%d 失败，%d 忙碌%s%s%s%s"
@@ -4793,11 +4805,11 @@ msgstr "添加系统和模拟器，而不是可打开的应用。"
 msgid "Also remove retained data for %.180s?\n\nThis separately deletes every declared retained directory on cards that are present now. Absent cards remain unchanged. This cannot be undone."
 msgstr "同时删除 %.180s 的保留数据？\n\n这会另外删除当前存在的卡上所有已声明的保留目录。不在的卡不受影响。此操作无法撤销。"
 
-msgid "Ambiguous ROM source: %.160s"
-msgstr "ROM 来源不明确：%.160s"
+#~ msgid "Ambiguous ROM source: %.160s"
+#~ msgstr "ROM 来源不明确：%.160s"
 
-msgid "Ambiguous filesystem name: %.160s"
-msgstr "文件系统名称不明确：%.160s"
+#~ msgid "Ambiguous filesystem name: %.160s"
+#~ msgstr "文件系统名称不明确：%.160s"
 
 msgid "An SD card check is pending. Finish it before deleting ROMs."
 msgstr "SD 卡检查待完成。请先完成再删除 ROM。"
@@ -4871,8 +4883,8 @@ msgstr "CMD 没有可执行文件名"
 msgid "CMD inspection needs the system's file formats"
 msgstr "CMD 检查需要该系统的文件格式"
 
-msgid "CTL-1 response exceeds 64 KiB"
-msgstr "CTL-1 响应超过 64 KiB"
+#~ msgid "CTL-1 response exceeds 64 KiB"
+#~ msgstr "CTL-1 响应超过 64 KiB"
 
 msgid "CUE FILE record has no file type"
 msgstr "CUE FILE 记录缺少文件类型"
@@ -4892,11 +4904,11 @@ msgstr "无法解压更新包"
 msgid "Cannot fetch release manifest"
 msgstr "无法获取发行清单"
 
-msgid "Cannot inspect %.160s: %s"
-msgstr "无法检查 %.160s：%s"
+#~ msgid "Cannot inspect %.160s: %s"
+#~ msgstr "无法检查 %.160s：%s"
 
-msgid "Cannot inspect ROM source %s: %s"
-msgstr "无法检查 ROM 来源 %s：%s"
+#~ msgid "Cannot inspect ROM source %s: %s"
+#~ msgstr "无法检查 ROM 来源 %s：%s"
 
 msgid "Cannot move update download into place: %s"
 msgstr "无法将更新下载移动到目标位置：%s"
@@ -4907,14 +4919,14 @@ msgstr "无法为重启准备更新"
 msgid "Cannot promote update payload"
 msgstr "无法提升更新载荷"
 
-msgid "Cannot read descriptor %.160s: %s"
-msgstr "无法读取描述符 %.160s：%s"
+#~ msgid "Cannot read descriptor %.160s: %s"
+#~ msgstr "无法读取描述符 %.160s：%s"
 
-msgid "Cannot read directory %.160s: %s"
-msgstr "无法读取目录 %.160s：%s"
+#~ msgid "Cannot read directory %.160s: %s"
+#~ msgstr "无法读取目录 %.160s：%s"
 
-msgid "Cannot resolve %.160s: %s"
-msgstr "无法解析 %.160s：%s"
+#~ msgid "Cannot resolve %.160s: %s"
+#~ msgstr "无法解析 %.160s：%s"
 
 msgid "Cannot start update runner"
 msgstr "无法启动更新执行器"
@@ -4922,11 +4934,11 @@ msgstr "无法启动更新执行器"
 msgid "Cannot start update runner: %s"
 msgstr "无法启动更新执行器：%s"
 
-msgid "Cannot traverse missing directory: %.160s"
-msgstr "无法遍历缺失的目录：%.160s"
+#~ msgid "Cannot traverse missing directory: %.160s"
+#~ msgstr "无法遍历缺失的目录：%.160s"
 
-msgid "Cannot unmount: service %s could not be verified stopped"
-msgstr "无法卸载：无法确认服务 %s 已停止"
+#~ msgid "Cannot unmount: service %s could not be verified stopped"
+#~ msgstr "无法卸载：无法确认服务 %s 已停止"
 
 msgid "Characters not allowed - account unchanged"
 msgstr "包含不允许的字符 —— 账号未更改"
@@ -4970,17 +4982,17 @@ msgstr "正在连接 %s…"
 msgid "Content descriptors are nested too deeply"
 msgstr "内容描述符嵌套过深"
 
-msgid "Content descriptors contain a cycle: %.160s"
-msgstr "内容描述符存在循环：%.160s"
+#~ msgid "Content descriptors contain a cycle: %.160s"
+#~ msgstr "内容描述符存在循环：%.160s"
 
-msgid "Content descriptors exceed the inspection size limit: %.160s"
-msgstr "内容描述符超出检查大小限制：%.160s"
+#~ msgid "Content descriptors exceed the inspection size limit: %.160s"
+#~ msgstr "内容描述符超出检查大小限制：%.160s"
 
-msgid "Content is not a regular file: %.160s"
-msgstr "内容不是普通文件：%.160s"
+#~ msgid "Content is not a regular file: %.160s"
+#~ msgstr "内容不是普通文件：%.160s"
 
-msgid "Content is outside the mounted ROM roots: %.160s"
-msgstr "内容位于已挂载的 ROM 根目录之外：%.160s"
+#~ msgid "Content is outside the mounted ROM roots: %.160s"
+#~ msgstr "内容位于已挂载的 ROM 根目录之外：%.160s"
 
 msgid "Content path has too many missing directories"
 msgstr "内容路径缺失的目录过多"
@@ -4988,11 +5000,11 @@ msgstr "内容路径缺失的目录过多"
 msgid "Content path is too long"
 msgstr "内容路径过长"
 
-msgid "Content path is too long: %.100s"
-msgstr "内容路径过长：%.100s"
+#~ msgid "Content path is too long: %.100s"
+#~ msgstr "内容路径过长：%.100s"
 
-msgid "Content reference escapes its ROM source: %.160s"
-msgstr "内容引用越出了其 ROM 来源：%.160s"
+#~ msgid "Content reference escapes its ROM source: %.160s"
+#~ msgstr "内容引用越出了其 ROM 来源：%.160s"
 
 msgid "Content references too many files"
 msgstr "内容引用的文件过多"
@@ -5048,14 +5060,14 @@ msgstr "无法加载最近游玩"
 msgid "Could not lock package mutation: %s"
 msgstr "无法锁定包变更：%s"
 
-msgid "Could not read complete descriptor: %.160s"
-msgstr "无法读取完整描述符：%.160s"
+#~ msgid "Could not read complete descriptor: %.160s"
+#~ msgstr "无法读取完整描述符：%.160s"
 
 msgid "Could not read your game's library identity."
 msgstr "无法读取游戏的库标识。"
 
-msgid "Could not resolve paths for %.200s"
-msgstr "无法解析 %.200s 的路径"
+#~ msgid "Could not resolve paths for %.200s"
+#~ msgstr "无法解析 %.200s 的路径"
 
 msgid "Could not resolve storage sources."
 msgstr "无法解析存储来源。"
@@ -5069,20 +5081,20 @@ msgstr "无法启动蓝牙扫描"
 msgid "Could not start deleting your game."
 msgstr "无法开始删除游戏。"
 
-msgid "Couldn't check %.160s: %s"
-msgstr "无法检查 %.160s：%s"
+#~ msgid "Couldn't check %.160s: %s"
+#~ msgstr "无法检查 %.160s：%s"
 
 msgid "Couldn't connect — check password"
 msgstr "无法连接 —— 请检查密码"
 
-msgid "Couldn't delete %.160s: %s"
-msgstr "无法删除 %.160s：%s"
+#~ msgid "Couldn't delete %.160s: %s"
+#~ msgstr "无法删除 %.160s：%s"
 
-msgid "Couldn't delete %.160s: it's no longer a regular file"
-msgstr "无法删除 %.160s：它已不再是普通文件"
+#~ msgid "Couldn't delete %.160s: it's no longer a regular file"
+#~ msgstr "无法删除 %.160s：它已不再是普通文件"
 
-msgid "Couldn't save the removal of %.160s: %s"
-msgstr "无法保存对 %.160s 的删除：%s"
+#~ msgid "Couldn't save the removal of %.160s: %s"
+#~ msgstr "无法保存对 %.160s 的删除：%s"
 
 msgid "Daily quota exceeded (HTTP 430)"
 msgstr "今日配额已用尽（HTTP 430）"
@@ -5099,8 +5111,8 @@ msgstr "此游戏不支持删除。"
 msgid "Descriptor argument is too long"
 msgstr "描述符参数过长"
 
-msgid "Descriptor contains binary data: %.160s"
-msgstr "描述符包含二进制数据：%.160s"
+#~ msgid "Descriptor contains binary data: %.160s"
+#~ msgstr "描述符包含二进制数据：%.160s"
 
 msgid "Descriptor has an unterminated quote"
 msgstr "描述符中有未闭合的引号"
@@ -5168,8 +5180,8 @@ msgstr "收藏更新失败"
 msgid "Favorited"
 msgstr "已收藏"
 
-msgid "Filesystem name changed during inspection: %.160s"
-msgstr "检查期间文件系统名称发生变化：%.160s"
+#~ msgid "Filesystem name changed during inspection: %.160s"
+#~ msgstr "检查期间文件系统名称发生变化：%.160s"
 
 msgid "Forgot %s"
 msgstr "已忘记 %s"
@@ -5228,14 +5240,14 @@ msgstr "无法校验已安装包元数据：%s"
 msgid "Invalid Bluetooth address\n"
 msgstr "蓝牙地址无效\n"
 
-msgid "Invalid content path: %.160s"
-msgstr "内容路径无效：%.160s"
+#~ msgid "Invalid content path: %.160s"
+#~ msgstr "内容路径无效：%.160s"
 
 msgid "Invalid game identity."
 msgstr "游戏标识无效。"
 
-msgid "Invalid path for %.160s"
-msgstr "%.160s 的路径无效"
+#~ msgid "Invalid path for %.160s"
+#~ msgstr "%.160s 的路径无效"
 
 msgid "Keep failed"
 msgstr "保留失败"
@@ -5423,8 +5435,8 @@ msgstr "正在提升启动器更新"
 msgid "Promoting managed apps"
 msgstr "正在提升托管应用"
 
-msgid "Queued %d artwork job%s"
-msgstr "%d 个封面任务%s已排队"
+#~ msgid "Queued %d artwork job%s"
+#~ msgstr "%d 个封面任务%s已排队"
 
 msgid "Queued %d, %d already queued"
 msgstr "已排队 %d 项，其中 %d 项已在队列中"
@@ -5447,8 +5459,8 @@ msgstr "ROM 删除正在准备或提交"
 msgid "ROM path missing"
 msgstr "ROM 路径缺失"
 
-msgid "ROM source is not mounted: %s"
-msgstr "ROM 来源未挂载：%s"
+#~ msgid "ROM source is not mounted: %s"
+#~ msgstr "ROM 来源未挂载：%s"
 
 msgid "Re-scrape all artwork anonymously? ScreenScraper can be slow and quota-limited without an account."
 msgstr "匿名重新刮削所有封面？没有账号时 ScreenScraper 可能很慢且受配额限制。"
@@ -5537,8 +5549,8 @@ msgstr "RetroArch 会话不可用"
 msgid "Return to the launcher before deleting ROMs."
 msgstr "删除 ROM 前请先返回启动器。"
 
-msgid "Reverting in %d second%s"
-msgstr "%d 秒后恢复%s"
+#~ msgid "Reverting in %d second%s"
+#~ msgstr "%d 秒后恢复%s"
 
 msgid "SD-card mounted noexec; switcher remount failed or regressed"
 msgstr "SD 卡以 noexec 挂载；切换器重新挂载失败或回退"
@@ -5588,14 +5600,14 @@ msgstr "匿名刮削缺失的封面？没有账号时 ScreenScraper 可能很慢
 msgid "Scrape queue is full"
 msgstr "刮削队列已满"
 
-msgid "Scraping %d game%s in %.140s"
-msgstr "正在刮削 %d 个游戏%s（%.140s）"
+#~ msgid "Scraping %d game%s in %.140s"
+#~ msgstr "正在刮削 %d 个游戏%s（%.140s）"
 
 msgid "Scraping artwork: %.180s"
 msgstr "正在刮削封面：%.180s"
 
-msgid "Scraping cancelled (%d item%s stopped)"
-msgstr "刮削已取消（停止了 %d 个任务%s）"
+#~ msgid "Scraping cancelled (%d item%s stopped)"
+#~ msgstr "刮削已取消（停止了 %d 个任务%s）"
 
 msgid "ScreenScraper API temporarily closed (HTTP 423)"
 msgstr "ScreenScraper API 暂时关闭（HTTP 423）"
@@ -5642,11 +5654,11 @@ msgstr "次要 SD 卡已卸载；媒体库更新已开始"
 msgid "Service is still stopping"
 msgstr "服务仍在停止中"
 
-msgid "Service quiesce failed: %s"
-msgstr "服务静默失败：%s"
+#~ msgid "Service quiesce failed: %s"
+#~ msgstr "服务静默失败：%s"
 
-msgid "Service quiesce failed: %s (%s)"
-msgstr "服务静默失败：%s（%s）"
+#~ msgid "Service quiesce failed: %s (%s)"
+#~ msgstr "服务静默失败：%s（%s）"
 
 msgid "Service status unavailable"
 msgstr "服务状态不可用"
@@ -5657,14 +5669,14 @@ msgstr "服务不可用"
 msgid "Sign-out failed - account unchanged"
 msgstr "退出登录失败 —— 账号未更改"
 
-msgid "Signed in - %d thread%s, quota %d/%d today"
-msgstr "已登录 —— %d 个线程%s，今日配额 %d/%d"
+#~ msgid "Signed in - %d thread%s, quota %d/%d today"
+#~ msgstr "已登录 —— %d 个线程%s，今日配额 %d/%d"
 
 msgid "Signed in as %s"
 msgstr "已登录为 %s"
 
-msgid "Signed in as %s - %d thread%s%s"
-msgstr "已登录为 %s —— %d 个线程%s%s"
+#~ msgid "Signed in as %s - %d thread%s%s"
+#~ msgstr "已登录为 %s —— %d 个线程%s%s"
 
 msgid "Signed in as %s%s"
 msgstr "已登录为 %s%s"
@@ -5690,8 +5702,8 @@ msgstr "状态"
 msgid "Stop & Play"
 msgstr "停止并游玩"
 
-msgid "Stopped %d job%s"
-msgstr "已停止 %d 个任务%s"
+#~ msgid "Stopped %d job%s"
+#~ msgstr "已停止 %d 个任务%s"
 
 msgid "Stopping"
 msgstr "正在停止"
@@ -5702,11 +5714,11 @@ msgstr "存储暂停"
 msgid "Storage paused, "
 msgstr "存储暂停，"
 
-msgid "Sync before play — %d item%s, %s"
-msgstr "游玩前同步 —— %d 项%s，%s"
+#~ msgid "Sync before play — %d item%s, %s"
+#~ msgstr "游玩前同步 —— %d 项%s，%s"
 
-msgid "Sync needs attention.\n\n%d item%s (%s) remained when waiting ended. Play anyway will stop Syncthing first; Cancel leaves syncing active."
-msgstr "同步需要注意。\n\n等待结束时仍有 %d 项%s（%s）未完成。仍然游玩会先停止 Syncthing；取消则保持同步。"
+#~ msgid "Sync needs attention.\n\n%d item%s (%s) remained when waiting ended. Play anyway will stop Syncthing first; Cancel leaves syncing active."
+#~ msgstr "同步需要注意。\n\n等待结束时仍有 %d 项%s（%s）未完成。仍然游玩会先停止 Syncthing；取消则保持同步。"
 
 msgid "Sync needs attention.\n\nSyncthing could not be verified stopped. Play anyway will retry the safe stop; Leaf will not launch until Syncthing is stopped."
 msgstr "同步需要注意。\n\n无法确认 Syncthing 已停止。仍然游玩会重试安全停止；在 Syncthing 停止前 Leaf 不会启动。"
@@ -5801,8 +5813,8 @@ msgstr "不支持的更新安装方式"
 msgid "Unsupported update install method: %s"
 msgstr "不支持的更新安装方式：%s"
 
-msgid "Update finished but service restore failed: %s"
-msgstr "更新已完成，但服务恢复失败：%s"
+#~ msgid "Update finished but service restore failed: %s"
+#~ msgstr "更新已完成，但服务恢复失败：%s"
 
 msgid "Update installed"
 msgstr "更新已安装"
@@ -5846,8 +5858,8 @@ msgstr "Wi-Fi 未连接"
 msgid "Wi-Fi unavailable on this platform"
 msgstr "此平台不支持 Wi-Fi"
 
-msgid "Windows drive paths cannot be resolved here: %.160s"
-msgstr "无法在此解析 Windows 盘符路径：%.160s"
+#~ msgid "Windows drive paths cannot be resolved here: %.160s"
+#~ msgstr "无法在此解析 Windows 盘符路径：%.160s"
 
 msgid "World"
 msgstr "世界"
@@ -5858,8 +5870,8 @@ msgstr "正在写入已安装发行标记"
 msgid "Wrong password"
 msgstr "密码错误"
 
-msgid "Your %s storage is unavailable or read-only."
-msgstr "你的 %s 存储不可用或为只读。"
+#~ msgid "Your %s storage is unavailable or read-only."
+#~ msgstr "你的 %s 存储不可用或为只读。"
 
 msgid "Your ROM card or library card is read-only."
 msgstr "你的 ROM 卡或媒体库卡为只读。"
@@ -5960,8 +5972,8 @@ msgstr "缓存失败"
 msgid "card absent; not inventoried"
 msgstr "卡不在；未清点"
 
-msgid "case-folding config_folder collision: %s and %s"
-msgstr "config_folder 大小写折叠冲突：%s 与 %s"
+#~ msgid "case-folding config_folder collision: %s and %s"
+#~ msgstr "config_folder 大小写折叠冲突：%s 与 %s"
 
 msgid "content contribution refused during manifest validation (%s)"
 msgstr "清单校验期间拒绝内容投稿（%s）"
@@ -5984,8 +5996,8 @@ msgstr "无法解析目录路径"
 msgid "could not save language"
 msgstr "无法保存语言"
 
-msgid "could not serialize service status"
-msgstr "无法序列化服务状态"
+#~ msgid "could not serialize service status"
+#~ msgstr "无法序列化服务状态"
 
 msgid "daemon unreachable"
 msgstr "守护进程不可达"
@@ -5996,11 +6008,11 @@ msgstr "已禁用"
 msgid "display name keyboard failed"
 msgstr "显示名称键盘失败"
 
-msgid "duplicate core id in RetroArch metadata: %s"
-msgstr "RetroArch 元数据中有重复的核心 id：%s"
+#~ msgid "duplicate core id in RetroArch metadata: %s"
+#~ msgstr "RetroArch 元数据中有重复的核心 id：%s"
 
-msgid "duplicate system id in RetroArch metadata: %s"
-msgstr "RetroArch 元数据中有重复的系统 id：%s"
+#~ msgid "duplicate system id in RetroArch metadata: %s"
+#~ msgstr "RetroArch 元数据中有重复的系统 id：%s"
 
 msgid "expanded RetroArch metadata has wrong shape"
 msgstr "扩展的 RetroArch 元数据结构不正确"
@@ -6038,8 +6050,8 @@ msgstr "已安装包元数据不可用"
 msgid "invalid"
 msgstr "无效"
 
-msgid "invalid CTL-1 request"
-msgstr "CTL-1 请求无效"
+#~ msgid "invalid CTL-1 request"
+#~ msgstr "CTL-1 请求无效"
 
 msgid "invalid battery override"
 msgstr "电池覆盖值无效"
@@ -6107,8 +6119,8 @@ msgstr "启动失败：缺少应用"
 msgid "launch failed: missing game"
 msgstr "启动失败：缺少游戏"
 
-msgid "launch failed: standalone emulator missing"
-msgstr "启动失败：独立模拟器缺失"
+#~ msgid "launch failed: standalone emulator missing"
+#~ msgstr "启动失败：独立模拟器缺失"
 
 msgid "launch-app failed"
 msgstr "启动应用失败"
@@ -6230,11 +6242,11 @@ msgstr "内存不足"
 msgid "overridden game launch still failed"
 msgstr "覆盖后的游戏启动仍然失败"
 
-msgid "package mutation failed: %.127s"
-msgstr "包变更失败：%.127s"
+#~ msgid "package mutation failed: %.127s"
+#~ msgstr "包变更失败：%.127s"
 
-msgid "package mutation failed: %.127s (%.127s)"
-msgstr "包变更失败：%.127s（%.127s）"
+#~ msgid "package mutation failed: %.127s (%.127s)"
+#~ msgstr "包变更失败：%.127s（%.127s）"
 
 msgid "package mutation in progress"
 msgstr "包变更进行中"
@@ -6242,14 +6254,14 @@ msgstr "包变更进行中"
 msgid "package mutation operation mismatch"
 msgstr "包变更操作不匹配"
 
-msgid "package mutation release failed: %.127s"
-msgstr "包变更释放失败：%.127s"
+#~ msgid "package mutation release failed: %.127s"
+#~ msgstr "包变更释放失败：%.127s"
 
 msgid "package operation in progress"
 msgstr "包操作进行中"
 
-msgid "packaged RetroArch core has unsafe config_folder: %s"
-msgstr "打包的 RetroArch 核心使用了不安全的 config_folder：%s"
+#~ msgid "packaged RetroArch core has unsafe config_folder: %s"
+#~ msgstr "打包的 RetroArch 核心使用了不安全的 config_folder：%s"
 
 msgid "patterns contains redundant case variants"
 msgstr "patterns 包含重复的大小写变体"
@@ -6392,8 +6404,8 @@ msgstr "搜索失败"
 msgid "search keyboard failed"
 msgstr "搜索键盘失败"
 
-msgid "server supports CTL-1 v1 only"
-msgstr "服务器仅支持 CTL-1 v1"
+#~ msgid "server supports CTL-1 v1 only"
+#~ msgstr "服务器仅支持 CTL-1 v1"
 
 msgid "service supervisor is unavailable"
 msgstr "服务监管器不可用"
@@ -6590,8 +6602,8 @@ msgstr "音量：%d%%"
 msgid "yesterday"
 msgstr "昨天"
 
-msgid "Library cleanup failed after %d files were removed. Refresh the library."
-msgstr "删除 %d 个文件后媒体库清理失败。请刷新媒体库。"
+#~ msgid "Library cleanup failed after %d files were removed. Refresh the library."
+#~ msgstr "删除 %d 个文件后媒体库清理失败。请刷新媒体库。"
 
 msgid ", quota %d/%d"
 msgstr "，配额 %d/%d"
@@ -6700,3 +6712,155 @@ msgstr "意大利"
 
 msgid "Portugal"
 msgstr "葡萄牙"
+
+#: internal/settings/settings.c
+msgid "%d artwork job already queued"
+msgstr "%d 个封面任务已在队列中"
+
+#: internal/settings/settings.c
+msgid "%d artwork jobs already queued"
+msgstr "%d 个封面任务已在队列中"
+
+#: internal/store/pakrat_state.c
+msgid "%d core"
+msgstr "%d 个核心"
+
+#: internal/store/pakrat_state.c
+msgid "%d core for %d existing system"
+msgstr "%d 个核心，用于 %d 个现有系统"
+
+#: internal/store/pakrat_state.c
+msgid "%d core for %d existing systems"
+msgstr "%d 个核心，用于 %d 个现有系统"
+
+#: internal/store/pakrat_state.c
+msgid "%d cores"
+msgstr "%d 个核心"
+
+#: internal/store/pakrat_state.c
+msgid "%d cores for %d existing system"
+msgstr "%d 个核心，用于 %d 个现有系统"
+
+#: internal/store/pakrat_state.c
+msgid "%d cores for %d existing systems"
+msgstr "%d 个核心，用于 %d 个现有系统"
+
+#: internal/store/pakrat_state.c
+msgid "%d system extension"
+msgstr "%d 个系统扩展"
+
+#: internal/store/pakrat_state.c
+msgid "%d system extensions"
+msgstr "%d 个系统扩展"
+
+#: internal/settings/settings.c
+msgid "%lld month ago"
+msgstr "%lld 个月前"
+
+#: internal/settings/settings.c
+msgid "%lld months ago"
+msgstr "%lld 个月前"
+
+#: internal/settings/settings.c
+msgid "%lld week ago"
+msgstr "%lld 周前"
+
+#: internal/settings/settings.c
+msgid "%lld weeks ago"
+msgstr "%lld 周前"
+
+#: internal/settings/settings.c
+msgid "%lld year ago"
+msgstr "%lld 年前"
+
+#: internal/settings/settings.c
+msgid "%lld years ago"
+msgstr "%lld 年前"
+
+#: internal/store/pakrat_state.c
+msgid "%s and %d core"
+msgstr "%s 和 %d 个核心"
+
+#: internal/store/pakrat_state.c
+msgid "%s and %d cores"
+msgstr "%s 和 %d 个核心"
+
+#: internal/settings/settings.c
+msgid "Queued %d artwork job"
+msgstr "%d 个封面任务已排队"
+
+#: internal/settings/settings.c
+msgid "Queued %d artwork jobs"
+msgstr "%d 个封面任务已排队"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reinstall unavailable: version %s is missing from catalog history."
+msgstr "无法重新安装：目录历史中缺少版本 %s。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restore unavailable: version %s is missing from catalog history."
+msgstr "无法恢复：目录历史中缺少版本 %s。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reverting in %d second"
+msgstr "%d 秒后恢复"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reverting in %d seconds"
+msgstr "%d 秒后恢复"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping %d game in %.140s"
+msgstr "正在刮削 %d 个游戏（%.140s）"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping %d games in %.140s"
+msgstr "正在刮削 %d 个游戏（%.140s）"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping cancelled (%d item stopped)"
+msgstr "刮削已取消（停止了 %d 个任务）"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping cancelled (%d items stopped)"
+msgstr "刮削已取消（停止了 %d 个任务）"
+
+#: internal/settings/settings.c
+msgid "Signed in - %d thread, quota %d/%d today"
+msgstr "已登录 —— %d 个线程，今日配额 %d/%d"
+
+#: internal/settings/settings.c
+msgid "Signed in - %d threads, quota %d/%d today"
+msgstr "已登录 —— %d 个线程，今日配额 %d/%d"
+
+#: internal/settings/settings.c
+msgid "Signed in as %s - %d thread%s"
+msgstr "已登录为 %s —— %d 个线程%s"
+
+#: internal/settings/settings.c
+msgid "Signed in as %s - %d threads%s"
+msgstr "已登录为 %s —— %d 个线程%s"
+
+#: internal/settings/settings.c
+msgid "Stopped %d job"
+msgstr "已停止 %d 个任务"
+
+#: internal/settings/settings.c
+msgid "Stopped %d jobs"
+msgstr "已停止 %d 个任务"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Sync before play — %d item, %s"
+msgstr "游玩前同步 —— %d 项，%s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Sync before play — %d items, %s"
+msgstr "游玩前同步 —— %d 项，%s"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Sync needs attention.\n\n%d item (%s) remained when waiting ended. Play anyway will stop Syncthing first; Cancel leaves syncing active."
+msgstr "同步需要注意。\n\n等待结束时仍有 %d 项（%s）未完成。仍然游玩会先停止 Syncthing；取消则保持同步。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Sync needs attention.\n\n%d items (%s) remained when waiting ended. Play anyway will stop Syncthing first; Cancel leaves syncing active."
+msgstr "同步需要注意。\n\n等待结束时仍有 %d 项（%s）未完成。仍然游玩会先停止 Syncthing；取消则保持同步。"

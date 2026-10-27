@@ -3244,7 +3244,7 @@ static void jw__poll_update_install(jw_daemon_state *state) {
         state->update_status.status = JW_UPDATE_STATUS_ERROR;
         snprintf(state->update_status.message,
                  sizeof(state->update_status.message),
-                 JW_UI("Update finished but service restore failed: %s"),
+                 "Update finished but service restore failed: %s",
                  reason[0] ? reason : "unknown");
     } else {
         state->update_package_quiesce_release_warned = false;
@@ -3858,12 +3858,12 @@ static int jw__handle_update_install(jw_daemon_state *state,
                     } else if (stuck[0]) {
                         snprintf(state->update_status.message,
                                  sizeof(state->update_status.message),
-                                 JW_UI("Service quiesce failed: %s (%s)"),
+                                 "Service quiesce failed: %s (%s)",
                                  stuck, reason[0] ? reason : "unknown");
                     } else {
                         snprintf(state->update_status.message,
                                  sizeof(state->update_status.message),
-                                 JW_UI("Service quiesce failed: %s"),
+                                 "Service quiesce failed: %s",
                                  reason[0] ? reason : "unknown");
                     }
                 }
@@ -4022,11 +4022,11 @@ static int jw__handle_package_mutation_begin(jw_daemon_state *state,
         char message[320];
         if (stuck[0]) {
             snprintf(message, sizeof(message),
-                     JW_UI("package mutation failed: %.127s (%.127s)"), stuck,
+                     "package mutation failed: %.127s (%.127s)", stuck,
                      reason[0] ? reason : "unknown");
         } else {
             snprintf(message, sizeof(message),
-                     JW_UI("package mutation failed: %.127s"),
+                     "package mutation failed: %.127s",
                      reason[0] ? reason : "unknown");
         }
         return jw__reply_error(client, message);
@@ -4072,7 +4072,7 @@ static int jw__handle_package_mutation_end(jw_daemon_state *state,
             reason, sizeof(reason))) {
         char message[256];
         snprintf(message, sizeof(message),
-                 JW_UI("package mutation release failed: %.127s"),
+                 "package mutation release failed: %.127s",
                  reason[0] ? reason : "unknown");
         return jw__reply_error(client, message);
     }
@@ -5011,7 +5011,7 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
                                                  sizeof(stuck))) {
         char message[256];
         snprintf(message, sizeof(message),
-                 JW_UI("Cannot unmount: service %s could not be verified stopped"),
+                 "Cannot unmount: service %s could not be verified stopped",
                  stuck);
         memset(&result, 0, sizeof(result));
         result.code = JW_PLATFORM_RESULT_FAILED;
@@ -5033,7 +5033,7 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
            by running it. Unavoidable side effect, and still a refusal. */
         char message[256];
         snprintf(message, sizeof(message),
-                 JW_UI("Cannot unmount: service %s could not be verified stopped"),
+                 "Cannot unmount: service %s could not be verified stopped",
                  stuck);
         memset(&result, 0, sizeof(result));
         result.code = JW_PLATFORM_RESULT_FAILED;
@@ -14811,7 +14811,7 @@ static int jw__reply_ctl1_json(jw_ipc_client *client, const char *id,
         cJSON_free(json);
         cJSON_Delete(reply);
         return jw__reply_ctl1_error(client, id, "response-too-large",
-                                    JW_UI("CTL-1 response exceeds 64 KiB"));
+                                    "CTL-1 response exceeds 64 KiB");
     }
     int rc = jw_ipc_client_send(client, json, len);
     cJSON_free(json);
@@ -14886,7 +14886,7 @@ static int jw__handle_service_ctl(jw_daemon_state *state,
             cJSON_Delete(reply);
             return jw__reply_ctl1_error(client, request->id,
                                         "internal-error",
-                                        JW_UI("could not serialize service status"));
+                                        "could not serialize service status");
         }
         int subscriber = jw__usable_subscription(state, service_id);
         jw_svc_lifecycle_game policy = e->pgid > 0
@@ -14974,8 +14974,8 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         if (!valid) {
             return jw__reply_ctl1_error(client, request.id, code,
                 strcmp(code, "unsupported-version") == 0
-                    ? JW_UI("server supports CTL-1 v1 only")
-                    : JW_UI("invalid CTL-1 request"));
+                    ? "server supports CTL-1 v1 only"
+                    : "invalid CTL-1 request");
         }
         return jw__handle_service_ctl(state, client, &request);
     }

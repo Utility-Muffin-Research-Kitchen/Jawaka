@@ -2172,6 +2172,8 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
     pthread_mutex_lock(&P->scrape_mu);
     s = P->scrape;
     pthread_mutex_unlock(&P->scrape_mu);
+    char scrape_message[sizeof(s.message)];
+    jw_i18n_message(s.message, NULL, 0, scrape_message, sizeof(scrape_message));
     bool paused_storage = strcmp(s.state, "paused-storage") == 0;
     bool active = strcmp(s.state, "running") == 0 ||
                   strcmp(s.state, "paused-quota") == 0 || paused_storage;
@@ -2180,10 +2182,10 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
         activity->completion.text[0] = '\0';
         if (paused_storage) {
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping paused: %.200s"),
-                     s.message[0] ? jw_i18n_exact(s.message) : T("SD card is read-only"));
+                     s.message[0] ? scrape_message : T("SD card is read-only"));
         } else if (strcmp(s.state, "paused-quota") == 0) {
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping paused: %.200s"),
-                     s.message[0] ? jw_i18n_exact(s.message) : T("daily quota exceeded"));
+                     s.message[0] ? scrape_message : T("daily quota exceeded"));
         } else if (s.current_system[0]) {
             int shown = s.done < s.total ? s.done + 1 : s.total;
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping %s · %d/%d"),
@@ -2204,11 +2206,11 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
         if (paused_storage) {
             snprintf(state->status, sizeof(state->status),
                      T("Scraping paused: %.200s"),
-                     s.message[0] ? jw_i18n_exact(s.message) : T("SD card is read-only"));
+                     s.message[0] ? scrape_message : T("SD card is read-only"));
         } else if (strcmp(s.state, "paused-quota") == 0) {
             snprintf(state->status, sizeof(state->status),
                      T("Scraping paused: %.200s"),
-                     s.message[0] ? jw_i18n_exact(s.message) : T("daily quota exceeded"));
+                     s.message[0] ? scrape_message : T("daily quota exceeded"));
         } else if (item[0]) {
             int shown = s.done + 1 > s.total ? s.total : s.done + 1;
             snprintf(state->status, sizeof(state->status),
@@ -2479,7 +2481,7 @@ static void jw__pakrat_build_view(jw_launcher_state *state) {
                  count == 1 ? T("%d theme") : T("%d themes"), count);
     } else {
         snprintf(state->pakrat_message, sizeof(state->pakrat_message),
-                 T("%d Pak Rat app%s"), count, count == 1 ? "" : "s");
+                 count == 1 ? T("%d Pak Rat app") : T("%d Pak Rat apps"), count);
     }
 }
 
@@ -3346,8 +3348,9 @@ static int jw__pakrat_detail_content_h(const jw_pakrat_app_state *app,
         app->installed_version[0]) {
         char missing[256];
         snprintf(missing, sizeof(missing),
-                 T("%s unavailable: version %s is missing from catalog history."),
-                 app->status == JW_PAKRAT_APP_STALE ? "Restore" : "Reinstall",
+                 app->status == JW_PAKRAT_APP_STALE
+                     ? T("Restore unavailable: version %s is missing from catalog history.")
+                     : T("Reinstall unavailable: version %s is missing from catalog history."),
                  app->installed_version);
         h += cat_measure_wrapped_text_height(body, missing, w) + CAT_S(18);
     }
@@ -3404,8 +3407,9 @@ static void jw__draw_pakrat_detail_content(int x, int y, int w, void *user) {
     if (app->installed_version_missing_from_history &&
         app->installed_version[0]) {
         snprintf(line, sizeof(line),
-                 "%s unavailable: version %s is missing from catalog history.",
-                 app->status == JW_PAKRAT_APP_STALE ? "Restore" : "Reinstall",
+                 app->status == JW_PAKRAT_APP_STALE
+                     ? T("Restore unavailable: version %s is missing from catalog history.")
+                     : T("Reinstall unavailable: version %s is missing from catalog history."),
                  app->installed_version);
         cat_draw_text_wrapped(c->body, line, x, cy, w,
                               theme->highlight, CAT_ALIGN_LEFT);
@@ -3509,7 +3513,7 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
                 ? (state->pakrat_load_rc == 0 ? T("No themes in Pak Rat yet")
                                               : state->pakrat_message)
                 : (state->pakrat_message[0] ? state->pakrat_message
-                                            : JW_UI("No Pak Rat apps found"));
+                                            : T("No Pak Rat apps found"));
             cat_draw_text_wrapped(body, jw_i18n_exact(msg),
                 list.x + CAT_S(8), list.y + CAT_S(8),
                 list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
@@ -6833,7 +6837,7 @@ static const char *jw__delete_source_name(const char *source) {
 
 static int jw__delete_line(const char *text, int x, int y, int w, bool draw) {
     TTF_Font *font = cat_get_font(CAT_FONT_SMALL);
-    const char *shown = jw_i18n_exact(text);
+    const char *shown = text;
     if (draw) cat_draw_text_wrapped(font, shown, x, y, w,
                                    cat_get_theme()->text, CAT_ALIGN_LEFT);
     return cat_measure_wrapped_text_height(font, shown, w) + CAT_S(10);
@@ -6896,7 +6900,7 @@ static int jw__delete_body(jw_launcher_state *state, int x, int y, int w, bool d
         snprintf(line, sizeof(line), T("Deleted %zu of %zu files."), deleted, status->files_count);
         y += jw__delete_line(line, x, y, w, draw);
     }
-    if (status->error[0]) y += jw__delete_line(status->error, x, y, w, draw);
+    if (status->error[0]) y += jw__delete_line(jw_i18n_exact(status->error), x, y, w, draw);
     return y - top;
 }
 
@@ -11205,8 +11209,9 @@ static void jw__start_action_scrape(const char *socket_path, const char *db_path
                               : T("Nothing to scrape - no games in this system"));
     } else {
         snprintf(state->status, sizeof(state->status),
-                 T("Scraping %d game%s in %.140s"), enqueued,
-                 enqueued == 1 ? "" : "s", state->action_system_display);
+                 enqueued == 1 ? T("Scraping %d game in %.140s")
+                               : T("Scraping %d games in %.140s"),
+                 enqueued, state->action_system_display);
     }
     jw__action_refresh(db_path, state);
 }
@@ -11226,8 +11231,8 @@ static void jw__cancel_action_scrape(const char *socket_path, const char *db_pat
         return;
     }
     snprintf(state->status, sizeof(state->status),
-             T("Scraping cancelled (%d item%s stopped)"), removed,
-             removed == 1 ? "" : "s");
+             removed == 1 ? T("Scraping cancelled (%d item stopped)")
+                          : T("Scraping cancelled (%d items stopped)"), removed);
     jw__action_refresh(db_path, state);
 }
 
@@ -13431,8 +13436,9 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
         cat_draw_rect(bx, by, bar_w, bar_h, theme->hint);
         cat_draw_rect(bx, by, (int)(bar_w * frac), bar_h, theme->highlight);
         char cd[48];
-        snprintf(cd, sizeof(cd), T("Reverting in %d second%s"), remaining_s,
-                 remaining_s == 1 ? "" : "s");
+        snprintf(cd, sizeof(cd),
+                 remaining_s == 1 ? T("Reverting in %d second")
+                                  : T("Reverting in %d seconds"), remaining_s);
         int cw = cat_measure_text(font, cd);
         cat_draw_text(font, cd, (sw - cw) / 2, by + bar_h + CAT_S(12), theme->text);
         int kw = cat_measure_text(font, jw_i18n_exact(keep_hint));
@@ -13644,9 +13650,10 @@ static bool jw__surface_blocked_game_launch(
         char title[192];
         jw__pakrat_format_size((unsigned long long)blocked->pending_bytes,
                                size, sizeof(size));
-        snprintf(title, sizeof(title), T("Sync before play — %d item%s, %s"),
-                 blocked->pending_items,
-                 blocked->pending_items == 1 ? "" : "s", size);
+        snprintf(title, sizeof(title),
+                 blocked->pending_items == 1 ? T("Sync before play — %d item, %s")
+                                             : T("Sync before play — %d items, %s"),
+                 blocked->pending_items, size);
         cat_list_item items[] = {
             CAT_LIST_ITEM("Wait for sync", "wait"),
             CAT_LIST_ITEM("Play anyway", "play"),
@@ -13705,11 +13712,14 @@ static bool jw__surface_blocked_game_launch(
                 (unsigned long long)blocked->pending_bytes,
                 size, sizeof(size));
             snprintf(message, sizeof(message),
-                     T("Sync needs attention.\n\n%d item%s (%s) remained when "
-                     "waiting ended. Play anyway will stop Syncthing first; "
-                     "Cancel leaves syncing active."),
-                     blocked->pending_items,
-                     blocked->pending_items == 1 ? "" : "s", size);
+                     blocked->pending_items == 1
+                         ? T("Sync needs attention.\n\n%d item (%s) remained when "
+                             "waiting ended. Play anyway will stop Syncthing first; "
+                             "Cancel leaves syncing active.")
+                         : T("Sync needs attention.\n\n%d items (%s) remained when "
+                             "waiting ended. Play anyway will stop Syncthing first; "
+                             "Cancel leaves syncing active."),
+                     blocked->pending_items, size);
         } else if (blocked->requires_verified_stop) {
             snprintf(message, sizeof(message),
                      T("Sync needs attention.\n\nSyncthing could not be verified "

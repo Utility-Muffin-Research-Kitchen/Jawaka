@@ -119,6 +119,19 @@ int main(void) {
                JW_APPEARANCE_JA_FONT_PATH) == 0)
         return fail("a code merely starting with ja chose the Japanese face");
 
+    /* Korean uses its own face as the UI face but leaves the CJK override
+       empty, so a Chinese or Japanese title keeps the theme's cjk_font. */
+    if (strcmp(jw_appearance_font_path_for_language(3, "ko_KR"),
+               JW_APPEARANCE_KO_FONT_PATH) != 0)
+        return fail("ko_KR did not select the Korean UI face");
+    fill_minimal(&env, "ko_KR");
+    if (jw_appearance_apply_env(&env) != 0)
+        return fail("apply_env failed for ko_KR");
+    if (!env_is("CAT_CJK_FONT_PATH", ""))
+        return fail("ko_KR set a CJK override");
+    if (strcmp(jw_appearance_cjk_font_label("ko_KR"), "Leaf Han Sans KR") != 0)
+        return fail("ko_KR did not label the Korean face");
+
     /* Fredoka has no Vietnamese letters, so Vietnamese draws in the default
        family instead. Every other family, and Fredoka in other languages,
        is left alone. */

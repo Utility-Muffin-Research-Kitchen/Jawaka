@@ -4280,13 +4280,15 @@ static void jw__scrape_start_status(const jw_ipc_scrape_start_info *info,
             snprintf(buf, buf_size, T("Queued %d, %d already queued"),
                      info->enqueued, info->already_queued);
         } else {
-            snprintf(buf, buf_size, T("Queued %d artwork job%s"),
-                     info->enqueued, info->enqueued == 1 ? "" : "s");
+            snprintf(buf, buf_size,
+                     info->enqueued == 1 ? T("Queued %d artwork job")
+                                         : T("Queued %d artwork jobs"), info->enqueued);
         }
     } else if (info->already_queued > 0) {
-        snprintf(buf, buf_size, T("%d artwork job%s already queued"),
-                 info->already_queued,
-                 info->already_queued == 1 ? "" : "s");
+        snprintf(buf, buf_size,
+                 info->already_queued == 1 ? T("%d artwork job already queued")
+                                          : T("%d artwork jobs already queued"),
+                 info->already_queued);
     } else if (missing_only && info->skipped_existing > 0) {
         snprintf(buf, buf_size, "%s", "No missing artwork");
     } else if (info->requested == 0) {
@@ -4411,13 +4413,15 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
     if (animating) cat_request_frame();
 
     /* Error/cancel note below the info. */
+    char scrape_message[sizeof(row->message)];
+    jw_i18n_message(row->message, NULL, 0, scrape_message, sizeof(scrape_message));
     const char *desc = NULL;
     if (row->state == JW_IPC_SCRAPE_ROW_NOT_FOUND)
         desc = T("Not found in the ScreenScraper.fr database.");
     else if (row->state == JW_IPC_SCRAPE_ROW_ERROR)
-        desc = row->message[0] ? jw_i18n_exact(row->message) : T("Artwork scrape failed.");
+        desc = row->message[0] ? scrape_message : T("Artwork scrape failed.");
     else if (row->state == JW_IPC_SCRAPE_ROW_CANCELLED)
-        desc = row->message[0] ? jw_i18n_exact(row->message) : T("Scrape was cancelled before completion.");
+        desc = row->message[0] ? scrape_message : T("Scrape was cancelled before completion.");
     if (desc) {
         ly += cat_scale(4);
         cat_draw_text_ellipsized(small, desc, c.x, ly, theme->hint, c.w);
@@ -4771,9 +4775,10 @@ static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, i
                      ui->ss_requests_today, ui->ss_max_requests);
         }
         if (ui->ss_max_threads > 0) {
-            snprintf(ss_value, sizeof(ss_value), T("Signed in as %s - %d thread%s%s"),
-                     ui->ss_username, ui->ss_max_threads,
-                     ui->ss_max_threads == 1 ? "" : "s", quota);
+            snprintf(ss_value, sizeof(ss_value),
+                     ui->ss_max_threads == 1 ? T("Signed in as %s - %d thread%s")
+                                             : T("Signed in as %s - %d threads%s"),
+                     ui->ss_username, ui->ss_max_threads, quota);
         } else {
             snprintf(ss_value, sizeof(ss_value), T("Signed in as %s%s"),
                      ui->ss_username, quota);
@@ -5079,9 +5084,9 @@ static void jw__fmt_ago(long long when, char *buf, size_t n) {
     if (d <= 0)       snprintf(buf, n, T("today"));
     else if (d == 1)  snprintf(buf, n, T("yesterday"));
     else if (d < 7)   snprintf(buf, n, T("%lld days ago"), d);
-    else if (d < 30)  snprintf(buf, n, T("%lld week%s ago"),  d / 7,  d / 7  == 1 ? "" : "s");
-    else if (d < 365) snprintf(buf, n, T("%lld month%s ago"), d / 30, d / 30 == 1 ? "" : "s");
-    else              snprintf(buf, n, T("%lld year%s ago"),  d / 365, d / 365 == 1 ? "" : "s");
+    else if (d < 30)  snprintf(buf, n, (d / 7 == 1 ? T("%lld week ago") : T("%lld weeks ago")), d / 7);
+    else if (d < 365) snprintf(buf, n, (d / 30 == 1 ? T("%lld month ago") : T("%lld months ago")), d / 30);
+    else              snprintf(buf, n, (d / 365 == 1 ? T("%lld year ago") : T("%lld years ago")), d / 365);
 }
 
 /* Set by jw_settings_ui_open for the Info pages so the first frame after a
@@ -5509,6 +5514,7 @@ static const char *jw__language_label(const char *code) {
     if (strcmp(code, "fr_FR") == 0) return "Français";
     if (strcmp(code, "nl_BE") == 0) return "Nederlands (België)";
     if (strcmp(code, "es_MX") == 0) return "Español (México)";
+    if (strcmp(code, "pt_BR") == 0) return "Português (Brasil)";
     if (strcmp(code, "vi_VN") == 0) return "Tiếng Việt";
     if (strcmp(code, "ru_RU") == 0) return "Русский";
     if (strcmp(code, "zh_TW") == 0) return "繁體中文";
@@ -5516,6 +5522,7 @@ static const char *jw__language_label(const char *code) {
        it; a bare "ja" is kept for any table dropped on the card that way. */
     if (strcmp(code, "ja_JP") == 0) return "日本語";
     if (strcmp(code, "ja") == 0)    return "日本語";
+    if (strcmp(code, "ko_KR") == 0) return "한국어";
     if (strcmp(code, "ko") == 0)    return "한국어";
     return code;
 }
@@ -8182,9 +8189,10 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                                         info.max_requests);
                         if (info.max_requests > 0) {
                             snprintf(status_buf, status_size,
-                                     T("Signed in - %d thread%s, quota %d/%d today"),
+                                     info.max_threads == 1
+                                         ? T("Signed in - %d thread, quota %d/%d today")
+                                         : T("Signed in - %d threads, quota %d/%d today"),
                                      info.max_threads,
-                                     info.max_threads == 1 ? "" : "s",
                                      info.requests_today, info.max_requests);
                         } else {
                             snprintf(status_buf, status_size, T("Signed in as %s"),
@@ -8210,11 +8218,12 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                         jw__persist(ui, "screenscraper_maxthreads", "");
                         jw__persist(ui, "screenscraper_requests_today", "");
                         jw__persist(ui, "screenscraper_max_requests", "");
+                        char reason[sizeof(info.message)];
+                        jw_i18n_message(rc == 0 && info.message[0]
+                                            ? info.message : JW_UI("daemon unavailable"),
+                                        NULL, 0, reason, sizeof(reason));
                         snprintf(status_buf, status_size,
-                                 T("Saved - could not verify: %s"),
-                                 jw_i18n_exact(rc == 0 && info.message[0]
-                                                   ? info.message
-                                                   : JW_UI("daemon unavailable")));
+                                 T("Saved - could not verify: %s"), reason);
                     }
                     break;
                 }
@@ -8531,8 +8540,9 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     if (jw__scrape_queue_active(q)) {
                         int stopped = 0;
                         (void)jw_ipc_scrape_stop_all(ui->socket_path, &stopped);
-                        snprintf(status_buf, status_size, T("Stopped %d job%s"),
-                                 stopped, stopped == 1 ? "" : "s");
+                        snprintf(status_buf, status_size,
+                                 stopped == 1 ? T("Stopped %d job") : T("Stopped %d jobs"),
+                                 stopped);
                     } else if (q && q->done > 0) {
                         int cleared = 0;
                         (void)jw_ipc_scrape_clear_done(ui->socket_path, &cleared);

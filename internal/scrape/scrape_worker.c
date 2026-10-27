@@ -833,7 +833,7 @@ static jw__scrape_item_result jw__process_item(jw__scrape_item *item,
                           image_db, sizeof(image_db)) != 0) {
         pthread_mutex_lock(&jw__w.mu);
         snprintf(jw__w.message, sizeof(jw__w.message),
-                 JW_UI("Could not resolve paths for %.200s"), item->rom_path);
+                 "Could not resolve paths for %.200s", item->rom_path);
         jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_ERROR,
                            jw__w.message);
         pthread_mutex_unlock(&jw__w.mu);

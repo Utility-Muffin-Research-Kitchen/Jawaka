@@ -676,7 +676,7 @@ int jw_ipc_scan_library(const char *socket_path, char *status, int status_len) {
         const cJSON *ac = cJSON_GetObjectItemCaseSensitive(resp, "app_count");
         if (cJSON_IsNumber(gc) && cJSON_IsNumber(ac))
             snprintf(status, (size_t)status_len,
-                     JW_UI("scan complete: %d games, %d apps"), gc->valueint, ac->valueint);
+                     T("scan complete: %d games, %d apps"), gc->valueint, ac->valueint);
         else {
             const cJSON *action = cJSON_GetObjectItemCaseSensitive(resp, "action");
             if (cJSON_IsString(action) && action->valuestring &&
@@ -1024,7 +1024,7 @@ static int ipc__launch_game(const char *socket_path, const char *system,
         const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
         if (status) {
             if (cJSON_IsString(message) && message->valuestring) {
-                snprintf(status, (size_t)status_len, JW_UI("launch failed: %s"), message->valuestring);
+                snprintf(status, (size_t)status_len, T("launch failed: %s"), jw_i18n_exact(message->valuestring));
             } else {
                 snprintf(status, (size_t)status_len, "%s", JW_UI("launch failed"));
             }
@@ -1104,8 +1104,8 @@ int jw_ipc_switch_game(const char *socket_path, const char *system,
         const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
         if (status) {
             if (cJSON_IsString(message) && message->valuestring) {
-                snprintf(status, (size_t)status_len, JW_UI("switch failed: %s"),
-                         message->valuestring);
+                snprintf(status, (size_t)status_len, T("switch failed: %s"),
+                         jw_i18n_exact(message->valuestring));
             } else {
                 snprintf(status, (size_t)status_len, "%s", JW_UI("switch failed"));
             }
@@ -1140,7 +1140,7 @@ int jw_ipc_launch_app(const char *socket_path, const char *pak_dir,
         const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
         if (status) {
             if (cJSON_IsString(message) && message->valuestring) {
-                snprintf(status, (size_t)status_len, JW_UI("launch failed: %s"), message->valuestring);
+                snprintf(status, (size_t)status_len, T("launch failed: %s"), jw_i18n_exact(message->valuestring));
             } else {
                 snprintf(status, (size_t)status_len, "%s", JW_UI("launch failed"));
             }
@@ -1182,8 +1182,8 @@ int jw_ipc_get_retroarch_session(const char *socket_path,
         const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
         if (status && status_len > 0) {
             if (cJSON_IsString(message) && message->valuestring) {
-                snprintf(status, (size_t)status_len, JW_UI("RetroArch session failed: %s"),
-                         message->valuestring);
+                snprintf(status, (size_t)status_len, T("RetroArch session failed: %s"),
+                         jw_i18n_exact(message->valuestring));
             } else {
                 snprintf(status, (size_t)status_len, "%s", JW_UI("RetroArch session failed"));
             }
@@ -1276,8 +1276,8 @@ int jw_ipc_retroarch_action(const char *socket_path, const char *action,
         const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
         if (status && status_len > 0) {
             if (cJSON_IsString(message) && message->valuestring) {
-                snprintf(status, (size_t)status_len, JW_UI("RetroArch action failed: %s"),
-                         message->valuestring);
+                snprintf(status, (size_t)status_len, T("RetroArch action failed: %s"),
+                         jw_i18n_exact(message->valuestring));
             } else {
                 snprintf(status, (size_t)status_len, "%s", JW_UI("RetroArch action failed"));
             }
@@ -1469,7 +1469,7 @@ int jw_ipc_reset_retroarch_config(const char *socket_path,
         const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
         if (status && status_len > 0) {
             if (cJSON_IsString(message) && message->valuestring) {
-                snprintf(status, (size_t)status_len, JW_UI("RetroArch reset failed: %s"), message->valuestring);
+                snprintf(status, (size_t)status_len, T("RetroArch reset failed: %s"), jw_i18n_exact(message->valuestring));
             } else {
                 snprintf(status, (size_t)status_len, "%s", JW_UI("RetroArch reset failed"));
             }
@@ -1667,7 +1667,7 @@ int jw_ipc_set_brightness(const char *socket_path, int percent,
         const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
         if (status && status_len > 0) {
             if (cJSON_IsString(message) && message->valuestring) {
-                snprintf(status, (size_t)status_len, JW_UI("brightness failed: %s"), message->valuestring);
+                snprintf(status, (size_t)status_len, T("brightness failed: %s"), jw_i18n_exact(message->valuestring));
             } else {
                 snprintf(status, (size_t)status_len, "%s", "brightness failed");
             }
@@ -1682,7 +1682,7 @@ int jw_ipc_set_brightness(const char *socket_path, int percent,
         *out_percent = resolved;
     }
     if (status && status_len > 0) {
-        snprintf(status, (size_t)status_len, JW_UI("brightness: %d%%"), resolved);
+        snprintf(status, (size_t)status_len, T("brightness: %d%%"), resolved);
     }
 
     cJSON_Delete(resp);
@@ -1749,7 +1749,7 @@ int jw_ipc_set_volume(const char *socket_path, int percent,
         const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
         if (status && status_len > 0) {
             if (cJSON_IsString(message) && message->valuestring) {
-                snprintf(status, (size_t)status_len, JW_UI("volume failed: %s"), message->valuestring);
+                snprintf(status, (size_t)status_len, T("volume failed: %s"), jw_i18n_exact(message->valuestring));
             } else {
                 snprintf(status, (size_t)status_len, "%s", "volume failed");
             }
@@ -1764,7 +1764,7 @@ int jw_ipc_set_volume(const char *socket_path, int percent,
         *out_percent = resolved;
     }
     if (status && status_len > 0) {
-        snprintf(status, (size_t)status_len, JW_UI("volume: %d%%"), resolved);
+        snprintf(status, (size_t)status_len, T("volume: %d%%"), resolved);
     }
 
     cJSON_Delete(resp);

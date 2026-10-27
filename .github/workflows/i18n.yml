@@ -5,9 +5,11 @@ name: i18n
 #      .pot means translators are translating against a stale key list, and the
 #      coverage gate is measuring the wrong denominator.
 #   2. Every committed translation parses, has no orphan keys (the signature of
-#      a renamed English string), and keeps printf conversions compatible with
-#      its key -- i18n-compile.py refuses a %d that became %s, which would
-#      otherwise crash snprintf on device.
+#      a renamed English string), lists every string in the .pot (translators
+#      start from their language's file, so a missing string is one they never
+#      see), and keeps printf conversions compatible with its key --
+#      i18n-compile.py refuses a %d that became %s, which would otherwise crash
+#      snprintf on device.
 # No gettext tooling is needed: extraction is tools/i18n-extract.py, which
 # knows the render funnels xgettext cannot see (see the header comment there).
 
@@ -27,3 +29,20 @@ jobs:
 
       - name: Verify the committed .pot and any translations
         run: make i18n-check
+      - name: Verify extractor boundaries
+        run: python3 tools/i18n-extract-test.py
+
+  ui-messages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Jawaka
+      - uses: actions/checkout@v4
+        with:
+          repository: Utility-Muffin-Research-Kitchen/Catastrophe
+          ref: 42cbc368600994608debc6accd266de6abad19e2
+          path: Catastrophe
+      - name: Install renderer dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libsqlite3-dev libcurl4-openssl-dev
+      - run: make -C Jawaka i18n-ui-test

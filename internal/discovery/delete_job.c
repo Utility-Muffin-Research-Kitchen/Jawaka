@@ -47,7 +47,7 @@ static int jw__writable(jw_delete_view *view, const char *path, const char *sour
     if (!injected && jw_storage_path_writable(path, NULL, 0)) return 0;
     snprintf(view->readonly_source, sizeof(view->readonly_source), "%s",
              !strcmp(source, "primary") ? "launcher_sd" : source);
-    snprintf(view->error, sizeof(view->error), JW_UI("Your %s storage is unavailable or read-only."), source);
+    snprintf(view->error, sizeof(view->error), "Your %s storage is unavailable or read-only.", source);
     return -1;
 }
 
@@ -226,15 +226,14 @@ static void *jw__commit(void *context) {
     if (jw_db_reconcile_removed_roms(db, removed, count) != 0 ||
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
         size_t used = strlen(view->error);
-        /* Keep the separator out of the translatable sentence: the key must be
-         * the whole message (with %d) or jw_i18n_message cannot match it at the
-         * point the delete dialog draws it. */
+        /* This worker has no translation table. Keep this composed diagnostic
+         * unmarked: the Delete dialog only translates exact fixed messages. */
         if (used && used + 1 < sizeof(view->error)) {
             view->error[used++] = ' ';
             view->error[used] = '\0';
         }
         snprintf(view->error + used, sizeof(view->error) - used,
-                 JW_UI("Library cleanup failed after %d files were removed. Refresh the library."),
+                 "Library cleanup failed after %d files were removed. Refresh the library.",
                  (int)job->result.removed_count);
         rc = -1;
     } else transaction = false;

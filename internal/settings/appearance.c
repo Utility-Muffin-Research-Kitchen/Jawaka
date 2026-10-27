@@ -130,6 +130,10 @@ static bool jw__language_is_japanese(const char *lang) {
     return jw__language_is(lang, "ja");
 }
 
+static bool jw__language_is_korean(const char *lang) {
+    return jw__language_is(lang, "ko");
+}
+
 /* Themed families missing letters a translation needs, so text in them would
    drop letters mid-word. Fredoka has no Vietnamese (ă, đ, ơ, ư and most of the
    stacked-accent forms); Space Grotesk, Lexend, Baloo 2 and Fredoka have no
@@ -168,6 +172,10 @@ int jw_appearance_font_index_for_language(int index, const char *lang) {
 const char *jw_appearance_font_path_for_language(int index, const char *lang) {
     if (jw__language_is_japanese(lang))
         return JW_APPEARANCE_JA_FONT_PATH;
+    /* Korean leaves the CJK override alone: the Chinese face still draws a
+       Chinese or Japanese title, and Hangul goes to this face either way. */
+    if (jw__language_is_korean(lang))
+        return JW_APPEARANCE_KO_FONT_PATH;
     if (jw_i18n_language_is_cjk(lang))
         return JW_APPEARANCE_CJK_FONT_PATH;
     return jw_appearance_font_path_for_index(jw_appearance_font_index_for_language(index, lang));
@@ -182,7 +190,9 @@ const char *jw_appearance_cjk_font_path_for_language(const char *lang) {
 }
 
 const char *jw_appearance_cjk_font_label(const char *lang) {
-    return jw__language_is_japanese(lang) ? "Leaf Han Sans JP" : "Source Han Sans";
+    if (jw__language_is_japanese(lang)) return "Leaf Han Sans JP";
+    if (jw__language_is_korean(lang)) return "Leaf Han Sans KR";
+    return "Source Han Sans";
 }
 
 /* A persisted key, where its value lands, and what stands in when it is

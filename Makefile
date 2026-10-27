@@ -350,6 +350,7 @@ SCRAPE_SMOKE_SRCS := \
 
 PAKRAT_SMOKE_SRCS := \
 	cmd/jawaka-pakrat-smoke/main.c \
+	internal/i18n/i18n.c \
 	$(LEAF_VERSION_SRC) \
 	$(PAKRAT_CATALOG_SRC) \
 	$(PAKRAT_STATE_LOGIC_SRC) \
@@ -544,15 +545,16 @@ i18n-test: $(BUILD)/bin/jawaka-i18n-test
 		-o $$fx/platform/i18n/zh_CN.jwi >/dev/null && \
 	$(BUILD)/bin/jawaka-i18n-test $$fx; rc=$$?; rm -rf $$fx; exit $$rc
 
-# Regenerate the canonical key list from the sources. Commit the result --
-# CI diffs it, so a UI-string change without a regenerated .pot fails there.
+# Regenerate the canonical key list from the sources, and add any new string to
+# every translation as an empty entry. Commit the result -- CI diffs it, so a
+# UI-string change without a regenerated .pot and .po files fails there.
 i18n-pot:
 	python3 tools/gen-shader-strings.py
 	python3 tools/i18n-extract.py --po $(wildcard i18n/*.po)
 
 # What CI runs: the committed .pot must match the code, and any committed
-# translation must parse, carry no orphan keys, and keep its printf
-# conversions compatible (i18n-compile.py enforces that last one).
+# translation must parse, carry no orphan keys, list every string, and keep
+# its printf conversions compatible (i18n-compile.py enforces that last one).
 i18n-check:
 	python3 tools/gen-shader-strings.py --check
 	python3 tools/i18n-extract.py --check --po $(wildcard i18n/*.po)
@@ -561,9 +563,8 @@ i18n-check:
 	done
 
 # Compile every committed translation into the runtime table the device loads
-# ($UMRK_PLATFORM_PATH/i18n/<lang>.jwi). The .po files alone translate nothing
-# on device: a build that skips this step ships English for every string, no
-# matter how complete the translations are.
+# ($UMRK_PLATFORM_PATH/i18n/<lang>.jwi) for local builds and inspection.
+# Leaf staging also compiles every i18n/*.po independently; see Leaf/stage/mlp1.mk.
 i18n-tables:
 	@mkdir -p $(BUILD)/i18n
 	@for po in $(wildcard i18n/*.po); do \
@@ -1425,6 +1426,14 @@ launch-notice-ui-test: | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/launch-notice-ui-test \
 		internal/launcher/launch_notice_ui_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
 	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/launch-notice-ui-test
+
+.PHONY: i18n-ui-test
+i18n-ui-test: | $(BUILD)/bin check-catastrophe check-sdl
+	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/i18n-ui-test \
+		internal/launcher/i18n_ui_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
+	mkdir -p $(BUILD)/i18n-ui/i18n
+	python3 tools/i18n-compile.py i18n/zh_CN.po -o $(BUILD)/i18n-ui/i18n/zh_CN.jwi
+	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/i18n-ui-test $(BUILD)/i18n-ui
 
 .PHONY: scrape-art-test
 scrape-art-test: | $(BUILD)/bin

@@ -165,13 +165,13 @@ static int jw__sync_parent(const jw_delete_file *file, char *error, size_t error
     char parent[JW_STORAGE_PATH_MAX];
     snprintf(parent, sizeof(parent), "%s", file->path);
     char *slash = strrchr(parent, '/');
-    if (!slash) return jw__error(error, error_size, JW_UI("Invalid path for %.160s"), file->rom_relpath);
+    if (!slash) return jw__error(error, error_size, "Invalid path for %.160s", file->rom_relpath);
     if (slash == parent) slash[1] = '\0'; else *slash = '\0';
     int directory = open(parent, O_RDONLY | O_DIRECTORY);
     int rc = directory < 0 ? -1 : fsync(directory);
     int saved = errno;
     if (directory >= 0 && close(directory) && !rc) { rc = -1; saved = errno; }
-    return rc ? jw__error(error, error_size, JW_UI("Couldn't save the removal of %.160s: %s"),
+    return rc ? jw__error(error, error_size, "Couldn't save the removal of %.160s: %s",
                           file->rom_relpath, strerror(saved)) : 0;
 }
 
@@ -191,15 +191,15 @@ int jw_delete_execute(const jw_delete_plan *plan, jw_delete_guard guard, void *c
         struct stat st;
         if (lstat(file->path, &st)) {
             if (errno != ENOENT)
-                return jw__error(error, error_size, JW_UI("Couldn't check %.160s: %s"), file->rom_relpath, strerror(errno));
+                return jw__error(error, error_size, "Couldn't check %.160s: %s", file->rom_relpath, strerror(errno));
             result->outcomes[i] = JW_DELETE_ABSENT;
             result->absent_count++;
             continue;
         }
         if (!S_ISREG(st.st_mode))
-            return jw__error(error, error_size, JW_UI("Couldn't delete %.160s: it's no longer a regular file"), file->rom_relpath);
+            return jw__error(error, error_size, "Couldn't delete %.160s: it's no longer a regular file", file->rom_relpath);
         if (unlink(file->path))
-            return jw__error(error, error_size, JW_UI("Couldn't delete %.160s: %s"), file->rom_relpath, strerror(errno));
+            return jw__error(error, error_size, "Couldn't delete %.160s: %s", file->rom_relpath, strerror(errno));
         result->outcomes[i] = JW_DELETE_REMOVED;
         result->removed_count++;
         result->bytes += (uint64_t)st.st_size;
