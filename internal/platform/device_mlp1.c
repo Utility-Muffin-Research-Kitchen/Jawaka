@@ -2820,7 +2820,7 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
     unsigned available = jw__mlp1_get_audio_available_outputs();
     if ((available & JW_PLATFORM_AUDIO_OUTPUT_BIT(output)) == 0) {
         char message[JW_PLATFORM_MAX_MESSAGE];
-        snprintf(message, sizeof(message), JW_UI("%s output unavailable"),
+        snprintf(message, sizeof(message), "%s output unavailable",
                  jw_platform_audio_output_label(output));
         jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE, message);
         return -1;
@@ -2879,7 +2879,7 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
 
     (void)jw__mlp1_apply_stored_audio_volume(output);
     char message[JW_PLATFORM_MAX_MESSAGE];
-    snprintf(message, sizeof(message), JW_UI("audio output: %s"),
+    snprintf(message, sizeof(message), "audio output: %s",
              jw_platform_audio_output_label(output));
     jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, (int)output);
     return 0;
@@ -3826,7 +3826,7 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         }
         jw_log_info("display: refresh rate -> %d Hz", hz);
         char msg[32];
-        snprintf(msg, sizeof(msg), JW_UI("switching to %d Hz"), hz);
+        snprintf(msg, sizeof(msg), "switching to %d Hz", hz);
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
     }
@@ -3866,7 +3866,7 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         if (kelvin == JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
             snprintf(msg, sizeof(msg), JW_UI("Color temperature neutral"));
         } else {
-            snprintf(msg, sizeof(msg), JW_UI("Color temperature %d K"), kelvin);
+            snprintf(msg, sizeof(msg), "Color temperature %d K", kelvin);
         }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
@@ -3896,7 +3896,7 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         static const char *const names[] = { "off", "4:3", "stretch" };
         jw_log_info("display: HDMI output -> %s", names[mode]);
         char msg[48];
-        snprintf(msg, sizeof(msg), JW_UI("HDMI output %s"), names[mode]);
+        snprintf(msg, sizeof(msg), "HDMI output %s", names[mode]);
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
     }

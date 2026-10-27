@@ -236,14 +236,6 @@ msgstr ""
 msgid "%lld years ago"
 msgstr ""
 
-#: internal/catalog/merge.c
-msgid "%s %s claims %s already owned by the release catalog"
-msgstr ""
-
-#: internal/catalog/merge.c
-msgid "%s %s claims %s=%s, also claimed by %s; both refused"
-msgstr ""
-
 #: internal/settings/settings.c
 msgid "%s (current)"
 msgstr ""
@@ -314,10 +306,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "%s launcher exited (status %s)"
-msgstr ""
-
-#: internal/platform/device_mlp1.c
-msgid "%s output unavailable"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1384,10 +1372,6 @@ msgstr ""
 msgid "Color Temperature"
 msgstr ""
 
-#: internal/platform/device_mlp1.c
-msgid "Color temperature %d K"
-msgstr ""
-
 #: internal/settings/settings.c
 msgid "Color temperature change failed"
 msgstr ""
@@ -2238,10 +2222,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "HDMI Output"
-msgstr ""
-
-#: internal/platform/device_mlp1.c
-msgid "HDMI output %s"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -5928,10 +5908,6 @@ msgstr ""
 msgid "audio output set"
 msgstr ""
 
-#: internal/platform/device_mlp1.c
-msgid "audio output: %s"
-msgstr ""
-
 #: internal/services/supervisor.c
 msgid "backoff"
 msgstr ""
@@ -5998,10 +5974,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "card absent; not inventoried"
-msgstr ""
-
-#: internal/discovery/discovery.c
-msgid "content contribution refused during manifest validation (%s)"
 msgstr ""
 
 #: cmd/jawakad/main.c
@@ -6752,10 +6724,6 @@ msgstr ""
 msgid "switching HDMI output"
 msgstr ""
 
-#: internal/platform/device_mlp1.c
-msgid "switching to %d Hz"
-msgstr ""
-
 #: internal/ipc/ipc_client.c
 msgid "switching to 60 Hz"
 msgstr ""
@@ -6768,20 +6736,8 @@ msgstr ""
 msgid "sync check could not safely proceed"
 msgstr ""
 
-#: internal/catalog/merge.c
-msgid "system %s needs core %s, which is not available after merge; the system is refused too rather than producing a tile that cannot launch"
-msgstr ""
-
 #: internal/retroarch/catalog.c
 msgid "system missing from metadata"
-msgstr ""
-
-#: internal/catalog/merge.c
-msgid "system_extensions for %s names core %s, absent after merge; that name dropped, extension accepted"
-msgstr ""
-
-#: internal/catalog/merge.c
-msgid "system_extensions names %s, which no system provides after merge; extension dropped"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c

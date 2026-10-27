@@ -1394,7 +1394,7 @@ static int jw__content_enumerate_dir(const jw_storage_source *source,
                                           &manifest, reason, sizeof(reason))) {
             char detail[256];
             snprintf(detail, sizeof(detail),
-                     JW_UI("content contribution refused during manifest validation (%s)"),
+                     "content contribution refused during manifest validation (%s)",
                      reason[0] ? reason : "unknown");
             if (jw__content_diagnostic(diagnostics, provider,
                                        reason[0] ? reason : "unknown-field",

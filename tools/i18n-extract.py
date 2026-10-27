@@ -243,12 +243,15 @@ def extract():
         text = c_unescape(lit)
         if not text or text == "%s":
             return
-        # These producers have no table, and their consumers use exact lookup.
-        # A format with inserted values can never be looked up there. The
+        # These backend messages reach the UI as completed strings, where they
+        # are either drawn directly or passed through exact lookup. A format
+        # with inserted values can never be looked up there. The
         # ScreenScraper client is intentionally separate: its UI consumers use
         # jw_i18n_message() to translate numeric templates.
         if where in ("cmd/jawakad/main.c", "internal/discovery/delete_job.c",
-                     "internal/discovery/content.c", "internal/discovery/delete.c"):
+                     "internal/discovery/content.c", "internal/discovery/delete.c",
+                     "internal/platform/device_mlp1.c", "internal/catalog/merge.c",
+                     "internal/discovery/discovery.c"):
             if re.search(r"%(?!%)[-+ #0\d.*hljztL]*[diuoxXfFeEgGaAcspn]", text):
                 return
         keys.setdefault(text, where)

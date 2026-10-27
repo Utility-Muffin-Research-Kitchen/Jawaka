@@ -4730,11 +4730,11 @@ msgstr "%lld 天前"
 #~ msgid "%lld year%s ago"
 #~ msgstr "%lld 年%s前"
 
-msgid "%s %s claims %s already owned by the release catalog"
-msgstr "%s %s 声称 %s 已被发行目录占用"
+#~ msgid "%s %s claims %s already owned by the release catalog"
+#~ msgstr "%s %s 声称 %s 已被发行目录占用"
 
-msgid "%s %s claims %s=%s, also claimed by %s; both refused"
-msgstr "%s %s 声称 %s=%s，同时被 %s 声称；两者都被拒绝"
+#~ msgid "%s %s claims %s=%s, also claimed by %s; both refused"
+#~ msgstr "%s %s 声称 %s=%s，同时被 %s 声称；两者都被拒绝"
 
 #~ msgid "%s and %d core%s"
 #~ msgstr "%s 和 %d 个核心%s"
@@ -4742,8 +4742,8 @@ msgstr "%s %s 声称 %s=%s，同时被 %s 声称；两者都被拒绝"
 msgid "%s isn't saved"
 msgstr "%s 未保存"
 
-msgid "%s output unavailable"
-msgstr "%s 输出不可用"
+#~ msgid "%s output unavailable"
+#~ msgstr "%s 输出不可用"
 
 #~ msgid "%s unavailable: version %s is missing from catalog history."
 #~ msgstr "%s 不可用：目录历史中缺少版本 %s。"
@@ -4949,8 +4949,8 @@ msgstr "已清除"
 msgid "Cleared %d"
 msgstr "已清除 %d 项"
 
-msgid "Color temperature %d K"
-msgstr "色温 %d K"
+#~ msgid "Color temperature %d K"
+#~ msgstr "色温 %d K"
 
 msgid "Color temperature failed"
 msgstr "色温设置失败"
@@ -5213,8 +5213,8 @@ msgstr "游戏启动被拦截。\n\n%.128s 可能仍在写入存档或即时存�
 msgid "Game launch blocked.\n\nA previous game may still be writing Saves or States. Restart the device before launching another game."
 msgstr "游戏启动被拦截。\n\n上一个游戏可能仍在写入存档或即时存档。请重启设备后再启动另一个游戏。"
 
-msgid "HDMI output %s"
-msgstr "HDMI 输出 %s"
+#~ msgid "HDMI output %s"
+#~ msgstr "HDMI 输出 %s"
 
 msgid "HDMI output failed"
 msgstr "HDMI 输出失败"
@@ -5924,8 +5924,8 @@ msgstr "音频输出路由失败"
 msgid "audio output set"
 msgstr "音频输出已设置"
 
-msgid "audio output: %s"
-msgstr "音频输出：%s"
+#~ msgid "audio output: %s"
+#~ msgstr "音频输出：%s"
 
 msgid "backoff"
 msgstr "退避中"
@@ -5975,8 +5975,8 @@ msgstr "卡不在；未清点"
 #~ msgid "case-folding config_folder collision: %s and %s"
 #~ msgstr "config_folder 大小写折叠冲突：%s 与 %s"
 
-msgid "content contribution refused during manifest validation (%s)"
-msgstr "清单校验期间拒绝内容投稿（%s）"
+#~ msgid "content contribution refused during manifest validation (%s)"
+#~ msgstr "清单校验期间拒绝内容投稿（%s）"
 
 msgid "could not compute missing counts"
 msgstr "无法计算缺失数量"
@@ -6455,8 +6455,8 @@ msgstr "切换游戏失败"
 msgid "switching HDMI output"
 msgstr "正在切换 HDMI 输出"
 
-msgid "switching to %d Hz"
-msgstr "正在切换到 %d Hz"
+#~ msgid "switching to %d Hz"
+#~ msgstr "正在切换到 %d Hz"
 
 msgid "switching to 60 Hz"
 msgstr "正在切换到 60 Hz"
@@ -6467,14 +6467,14 @@ msgstr "正在切换到 90 Hz"
 msgid "sync check could not safely proceed"
 msgstr "同步检查无法安全进行"
 
-msgid "system %s needs core %s, which is not available after merge; the system is refused too rather than producing a tile that cannot launch"
-msgstr "系统 %s 需要核心 %s，但合并后该核心不可用；系统也被拒绝，而不是生成无法启动的条目"
+#~ msgid "system %s needs core %s, which is not available after merge; the system is refused too rather than producing a tile that cannot launch"
+#~ msgstr "系统 %s 需要核心 %s，但合并后该核心不可用；系统也被拒绝，而不是生成无法启动的条目"
 
-msgid "system_extensions for %s names core %s, absent after merge; that name dropped, extension accepted"
-msgstr "system_extensions 为 %s 指定核心 %s，但合并后该核心不存在；该名称被丢弃，扩展保留"
+#~ msgid "system_extensions for %s names core %s, absent after merge; that name dropped, extension accepted"
+#~ msgstr "system_extensions 为 %s 指定核心 %s，但合并后该核心不存在；该名称被丢弃，扩展保留"
 
-msgid "system_extensions names %s, which no system provides after merge; extension dropped"
-msgstr "system_extensions 指定了 %s，但合并后没有系统提供它；扩展被丢弃"
+#~ msgid "system_extensions names %s, which no system provides after merge; extension dropped"
+#~ msgstr "system_extensions 指定了 %s，但合并后没有系统提供它；扩展被丢弃"
 
 msgid "this platform"
 msgstr "此平台"
