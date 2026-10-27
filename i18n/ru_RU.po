@@ -4093,7 +4093,7 @@ msgid "Save & Quit"
 msgstr "Сохранить и выйти"
 
 #: cmd/jawaka-menu/main.c
-msgid "Save & Quit quicksave \\xe2\\x80\\x94 A resumes, Y keeps it as a slot"
+msgid "Save & Quit quicksave — A resumes, Y keeps it as a slot"
 msgstr ""
 
 #: internal/settings/settings.c
