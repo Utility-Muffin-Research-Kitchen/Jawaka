@@ -1478,7 +1478,7 @@ void jw_settings_ui_refresh_services(jw_settings_ui *ui) {
     int refresh_result = jw__refresh_services(ui);
     if (refresh_result < 0 && ui->screen == JW_SETTINGS_SERVICES) {
         snprintf(ui->services_msg, sizeof(ui->services_msg), "%s",
-                 T("Service status unavailable"));
+                 JW_UI("Service status unavailable"));
     } else if (refresh_result >= 0 &&
                strcmp(ui->services_msg, "Service status unavailable") == 0) {
         ui->services_msg[0] = '\0';
