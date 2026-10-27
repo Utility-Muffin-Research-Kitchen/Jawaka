@@ -191,8 +191,8 @@ static int jw__mutation_begin(const jw_pakrat_context *ctx,
         jw_pakrat_mutation_lock_acquire(
             ctx->runtime_dir, operation_id, package_id, target_path, lock,
             reason, sizeof(reason)) != 0) {
-        jw__pakrat_error(ctx, "Could not lock package mutation: %s",
-                         reason[0] ? reason : "runtime unavailable");
+        jw__pakrat_error(ctx, JW_UI("Could not lock package mutation: %s"),
+                         reason[0] ? reason : JW_UI("runtime unavailable"));
         return -1;
     }
     if (jw__mutation_request(ctx, "package-mutation-begin", operation_id,
@@ -973,7 +973,7 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
             if (ctx->outcome) {
                 ctx->outcome->theme_reasons = package.reasons;
             }
-            jw__pakrat_error(ctx, "Theme package is not valid: %s",
+            jw__pakrat_error(ctx, JW_UI("Theme package is not valid: %s"),
                              jw_theme_package_reason_slug((jw_theme_reason)first));
             goto cleanup;
         }
@@ -1004,8 +1004,8 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
                 primary_source->userdata_path, store_id, pkg.install_path,
                 &candidate_metadata, metadata_reason,
                 sizeof(metadata_reason)) != 0) {
-            jw__pakrat_error(ctx, "Package manifest is not transaction-safe: %s",
-                             metadata_reason[0] ? metadata_reason : "invalid");
+            jw__pakrat_error(ctx, JW_UI("Package manifest is not transaction-safe: %s"),
+                             metadata_reason[0] ? metadata_reason : JW_UI("invalid"));
             goto cleanup;
         }
     }
@@ -1027,8 +1027,8 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
                              metadata_reason, sizeof(metadata_reason))) != 0 ||
                 jw__cache_metadata(ctx->db_path, &installed_metadata) != 0) {
                 jw__pakrat_error(
-                    ctx, "Installed package metadata cannot be validated: %s",
-                    metadata_reason[0] ? metadata_reason : "cache failed");
+                    ctx, JW_UI("Installed package metadata cannot be validated: %s"),
+                    metadata_reason[0] ? metadata_reason : JW_UI("cache failed"));
                 goto cleanup;
             }
         } else if (metadata_rc != 0) {
@@ -1414,8 +1414,8 @@ static int jw__load_owned_metadata(const jw_pakrat_context *ctx,
                      install->store_id, install->install_path, out, reason,
                      sizeof(reason))) != 0 ||
         jw__cache_metadata(ctx->db_path, out) != 0) {
-        jw__pakrat_error(ctx, "Installed package metadata cannot be cached: %s",
-                         reason[0] ? reason : "validation failed");
+        jw__pakrat_error(ctx, JW_UI("Installed package metadata cannot be cached: %s"),
+                         reason[0] ? reason : JW_UI("validation failed"));
         jw_pakrat_txn_metadata_destroy(out);
         return -1;
     }
@@ -1444,7 +1444,7 @@ int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) 
     }
     jw_pakrat_kind kind = jw_pakrat_install_path_kind(row.install_path);
     if (strcmp(row.kind, jw_pakrat_kind_name(kind)) != 0) {
-        jw__pakrat_error(ctx, "Pak Rat ownership record is inconsistent: %s",
+        jw__pakrat_error(ctx, JW_UI("Pak Rat ownership record is inconsistent: %s"),
                          store_id);
         return -1;
     }

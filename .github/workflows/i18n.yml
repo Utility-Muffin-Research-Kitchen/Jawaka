@@ -29,3 +29,20 @@ jobs:
 
       - name: Verify the committed .pot and any translations
         run: make i18n-check
+      - name: Verify extractor boundaries
+        run: python3 tools/i18n-extract-test.py
+
+  ui-messages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Jawaka
+      - uses: actions/checkout@v4
+        with:
+          repository: Utility-Muffin-Research-Kitchen/Catastrophe
+          ref: 42cbc368600994608debc6accd266de6abad19e2
+          path: Catastrophe
+      - name: Install renderer dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libsqlite3-dev libcurl4-openssl-dev
+      - run: make -C Jawaka i18n-ui-test

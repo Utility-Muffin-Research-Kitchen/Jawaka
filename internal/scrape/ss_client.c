@@ -379,11 +379,11 @@ static int jw__json_int(const cJSON *obj, const char *key, int fallback) {
 
 static const char *jw__http_status_error(int code) {
     switch (code) {
-    case 429: return "Thread limit reached (HTTP 429)";
-    case 430: return "Daily quota exceeded (HTTP 430)";
-    case 431: return "Too many unrecognized ROMs (HTTP 431)";
-    case 423: return "ScreenScraper API temporarily closed (HTTP 423)";
-    case 426: return "Software has been blacklisted (HTTP 426)";
+    case 429: return JW_UI("Thread limit reached (HTTP 429)");
+    case 430: return JW_UI("Daily quota exceeded (HTTP 430)");
+    case 431: return JW_UI("Too many unrecognized ROMs (HTTP 431)");
+    case 423: return JW_UI("ScreenScraper API temporarily closed (HTTP 423)");
+    case 426: return JW_UI("Software has been blacklisted (HTTP 426)");
     default:  return NULL;
     }
 }
@@ -601,7 +601,7 @@ static jw_ss_search_status jw__search_request(
     cJSON *response = cJSON_GetObjectItem(json, "response");
     if (!response) {
         cJSON_Delete(json);
-        jw__ss_set_error("ScreenScraper response is missing 'response'");
+        jw__ss_set_error(JW_UI("ScreenScraper response is missing 'response'"));
         return JW_SS_SEARCH_ERROR;
     }
 
@@ -669,7 +669,7 @@ jw_ss_search_status jw_ss_search_rom_platforms(
         return JW_SS_SEARCH_ERROR;
     }
     if (!system_ids || system_count == 0) {
-        jw__ss_set_error("No ScreenScraper platform ids provided");
+        jw__ss_set_error(JW_UI("No ScreenScraper platform ids provided"));
         return JW_SS_SEARCH_ERROR;
     }
 
@@ -954,7 +954,7 @@ int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
             }
         } else if (!pixels) {
             free(buf.data);
-            jw__ss_set_error("Image decode failed (stb_image)");
+            jw__ss_set_error(JW_UI("Image decode failed (stb_image)"));
             return -1;
         } else {
             free(buf.data);
@@ -974,7 +974,7 @@ int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
                 out_pixels = jw__downscale_rgba(pixels, w, h, out_w, out_h);
                 if (!out_pixels) {
                     stbi_image_free(pixels);
-                    jw__ss_set_error("Out of memory while downscaling image");
+                    jw__ss_set_error(JW_UI("Out of memory while downscaling image"));
                     return -1;
                 }
             }
@@ -986,7 +986,7 @@ int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
                 free(out_pixels);
             stbi_image_free(pixels);
             if (!png_data) {
-                jw__ss_set_error("PNG encoding failed (miniz)");
+                jw__ss_set_error(JW_UI("PNG encoding failed (miniz)"));
                 return -1;
             }
 

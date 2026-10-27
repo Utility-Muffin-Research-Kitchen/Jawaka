@@ -1,4 +1,5 @@
 #include "internal/settings/timezones.h"
+#include "internal/i18n/i18n.h"
 
 #include <string.h>
 
@@ -91,7 +92,7 @@ int jw_timezone_utc_index(void) {
 }
 
 const char *jw_timezone_label(const char *tz) {
-    if (!tz || !tz[0]) return "System default";
+    if (!tz || !tz[0]) return JW_UI("System default");
     for (int i = 0; i < kJawakaTimeZoneCount; ++i)
         if (strcmp(kJawakaTimeZones[i].tz, tz) == 0) return kJawakaTimeZones[i].label;
     return tz;   /* unknown id: show the raw zone */

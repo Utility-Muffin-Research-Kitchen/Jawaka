@@ -581,6 +581,17 @@ void jw_i18n_shutdown(void) {
     jw__i18n_reset();
 }
 
+const char *jw_i18n_exact(const char *text) {
+    if (!text) return "";
+    /* Skip only what jw_i18n() would strip. A no-space "prefix|" is a context
+       key when it is written inside T(), but the same shape at a draw site can
+       be data, and a game called "A|B" must not come back as "B". A spaced
+       pipe (" | %d thread") is not a prefix, so tail fragments still
+       translate. */
+    if (jw__i18n_strip_context(text) != text) return text;
+    return jw_i18n(text);
+}
+
 const char *jw_i18n(const char *english) {
     if (!english) return NULL;
     if (g_i18n.count == 0) return jw__i18n_strip_context(english);

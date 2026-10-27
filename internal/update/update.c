@@ -1621,7 +1621,7 @@ static void jw__add_release_options(jw_update_status *status,
         const char *artifact_url = jw__release_asset_download_url(artifact_asset);
         if (!artifact_url) {
             snprintf(last_message, last_message_size, "%s",
-                     "Release is missing an update asset");
+                     JW_UI("Release is missing an update asset"));
             continue;
         }
 
@@ -1739,7 +1739,7 @@ int jw_update_check_releases(jw_update_status *status,
 
     char last_message[JW_UPDATE_MESSAGE_MAX];
     snprintf(last_message, sizeof(last_message), "%s",
-             "No compatible Leaf update metadata found");
+             JW_UI("No compatible Leaf update metadata found"));
 
     /* The routine check only needs the newest compatible release, so it takes
        manifests one at a time and stops at the first hit; the fetcher keeps the
@@ -1755,7 +1755,7 @@ int jw_update_check_releases(jw_update_status *status,
                 all_fetched = false;
                 snprintf(last_message, sizeof(last_message), "%s",
                          manifests[i].error[0] ? manifests[i].error
-                                               : "Cannot fetch release manifest");
+                                               : JW_UI("Cannot fetch release manifest"));
                 continue;
             }
             jw__add_release_options(status, state_dir, platform_id, candidates[i],
@@ -2608,7 +2608,7 @@ int jw_update_install_start(jw_update_status *status,
     pid_t pid = fork();
     if (pid < 0) {
         jw__write_install_result_file(result_path, "error",
-                                      "Cannot start update runner",
+                                      JW_UI("Cannot start update runner"),
                                       status->release_id);
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "Cannot start update runner: %s", strerror(errno));
@@ -2760,7 +2760,7 @@ int jw_update_install_preflight(jw_update_status *status,
     if (strcmp(status->artifact_kind, "sd_root_zip") != 0) {
         status->install_blocked = true;
         jw__set_install_message(status, "unsupported_artifact",
-                                "Unsupported update artifact kind: %s",
+                                JW_UI("Unsupported update artifact kind: %s"),
                                 status->artifact_kind[0] ? status->artifact_kind : "unknown");
         return 0;
     }
@@ -2771,7 +2771,7 @@ int jw_update_install_preflight(jw_update_status *status,
              strcmp(status->handoff_completion, "reboot") != 0)) {
             status->install_blocked = true;
             jw__set_install_message(status, "unsupported_handoff",
-                                    "Unsupported stock update method for %s",
+                                    JW_UI("Unsupported stock update method for %s"),
                                     status->platform_id[0] ? status->platform_id : "unknown");
             return 0;
         }
@@ -2779,7 +2779,7 @@ int jw_update_install_preflight(jw_update_status *status,
             !jw__filename_safe(status->handoff_trigger_file)) {
             status->install_blocked = true;
             jw__set_install_message(status, "unsupported_handoff",
-                                    "Unsafe stock update trigger: %s",
+                                    JW_UI("Unsafe stock update trigger: %s"),
                                     status->handoff_trigger_file);
             return 0;
         }
@@ -2788,7 +2788,7 @@ int jw_update_install_preflight(jw_update_status *status,
                strcmp(status->handoff_type, "jawaka_c_runner") != 0) {
         status->install_blocked = true;
         jw__set_install_message(status, "unsupported_handoff",
-                                "Unsupported update install method: %s",
+                                JW_UI("Unsupported update install method: %s"),
                                 status->handoff_type[0] ? status->handoff_type : "unknown");
         return 0;
     }

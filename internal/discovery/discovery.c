@@ -1,4 +1,5 @@
 #include "internal/discovery/discovery.h"
+#include "internal/i18n/i18n.h"
 
 #include "cJSON.h"
 #include "internal/catalog/effective.h"
@@ -1409,7 +1410,7 @@ static int jw__content_enumerate_dir(const jw_storage_source *source,
         if (scrape_status < 0 &&
             jw__content_diagnostic(
                 diagnostics, provider, reason,
-                "optional content scrape metadata ignored; filename behavior retained") != 0) {
+                JW_UI("optional content scrape metadata ignored; filename behavior retained")) != 0) {
             jw_content_manifest_destroy(&manifest);
             free(manifest_text);
             rc = -1;
@@ -1420,7 +1421,7 @@ static int jw__content_enumerate_dir(const jw_storage_source *source,
         int art_status = jw_content_art_validate(
             manifest.document, pak_dir, &content_art, reason, sizeof(reason));
         if (art_status < 0 && jw__content_diagnostic(diagnostics, provider, reason,
-                "optional content art metadata ignored") != 0) {
+                JW_UI("optional content art metadata ignored")) != 0) {
             jw_content_manifest_destroy(&manifest);
             free(manifest_text);
             rc = -1;
@@ -1468,7 +1469,7 @@ static int jw__content_enumerate_dir(const jw_storage_source *source,
         cJSON_AddItemToArray(contributors, row);
         if (manifest.redundant_case_variant &&
             jw__content_diagnostic(diagnostics, provider, "redundant-case-variant",
-                                   "patterns contains redundant case variants") != 0) {
+                                   JW_UI("patterns contains redundant case variants")) != 0) {
             rc = -1;
         }
         jw_content_manifest_destroy(&manifest);

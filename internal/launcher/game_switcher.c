@@ -1,4 +1,5 @@
 #include "internal/launcher/game_switcher.h"
+#include "internal/i18n/i18n.h"
 #include "internal/core/title.h"
 
 #include "internal/retroarch/states.h"
@@ -522,7 +523,7 @@ void jw_game_switcher_render(jw_game_switcher *sw, int x, int y, int w, int h) {
 
     if (jw_game_switcher_is_empty(sw)) {
         TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-        const char *msg = "No recent games yet";
+        const char *msg = JW_UI("No recent games yet");
         int mw = cat_measure_text(body, msg);
         cat_draw_text(body, msg, x + (w - mw) / 2,
                       y + h / 2 - TTF_FontHeight(body) / 2, theme->hint);

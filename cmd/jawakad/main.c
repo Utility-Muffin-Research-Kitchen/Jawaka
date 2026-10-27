@@ -3562,7 +3562,7 @@ static int jw__handle_scrape_validate(jw_daemon_state *state,
         cJSON_AddBoolToObject(root, "valid", false);
         cJSON_AddBoolToObject(root, "rejected", false);
         cJSON_AddStringToObject(root, "message",
-                                "scraping unavailable in this build");
+                                JW_UI("scraping unavailable in this build"));
         return jw__reply_json(client, root);
     }
 
@@ -3585,7 +3585,7 @@ static int jw__handle_scrape_validate(jw_daemon_state *state,
     } else {
         const char *msg = jw_ss_last_error();
         cJSON_AddStringToObject(root, "message",
-                                msg ? msg : "validation failed");
+                                msg ? msg : JW_UI("validation failed"));
         jw_log_info("scrape-validate failed user=%s rc=%d", ss.username, rc);
     }
     return jw__reply_json(client, root);
@@ -3885,7 +3885,7 @@ static int jw__handle_update_install(jw_daemon_state *state,
             state->update_status.status = JW_UPDATE_STATUS_ERROR;
             snprintf(state->update_status.message,
                      sizeof(state->update_status.message),
-                     "%s", "Update runner path is too long");
+                     "%s", JW_UI("Update runner path is too long"));
         }
     }
 
@@ -5060,8 +5060,8 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
             jw_log_warn("safe-unmount: library rescan could not start");
         } else {
             snprintf(result.message, sizeof(result.message), "%s",
-                     scan_rc > 0 ? "Secondary SD unmounted; library rescan queued"
-                                 : "Secondary SD unmounted; library update started");
+                     scan_rc > 0 ? JW_UI("Secondary SD unmounted; library rescan queued")
+                                 : JW_UI("Secondary SD unmounted; library update started"));
         }
     }
 
@@ -6359,13 +6359,13 @@ static int jw__resolve_app_launch_path(jw_daemon_state *state, const char *pak_d
                                        char *launch_abs, size_t launch_abs_size,
                                        const char **out_error) {
     if (!state || !pak_dir || !pak_dir[0] || !pak_abs || !launch_abs) {
-        if (out_error) *out_error = "missing app payload";
+        if (out_error) *out_error = JW_UI("missing app payload");
         return -1;
     }
 
     jw_storage_source_list sources;
     if (jw__storage_sources(state, &sources) != 0) {
-        if (out_error) *out_error = "storage sources unavailable";
+        if (out_error) *out_error = JW_UI("storage sources unavailable");
         return -1;
     }
     const jw_storage_source *source = NULL;
@@ -6375,20 +6375,20 @@ static int jw__resolve_app_launch_path(jw_daemon_state *state, const char *pak_d
     } else {
         source = jw_storage_sources_primary(&sources);
         if (!source) {
-            if (out_error) *out_error = "primary storage source missing";
+            if (out_error) *out_error = JW_UI("primary storage source missing");
             return -1;
         }
         const char *rel = strncmp(pak_dir, "Apps/", 5) == 0 ? pak_dir + 5 : pak_dir;
         if (snprintf(candidate, sizeof(candidate), "%s/%s", source->apps_path, rel) >=
             (int)sizeof(candidate)) {
-            if (out_error) *out_error = "app path too long";
+            if (out_error) *out_error = JW_UI("app path too long");
             return -1;
         }
     }
 
     char resolved_pak[PATH_MAX];
     if (!realpath(candidate, resolved_pak)) {
-        if (out_error) *out_error = "app pak missing";
+        if (out_error) *out_error = JW_UI("app pak missing");
         return -1;
     }
 
@@ -6396,47 +6396,47 @@ static int jw__resolve_app_launch_path(jw_daemon_state *state, const char *pak_d
         source = jw_storage_sources_find_for_path(&sources, resolved_pak);
     }
     if (!source) {
-        if (out_error) *out_error = "app storage source missing";
+        if (out_error) *out_error = JW_UI("app storage source missing");
         return -1;
     }
 
     char apps_abs[PATH_MAX];
     if (!realpath(source->apps_path, apps_abs)) {
-        if (out_error) *out_error = "Apps directory missing";
+        if (out_error) *out_error = JW_UI("Apps directory missing");
         return -1;
     }
 
     if (!jw__path_is_within(resolved_pak, apps_abs)) {
-        if (out_error) *out_error = "app pak outside Apps";
+        if (out_error) *out_error = JW_UI("app pak outside Apps");
         return -1;
     }
 
     char launch_candidate[PATH_MAX];
     if (snprintf(launch_candidate, sizeof(launch_candidate), "%s/launch.sh", resolved_pak) >= (int)sizeof(launch_candidate)) {
-        if (out_error) *out_error = "app launch path too long";
+        if (out_error) *out_error = JW_UI("app launch path too long");
         return -1;
     }
 
     if (!jw__is_regular_file(launch_candidate)) {
-        if (out_error) *out_error = "app launch.sh missing or not executable";
+        if (out_error) *out_error = JW_UI("app launch.sh missing or not executable");
         return -1;
     }
 
     char exec_error[256];
     if (!jw_sdcard_exec_available_for_path(launch_candidate, exec_error, sizeof(exec_error))) {
         jw_log_error("cannot launch app from SD: %s", exec_error);
-        if (out_error) *out_error = "SD-card mounted noexec; switcher remount failed or regressed";
+        if (out_error) *out_error = JW_UI("SD-card mounted noexec; switcher remount failed or regressed");
         return -1;
     }
 
     if (access(launch_candidate, X_OK) != 0) {
-        if (out_error) *out_error = "app launch.sh missing or not executable";
+        if (out_error) *out_error = JW_UI("app launch.sh missing or not executable");
         return -1;
     }
 
     if (snprintf(pak_abs, pak_abs_size, "%s", resolved_pak) >= (int)pak_abs_size ||
         snprintf(launch_abs, launch_abs_size, "%s", launch_candidate) >= (int)launch_abs_size) {
-        if (out_error) *out_error = "app path too long";
+        if (out_error) *out_error = JW_UI("app path too long");
         return -1;
     }
 
@@ -7171,7 +7171,7 @@ static void jw__recover_legacy_flat(jw_daemon_state *state,
                     core_id && core_id[0] ? core_id : "(unknown)");
         if (warning && warning_size > 0) {
             snprintf(warning, warning_size,
-                     "Save-state features disabled: core metadata is unavailable");
+                     JW_UI("Save-state features disabled: core metadata is unavailable"));
         }
         return;
     }
@@ -7219,7 +7219,7 @@ static void jw__recover_legacy_flat(jw_daemon_state *state,
                         core_id, report.detail);
             if (warning && warning_size > 0) {
                 snprintf(warning, warning_size,
-                         "Legacy save recovery skipped: ambiguous ROM name");
+                         JW_UI("Legacy save recovery skipped: ambiguous ROM name"));
             }
             break;
         case JW_RA_LEGACY_MIGRATION_FAILED:
@@ -7228,7 +7228,7 @@ static void jw__recover_legacy_flat(jw_daemon_state *state,
                         core_id, report.detail);
             if (warning && warning_size > 0) {
                 snprintf(warning, warning_size,
-                         "Legacy save recovery failed; original files were retained");
+                         JW_UI("Legacy save recovery failed; original files were retained"));
             }
             break;
         default:
@@ -7295,7 +7295,7 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
                                        jw_launch_target *out_target,
                                        const char **out_error) {
     if (!state || !system || !system[0] || !rom_path || !rom_path[0]) {
-        if (out_error) *out_error = "missing launch payload";
+        if (out_error) *out_error = JW_UI("missing launch payload");
         return -1;
     }
     if (jw_delete_job_busy(state->delete_job)) {
@@ -7306,7 +7306,7 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
     jw_game_entry reserved_game;
     if (jw__lookup_launch_game(state, rom_path, &reserved_game) == 0 &&
         jw_db_relocation_game_reserved(state->db, reserved_game.id)) {
-        if (out_error) *out_error = "game is relocating";
+        if (out_error) *out_error = JW_UI("game is relocating");
         return -1;
     }
 
@@ -7315,8 +7315,8 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
                                   requested_core_id, &target) != 0) {
         if (out_error) {
             *out_error = requested_core_id && requested_core_id[0]
-                ? "requested core unavailable"
-                : "unsupported system";
+                ? JW_UI("requested core unavailable")
+                : JW_UI("unsupported system");
         }
         return -1;
     }
@@ -7328,7 +7328,7 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
                                              : jw_retroarch_bin_path();
         if (!retroarch || !jw__path_exists(retroarch)) {
             free(retroarch);
-            if (out_error) *out_error = "RetroArch binary missing";
+            if (out_error) *out_error = JW_UI("RetroArch binary missing");
             return -1;
         }
         free(retroarch);
@@ -7337,8 +7337,8 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
     if (!jw__path_exists(target.path)) {
         if (out_error) {
             *out_error = target.kind == JW_LAUNCH_TARGET_STANDALONE
-                ? "standalone emulator missing"
-                : "libretro core missing";
+                ? JW_UI("standalone emulator missing")
+                : JW_UI("libretro core missing");
         }
         return -1;
     }
@@ -7346,7 +7346,7 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
     char exec_error[256];
     if (!jw_sdcard_exec_available_for_path(target.path, exec_error, sizeof(exec_error))) {
         jw_log_error("cannot launch game target from SD: %s", exec_error);
-        if (out_error) *out_error = "SD-card mounted noexec; switcher remount failed or regressed";
+        if (out_error) *out_error = JW_UI("SD-card mounted noexec; switcher remount failed or regressed");
         return -1;
     }
 
@@ -7357,7 +7357,7 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
     if (jw__lookup_launch_game(state, rom_path, &game) != 0 ||
         jw__resolve_library_game(state, game.id, &game, &sources, &source,
                                  rom_abs, sizeof(rom_abs)) != 0) {
-        if (out_error) *out_error = "ROM path missing";
+        if (out_error) *out_error = JW_UI("ROM path missing");
         return -1;
     }
 
@@ -7407,7 +7407,7 @@ static int jw__request_launch_game(jw_daemon_state *state, const char *system,
     state->game_launch_blocked_reason[0] = '\0';
     jw_game_entry game;
     if (jw__lookup_launch_game(state, rom_path, &game) != 0) {
-        if (out_error) *out_error = "game no longer exists";
+        if (out_error) *out_error = JW_UI("game no longer exists");
         return -1;
     }
 
@@ -7423,7 +7423,7 @@ static int jw__request_launch_game(jw_daemon_state *state, const char *system,
     if (state->child_pid <= 0) {
         if (jw__spawn_pending_game(state) != 0) {
             state->pending_launch_resume_switcher = false;
-            if (out_error) *out_error = "game spawn failed";
+            if (out_error) *out_error = JW_UI("game spawn failed");
             return -1;
         }
     }
@@ -7570,7 +7570,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     }
     jw_game_entry target_game;
     if (jw__lookup_launch_game(state, rom_path, &target_game) != 0) {
-        if (out_error) *out_error = "game no longer exists";
+        if (out_error) *out_error = JW_UI("game no longer exists");
         return -1;
     }
 
@@ -7581,7 +7581,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         if (resume != JW_RA_OK) {
             jw_log_error("switch-game: current-game resume failed result=%s",
                          jw_ra_result_string(resume));
-            if (out_error) *out_error = "resume failed";
+            if (out_error) *out_error = JW_UI("resume failed");
             return -1;
         }
         state->retroarch_resume_on_menu_exit = false;
@@ -7600,7 +7600,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     if (state->retroarch_session.resume_unconfirmed) {
         /* Switching saves slot 99, which still holds the position being resumed. */
         jw_log_warn("switch-game: the resumed game has not loaded yet");
-        if (out_error) *out_error = "game is still resuming";
+        if (out_error) *out_error = JW_UI("game is still resuming");
         return -1;
     }
 
@@ -7612,12 +7612,12 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     if (info_result != JW_RA_OK) {
         jw_log_error("switch-game: state support probe failed result=%s",
                      jw_ra_result_string(info_result));
-        if (out_error) *out_error = "savestate unavailable";
+        if (out_error) *out_error = JW_UI("savestate unavailable");
         return -1;
     }
     if (!info.savestate_supported) {
         jw_log_error("switch-game: core does not support savestates");
-        if (out_error) *out_error = "savestates unsupported";
+        if (out_error) *out_error = JW_UI("savestates unsupported");
         return -1;
     }
 
@@ -7627,7 +7627,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     if (sv != JW_RA_OK) {
         jw_log_error("switch-game: slot %d save-state failed result=%s",
                      JW_RA_GAME_SWITCHER_STATE_SLOT, jw_ra_result_string(sv));
-        if (out_error) *out_error = "save-state failed";
+        if (out_error) *out_error = JW_UI("save-state failed");
         return -1;
     }
     jw_log_info("switch-game: saved current game state slot=%d",
@@ -7810,7 +7810,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         /* The target's profile was applied before the switch attempt; the old
            game is still running under the old system, so restore its mode. */
         (void)jw__perf_apply_current_context(state, "switch-quit-failed");
-        if (out_error) *out_error = "RetroArch quit failed";
+        if (out_error) *out_error = JW_UI("RetroArch quit failed");
         return -1;
     }
     if (!jw__force_retroarch_exit_if_needed(state, old_retroarch_pid,
@@ -7821,7 +7821,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
         (void)jw__perf_apply_current_context(state, "switch-exit-failed");
-        if (out_error) *out_error = "RetroArch exit failed";
+        if (out_error) *out_error = JW_UI("RetroArch exit failed");
         return -1;
     }
 
@@ -7833,17 +7833,17 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
 static int jw__request_launch_app(jw_daemon_state *state, const char *pak_dir,
                                   const char **out_error) {
     if (jw_delete_job_busy(state->delete_job)) {
-        if (out_error) *out_error = "ROM deletion in progress";
+        if (out_error) *out_error = JW_UI("ROM deletion in progress");
         return -1;
     }
     if (state->services &&
         jw_svc_supervisor_package_active(state->services)) {
-        if (out_error) *out_error = "package operation in progress";
+        if (out_error) *out_error = JW_UI("package operation in progress");
         return -1;
     }
     if (state->services &&
         jw_svc_supervisor_mutation_target_blocked(state->services, pak_dir)) {
-        if (out_error) *out_error = "package mutation in progress";
+        if (out_error) *out_error = JW_UI("package mutation in progress");
         return -1;
     }
     char pak_abs[PATH_MAX];
@@ -7858,7 +7858,7 @@ static int jw__request_launch_app(jw_daemon_state *state, const char *pak_dir,
 
     if (state->child_pid <= 0) {
         if (jw__spawn_app(state) != 0) {
-            if (out_error) *out_error = "app spawn failed";
+            if (out_error) *out_error = JW_UI("app spawn failed");
             return -1;
         }
     }
@@ -14825,7 +14825,7 @@ static int jw__handle_service_ctl(jw_daemon_state *state,
     if (!state->services) {
         return jw__reply_ctl1_error(client, request->id,
                                     "services-unavailable",
-                                    "service supervisor is unavailable");
+                                    JW_UI("service supervisor is unavailable"));
     }
 
     if (request->operation == JW_CTL1_OP_CAPABILITIES) {
@@ -14877,7 +14877,7 @@ static int jw__handle_service_ctl(jw_daemon_state *state,
         if (!e) {
             return jw__reply_ctl1_error(client, request->id,
                                         "unknown-service",
-                                        "unknown service id");
+                                        JW_UI("unknown service id"));
         }
         cJSON *reply = cJSON_CreateObject();
         cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
@@ -14906,7 +14906,7 @@ static int jw__handle_service_ctl(jw_daemon_state *state,
         if (!e) {
             return jw__reply_ctl1_error(client, request->id,
                                         "unknown-service",
-                                        "unknown service id");
+                                        JW_UI("unknown service id"));
         }
         int tail = request->operation == JW_CTL1_OP_EXPORT_LOGS
                        ? JW_SVC_LOG_TAIL_MAX
@@ -15863,16 +15863,16 @@ static const char *jw__delete_gate(jw_daemon_state *state, const char *source,
         const jw_storage_health_slot *slot = jw__storage_slot(state, cards[i]);
         if (slot && slot->health.access == JW_STORAGE_ACCESS_READ_ONLY) {
             snprintf(readonly_source, 32, "%s", cards[i]);
-            return "Your ROM card or library card is read-only.";
+            return JW_UI("Your ROM card or library card is read-only.");
         }
         if (slot && slot->health.repair != JW_STORAGE_REPAIR_NONE)
-            return "An SD card check is pending. Finish it before deleting ROMs.";
+            return JW_UI("An SD card check is pending. Finish it before deleting ROMs.");
     }
-    if (jw__relocation_scan_active(state)) return "Your library is scanning. Request a preview when it finishes.";
+    if (jw__relocation_scan_active(state)) return JW_UI("Your library is scanning. Request a preview when it finishes.");
     if (state->active_game.active || state->pending_launch || state->pending_app ||
         state->game_coordination_pending || state->game_coordination_ready || state->game_launch_blocked ||
         (state->child_pid > 0 && state->child_kind != JW_CHILD_LAUNCHER && state->child_kind != JW_CHILD_MENU))
-        return "Return to the launcher before deleting ROMs.";
+        return JW_UI("Return to the launcher before deleting ROMs.");
     return NULL;
 }
 
@@ -15910,31 +15910,31 @@ static bool jw__delete_frame(jw_daemon_state *state, int index, const char *body
     cJSON *reply = NULL;
     bool preview = !strcmp(type->valuestring, "rom-delete-preview");
     bool start = !strcmp(type->valuestring, "rom-delete");
-    if (state->ipc_connections[index].subscribed) error = "Use a separate connection for ROM deletion.";
+    if (state->ipc_connections[index].subscribed) error = JW_UI("Use a separate connection for ROM deletion.");
     else if (preview || start) {
         cJSON *source = cJSON_GetObjectItemCaseSensitive(request, "source_id");
         cJSON *path = cJSON_GetObjectItemCaseSensitive(request, "rom_relpath");
         cJSON *digest = cJSON_GetObjectItemCaseSensitive(request, "digest");
         if (!cJSON_IsString(source) || !source->valuestring[0] || strlen(source->valuestring) >= 32 ||
             !cJSON_IsString(path) || !jw_storage_relative_path_valid(path->valuestring) ||
-            strlen(path->valuestring) >= 512) error = "Invalid game identity.";
+            strlen(path->valuestring) >= 512) error = JW_UI("Invalid game identity.");
         else if (start && (!cJSON_IsString(digest) || strlen(digest->valuestring) != 16))
-            error = "Open Delete Game again.";
-        else if (state->delete_job) error = "A game is being deleted. Try again when it finishes.";
+            error = JW_UI("Open Delete Game again.");
+        else if (state->delete_job) error = JW_UI("A game is being deleted. Try again when it finishes.");
         else if (!(error = jw__delete_gate(state, source->valuestring, readonly_source))) {
             if (preview) {
                 reply = jw_delete_preview(state->db_path, state->sdcard_root,
                                           source->valuestring, path->valuestring);
-                if (!reply) error = "Could not check your game's files.";
+                if (!reply) error = JW_UI("Could not check your game's files.");
             } else {
                 state->delete_job = jw_delete_job_start(state->db_path, state->sdcard_root,
                     source->valuestring, path->valuestring, digest->valuestring);
-                if (!state->delete_job) error = "Could not start deleting your game.";
+                if (!state->delete_job) error = JW_UI("Could not start deleting your game.");
                 else state->delete_connection = index;
             }
         }
-    } else if (strcmp(type->valuestring, "rom-delete-status")) error = "Unknown ROM deletion request.";
-    else if (!state->delete_job || state->delete_connection != index) error = "This connection has no deletion running.";
+    } else if (strcmp(type->valuestring, "rom-delete-status")) error = JW_UI("Unknown ROM deletion request.");
+    else if (!state->delete_job || state->delete_connection != index) error = JW_UI("This connection has no deletion running.");
     if (!error && !reply) reply = jw_delete_job_status(state->delete_job);
     if (error) jw__delete_error(state, index, error, readonly_source);
     else jw__delete_queue(state, index, reply);
