@@ -5,7 +5,7 @@
 # as commands rewritten, and terms aligned with RetroArch's German menus
 # (Core, Savestate, Spielstand, Voreinstellung, Scanlinien, Akku).
 # The 209 strings added with Jawaka#244 (2026-10-16), the three Pak Rat
-# app-count strings from Jawaka#257 and the 647 strings added with
+# app-count strings from Jawaka#257 and the 648 strings added with
 # Jawaka#251 (2026-10-27) are drafts by Claude, awaiting review in
 # Jawaka#242.
 msgid ""
@@ -4073,7 +4073,7 @@ msgstr "Speichern und beenden"
 
 #: cmd/jawaka-menu/main.c
 msgid "Save & Quit quicksave — A resumes, Y keeps it as a slot"
-msgstr ""
+msgstr "„Speichern und beenden“-Stand: A setzt fort, Y behält ihn als Slot"
 
 #: internal/settings/settings.c
 msgid "Save Before Power Off"
