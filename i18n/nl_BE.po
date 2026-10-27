@@ -236,14 +236,6 @@ msgstr ""
 msgid "%lld years ago"
 msgstr ""
 
-#: internal/catalog/merge.c
-#~ msgid "%s %s claims %s already owned by the release catalog"
-#~ msgstr ""
-
-#: internal/catalog/merge.c
-#~ msgid "%s %s claims %s=%s, also claimed by %s; both refused"
-#~ msgstr ""
-
 #: internal/settings/settings.c
 msgid "%s (current)"
 msgstr "%s (huidig)"
@@ -315,10 +307,6 @@ msgstr ""
 #: cmd/jawaka-launcher/main.c
 msgid "%s launcher exited (status %s)"
 msgstr "Launcher %s afgesloten (status %s)"
-
-#: internal/platform/device_mlp1.c
-#~ msgid "%s output unavailable"
-#~ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "%s was uninstalled.\n\nIt was your current theme, so Leaf switched to no theme."
@@ -763,14 +751,6 @@ msgstr "Al in gebruik door %s"
 #: cmd/jawaka-launcher/main.c
 msgid "Also remove retained data for %.180s?\n\nThis separately deletes every declared retained directory on cards that are present now. Absent cards remain unchanged. This cannot be undone."
 msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "Ambiguous ROM source: %.160s"
-#~ msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "Ambiguous filesystem name: %.160s"
-#~ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "American Samoa"
@@ -1228,14 +1208,6 @@ msgstr "Kan de Leaf-releases niet ophalen"
 msgid "Cannot fetch release manifest"
 msgstr ""
 
-#: internal/discovery/content.c
-#~ msgid "Cannot inspect %.160s: %s"
-#~ msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "Cannot inspect ROM source %s: %s"
-#~ msgstr ""
-
 #: internal/settings/settings.c
 msgid "Cannot load releases"
 msgstr "Kan de releases niet laden"
@@ -1260,21 +1232,9 @@ msgstr "Kan de statusmap voor de update niet voorbereiden"
 msgid "Cannot promote update payload"
 msgstr ""
 
-#: internal/discovery/content.c
-#~ msgid "Cannot read descriptor %.160s: %s"
-#~ msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "Cannot read directory %.160s: %s"
-#~ msgstr ""
-
 #: internal/update/update.c
 msgid "Cannot read update manifest"
 msgstr "Kan het updatemanifest niet lezen"
-
-#: internal/discovery/content.c
-#~ msgid "Cannot resolve %.160s: %s"
-#~ msgstr ""
 
 #: internal/update/update.c
 msgid "Cannot start update download"
@@ -1287,10 +1247,6 @@ msgstr ""
 #: internal/update/update.c
 msgid "Cannot start update runner: %s"
 msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "Cannot traverse missing directory: %.160s"
-#~ msgstr ""
 
 #: internal/update/update.c
 msgid "Cannot verify update artifact"
@@ -1416,10 +1372,6 @@ msgstr "Kleurenschema"
 msgid "Color Temperature"
 msgstr "Kleurtemperatuur"
 
-#: internal/platform/device_mlp1.c
-#~ msgid "Color temperature %d K"
-#~ msgstr ""
-
 #: internal/settings/settings.c
 msgid "Color temperature change failed"
 msgstr "Kleurtemperatuur wijzigen mislukt"
@@ -1525,36 +1477,12 @@ msgid "Content descriptors are nested too deeply"
 msgstr ""
 
 #: internal/discovery/content.c
-#~ msgid "Content descriptors contain a cycle: %.160s"
-#~ msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "Content descriptors exceed the inspection size limit: %.160s"
-#~ msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "Content is not a regular file: %.160s"
-#~ msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "Content is outside the mounted ROM roots: %.160s"
-#~ msgstr ""
-
-#: internal/discovery/content.c
 msgid "Content path has too many missing directories"
 msgstr ""
 
 #: internal/discovery/content.c
 msgid "Content path is too long"
 msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "Content path is too long: %.100s"
-#~ msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "Content reference escapes its ROM source: %.160s"
-#~ msgstr ""
 
 #: internal/discovery/content.c
 msgid "Content references too many files"
@@ -1656,10 +1584,6 @@ msgstr ""
 msgid "Could not lock package mutation: %s"
 msgstr ""
 
-#: internal/discovery/content.c
-#~ msgid "Could not read complete descriptor: %.160s"
-#~ msgstr ""
-
 #: internal/store/pakrat.c
 msgid "Could not read the Themes folder"
 msgstr "Kon de map Themes niet lezen"
@@ -1679,10 +1603,6 @@ msgstr "Kon de bevestigde deïnstallatie niet vastleggen"
 #: internal/store/pakrat.c
 msgid "Could not reload confirmed uninstall intent"
 msgstr "Kon de bevestigde deïnstallatie niet opnieuw laden"
-
-#: internal/scrape/scrape_worker.c
-#~ msgid "Could not resolve paths for %.200s"
-#~ msgstr ""
 
 #: internal/discovery/delete_job.c
 msgid "Could not resolve storage sources."
@@ -1704,10 +1624,6 @@ msgstr ""
 msgid "Could not start deleting your game."
 msgstr ""
 
-#: internal/discovery/delete.c
-#~ msgid "Couldn't check %.160s: %s"
-#~ msgstr ""
-
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't confirm the result. Check your library."
 msgstr "Kon het resultaat niet bevestigen. Controleer uw bibliotheek."
@@ -1715,14 +1631,6 @@ msgstr "Kon het resultaat niet bevestigen. Controleer uw bibliotheek."
 #: internal/settings/settings.c
 msgid "Couldn't connect — check password"
 msgstr ""
-
-#: internal/discovery/delete.c
-#~ msgid "Couldn't delete %.160s: %s"
-#~ msgstr ""
-
-#: internal/discovery/delete.c
-#~ msgid "Couldn't delete %.160s: it's no longer a regular file"
-#~ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't install %s"
@@ -1739,10 +1647,6 @@ msgstr "Kon uw game niet hervatten. Start de game om uw savestate te laden."
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't resume: Hardcore mode doesn't allow loading a save."
 msgstr "Kan niet hervatten: in hardcore-modus kunt u geen savestate laden."
-
-#: internal/discovery/delete.c
-#~ msgid "Couldn't save the removal of %.160s: %s"
-#~ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Couldn't unhide your selection."
@@ -1839,10 +1743,6 @@ msgstr "Verwijderen is definitief. Mogelijk worden niet alle bestanden verwijder
 #: internal/discovery/content.c
 msgid "Descriptor argument is too long"
 msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "Descriptor contains binary data: %.160s"
-#~ msgstr ""
 
 #: internal/discovery/content.c
 msgid "Descriptor has an unterminated quote"
@@ -2116,10 +2016,6 @@ msgstr "Fernando de Noronha"
 msgid "Files"
 msgstr "Bestanden"
 
-#: internal/discovery/content.c
-#~ msgid "Filesystem name changed during inspection: %.160s"
-#~ msgstr ""
-
 #: cmd/jawaka-launcher/main.c
 msgid "Filter"
 msgstr "Filter"
@@ -2327,10 +2223,6 @@ msgstr "Rastergrootte"
 #: internal/settings/settings.c
 msgid "HDMI Output"
 msgstr "HDMI-uitvoer"
-
-#: internal/platform/device_mlp1.c
-#~ msgid "HDMI output %s"
-#~ msgstr ""
 
 #: internal/settings/settings.c
 msgid "HDMI output change failed"
@@ -2552,17 +2444,9 @@ msgstr ""
 msgid "Invalid content identity"
 msgstr ""
 
-#: internal/discovery/content.c
-#~ msgid "Invalid content path: %.160s"
-#~ msgstr ""
-
 #: cmd/jawakad/main.c
 msgid "Invalid game identity."
 msgstr ""
-
-#: internal/discovery/delete.c
-#~ msgid "Invalid path for %.160s"
-#~ msgstr ""
 
 #: internal/retroarch/shader_strings.c
 msgid "It is a scaling filter, not a CRT or LCD simulation."
@@ -3691,10 +3575,6 @@ msgstr ""
 #: cmd/jawakad/main.c
 msgid "ROM path missing"
 msgstr ""
-
-#: internal/discovery/content.c
-#~ msgid "ROM source is not mounted: %s"
-#~ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Rainbow"
@@ -5812,10 +5692,6 @@ msgstr ""
 msgid "Wi-Fi unavailable on this platform"
 msgstr ""
 
-#: internal/discovery/content.c
-#~ msgid "Windows drive paths cannot be resolved here: %.160s"
-#~ msgstr ""
-
 #: internal/launcher/system_names.c
 msgid "WonderSwan"
 msgstr "WonderSwan"
@@ -6032,10 +5908,6 @@ msgstr ""
 msgid "audio output set"
 msgstr ""
 
-#: internal/platform/device_mlp1.c
-#~ msgid "audio output: %s"
-#~ msgstr ""
-
 #: internal/services/supervisor.c
 msgid "backoff"
 msgstr ""
@@ -6103,14 +5975,6 @@ msgstr ""
 #: cmd/jawaka-launcher/main.c
 msgid "card absent; not inventoried"
 msgstr ""
-
-#: internal/retroarch/catalog.c
-#~ msgid "case-folding config_folder collision: %s and %s"
-#~ msgstr ""
-
-#: internal/discovery/discovery.c
-#~ msgid "content contribution refused during manifest validation (%s)"
-#~ msgstr ""
 
 #: cmd/jawakad/main.c
 msgid "could not compute missing counts"
@@ -6183,14 +6047,6 @@ msgstr ""
 #: cmd/jawaka-launcher/main.c
 msgid "display name keyboard failed"
 msgstr ""
-
-#: internal/retroarch/catalog.c
-#~ msgid "duplicate core id in RetroArch metadata: %s"
-#~ msgstr ""
-
-#: internal/retroarch/catalog.c
-#~ msgid "duplicate system id in RetroArch metadata: %s"
-#~ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "empty"
@@ -6556,10 +6412,6 @@ msgstr ""
 msgid "package operation in progress"
 msgstr ""
 
-#: internal/retroarch/catalog.c
-#~ msgid "packaged RetroArch core has unsafe config_folder: %s"
-#~ msgstr ""
-
 #: internal/discovery/discovery.c
 msgid "patterns contains redundant case variants"
 msgstr ""
@@ -6872,10 +6724,6 @@ msgstr ""
 msgid "switching HDMI output"
 msgstr ""
 
-#: internal/platform/device_mlp1.c
-#~ msgid "switching to %d Hz"
-#~ msgstr ""
-
 #: internal/ipc/ipc_client.c
 msgid "switching to 60 Hz"
 msgstr ""
@@ -6888,21 +6736,9 @@ msgstr ""
 msgid "sync check could not safely proceed"
 msgstr ""
 
-#: internal/catalog/merge.c
-#~ msgid "system %s needs core %s, which is not available after merge; the system is refused too rather than producing a tile that cannot launch"
-#~ msgstr ""
-
 #: internal/retroarch/catalog.c
 msgid "system missing from metadata"
 msgstr ""
-
-#: internal/catalog/merge.c
-#~ msgid "system_extensions for %s names core %s, absent after merge; that name dropped, extension accepted"
-#~ msgstr ""
-
-#: internal/catalog/merge.c
-#~ msgid "system_extensions names %s, which no system provides after merge; extension dropped"
-#~ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "that scope"
