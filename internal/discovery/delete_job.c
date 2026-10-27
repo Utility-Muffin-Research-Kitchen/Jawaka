@@ -1,4 +1,5 @@
 #include "internal/discovery/delete_job.h"
+#include "internal/i18n/i18n.h"
 #include "internal/discovery/delete.h"
 #include "internal/db/db.h"
 #include "internal/db/relocation.h"
@@ -59,17 +60,17 @@ static int jw__build(const char *db_path, const char *sdcard_root, const char *s
     if (!sources) { snprintf(view->error, sizeof(view->error), "Could not allocate storage sources."); return -1; }
     if (jw__writable(view, db_path, "primary") != 0) goto done;
     if (jw_storage_sources_resolve(sdcard_root, sources) != 0) {
-        snprintf(view->error, sizeof(view->error), "Could not resolve storage sources.");
+        snprintf(view->error, sizeof(view->error), JW_UI("Could not resolve storage sources."));
         goto done;
     }
     const jw_storage_source *source = jw_storage_sources_find_by_id(sources, source_id);
     if (!source || !source->available) {
-        snprintf(view->error, sizeof(view->error), "Your selected ROM card is not mounted.");
+        snprintf(view->error, sizeof(view->error), JW_UI("Your selected ROM card is not mounted."));
         goto done;
     }
     if (jw__writable(view, source->roms_path, source->id) != 0) goto done;
     if (jw_db_get_game_by_source_relpath(db_path, source_id, rom_relpath, &selected) != 0) {
-        snprintf(view->error, sizeof(view->error), "Could not read your game's library identity.");
+        snprintf(view->error, sizeof(view->error), JW_UI("Could not read your game's library identity."));
         goto done;
     }
     snprintf(view->name, sizeof(view->name), "%s", selected.name);
@@ -155,7 +156,7 @@ static int jw__cancel_scrapes(jw_delete_job *job) {
     jw_game_entry *games = NULL;
     size_t count = 0;
     if (jw_db_list_indexed_games(job->db_path, &games, &count) != 0) {
-        snprintf(job->view.error, sizeof(job->view.error), "Could not check artwork work before deletion.");
+        snprintf(job->view.error, sizeof(job->view.error), JW_UI("Could not check artwork work before deletion."));
         return -1;
     }
     int rc = 0;
@@ -169,7 +170,7 @@ static int jw__cancel_scrapes(jw_delete_job *job) {
                 usleep(10000);
             if (jw_scrape_is_pending_game(games[g].system, games[g].rom_path)) {
                 snprintf(job->view.error, sizeof(job->view.error),
-                         "Artwork scraping is stopping. Try again when it finishes.");
+                         JW_UI("Artwork scraping is stopping. Try again when it finishes."));
                 rc = -1;
             }
             break;
@@ -194,13 +195,13 @@ static void *jw__commit(void *context) {
     jw_db_rom_key *removed = NULL;
     if (jw__build(job->db_path, job->sdcard_root, job->source_id, job->rom_relpath, view) != 0) goto done;
     if (strcmp(view->plan.digest, job->digest)) {
-        snprintf(view->error, sizeof(view->error), "Your game's files changed. Open Delete Game again.");
+        snprintf(view->error, sizeof(view->error), JW_UI("Your game's files changed. Open Delete Game again."));
         goto done;
     }
     if (jw__cancel_scrapes(job) != 0) goto done;
     if (jw_db_open(job->db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
         sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
-        snprintf(view->error, sizeof(view->error), "Your library is busy or read-only. Try again.");
+        snprintf(view->error, sizeof(view->error), JW_UI("Your library is busy or read-only. Try again."));
         if (!jw_storage_path_writable(job->db_path, NULL, 0))
             snprintf(view->readonly_source, sizeof(view->readonly_source), "launcher_sd");
         goto done;
@@ -208,7 +209,7 @@ static void *jw__commit(void *context) {
     transaction = true;
     for (size_t i = 0; i < view->plan.file_count; ++i) {
         if (jw_db_relocation_key_reserved(db, view->plan.files[i].source_id, view->plan.files[i].rom_relpath)) {
-            snprintf(view->error, sizeof(view->error), "A file is being moved. Try again when it finishes.");
+            snprintf(view->error, sizeof(view->error), JW_UI("A file is being moved. Try again when it finishes."));
             goto done;
         }
     }
@@ -225,9 +226,15 @@ static void *jw__commit(void *context) {
     if (jw_db_reconcile_removed_roms(db, removed, count) != 0 ||
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
         size_t used = strlen(view->error);
+        /* This worker has no translation table. Keep this composed diagnostic
+         * unmarked: the Delete dialog only translates exact fixed messages. */
+        if (used && used + 1 < sizeof(view->error)) {
+            view->error[used++] = ' ';
+            view->error[used] = '\0';
+        }
         snprintf(view->error + used, sizeof(view->error) - used,
-                 "%sLibrary cleanup failed after %zu files were removed. Refresh the library.",
-                 used ? " " : "", job->result.removed_count);
+                 "Library cleanup failed after %d files were removed. Refresh the library.",
+                 (int)job->result.removed_count);
         rc = -1;
     } else transaction = false;
 done:

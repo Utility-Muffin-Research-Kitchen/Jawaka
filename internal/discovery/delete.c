@@ -1,4 +1,5 @@
 #include "internal/discovery/delete.h"
+#include "internal/i18n/i18n.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -97,8 +98,8 @@ int jw_delete_plan_build(const jw_storage_source_list *sources, const jw_ra_syst
     if (error && error_size) *error = '\0';
     if (!out) return -1;
     memset(out, 0, sizeof(*out));
-    if (!jw_delete_supported(system)) return jw__error(error, error_size, "Delete isn't available for this game.");
-    if (!sources || !source_id || !rom_relpath) return jw__error(error, error_size, "Invalid game identity.");
+    if (!jw_delete_supported(system)) return jw__error(error, error_size, JW_UI("Delete isn't available for this game."));
+    if (!sources || !source_id || !rom_relpath) return jw__error(error, error_size, JW_UI("Invalid game identity."));
     /* Inspection resolves symlinks, so a symlink launch file would delete its target. */
     const jw_storage_source *source = NULL;
     for (int i = 0; i < sources->count; i++)
@@ -108,7 +109,7 @@ int jw_delete_plan_build(const jw_storage_source_list *sources, const jw_ra_syst
         struct stat st;
         int n = snprintf(path, sizeof(path), "%s/%s", source->roms_path, rom_relpath);
         if (n > 0 && (size_t)n < sizeof(path) && !lstat(path, &st) && S_ISLNK(st.st_mode))
-            return jw__error(error, error_size, "Delete can't remove a symlinked game file.");
+            return jw__error(error, error_size, JW_UI("Delete can't remove a symlinked game file."));
     }
     jw_content content;
     if (jw_content_inspect(sources, source_id, rom_relpath, system, &content, error, error_size)) return -1;

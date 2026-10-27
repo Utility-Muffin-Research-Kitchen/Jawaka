@@ -626,7 +626,7 @@ static int jw__queue_remove(const char *system, const char *rom_path) {
                      (!rom_path || strcmp(it->rom_path, rom_path) == 0);
         if (match) {
             jw__row_set_locked(it->row_id, JW_SCRAPE_ROW_CANCELLED,
-                               "Cancelled before it started");
+                               JW_UI("Cancelled before it started"));
             removed++;
             continue;
         }
@@ -657,15 +657,15 @@ typedef enum {
 
 static const char *jw__storage_pause_message(const char *reason, bool db) {
     if (reason && strcmp(reason, "storage-repair-hold") == 0) {
-        return db ? "Paused: the library card is waiting for repair"
-                  : "Paused: the artwork card is waiting for repair";
+        return db ? JW_UI("Paused: the library card is waiting for repair")
+                  : JW_UI("Paused: the artwork card is waiting for repair");
     }
     if (reason && strcmp(reason, "storage-missing") == 0) {
-        return db ? "Paused: the library card is not available"
-                  : "Paused: the artwork card is not available";
+        return db ? JW_UI("Paused: the library card is not available")
+                  : JW_UI("Paused: the artwork card is not available");
     }
-    return db ? "Paused: the library card is read-only"
-              : "Paused: the artwork card is read-only";
+    return db ? JW_UI("Paused: the library card is read-only")
+              : JW_UI("Paused: the artwork card is read-only");
 }
 
 /* Enter (or stay in) a whole-batch storage pause. Active downloads are
@@ -862,14 +862,14 @@ static jw__scrape_item_result jw__process_item(jw__scrape_item *item,
         /* enqueue validates this; only reachable through races */
         pthread_mutex_lock(&jw__w.mu);
         jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_ERROR,
-                           "No ScreenScraper mapping for this system");
+                           JW_UI("No ScreenScraper mapping for this system"));
         pthread_mutex_unlock(&jw__w.mu);
         return JW__SCRAPE_ITEM_DONE;
     }
     if (system_count > JW_SCRAPE_MAX_PLATFORM_IDS) {
         pthread_mutex_lock(&jw__w.mu);
         jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_ERROR,
-                           "Too many ScreenScraper mappings for this system");
+                           JW_UI("Too many ScreenScraper mappings for this system"));
         pthread_mutex_unlock(&jw__w.mu);
         return JW__SCRAPE_ITEM_DONE;
     }
@@ -1082,7 +1082,7 @@ static void *jw__worker_main(void *arg) {
             jw__queue_prepend_locked(&slot->item,
                                      "Paused by ScreenScraper quota") != 0) {
             jw__row_set_locked(slot->item.row_id, JW_SCRAPE_ROW_ERROR,
-                               "Could not keep quota-paused item queued");
+                               JW_UI("Could not keep quota-paused item queued"));
             result = JW__SCRAPE_ITEM_DONE;
         }
         if (result == JW__SCRAPE_ITEM_PAUSED_STORAGE) {
@@ -1090,7 +1090,7 @@ static void *jw__worker_main(void *arg) {
             if (jw__queue_prepend_locked(&slot->item,
                                          "Paused: SD card is not writable") != 0) {
                 jw__row_set_locked(slot->item.row_id, JW_SCRAPE_ROW_ERROR,
-                                   "Could not keep storage-paused item queued");
+                                   JW_UI("Could not keep storage-paused item queued"));
             }
         }
         slot->used = false;
@@ -1186,11 +1186,11 @@ int jw_scrape_enqueue_game(const char *system, const char *rom_path,
         return -1;
     }
     if (!jw_ss_available()) {
-        if (error) *error = "scraping unavailable in this build";
+        if (error) *error = JW_UI("scraping unavailable in this build");
         return -1;
     }
     if (jw__platform_ids_for_system(system, NULL, 0) == 0) {
-        if (error) *error = "no ScreenScraper mapping for this system";
+        if (error) *error = JW_UI("no ScreenScraper mapping for this system");
         return -1;
     }
 
@@ -1201,14 +1201,14 @@ int jw_scrape_enqueue_game(const char *system, const char *rom_path,
     pthread_mutex_lock(&jw__w.mu);
     if (!jw__w.running) {
         pthread_mutex_unlock(&jw__w.mu);
-        if (error) *error = "scrape worker not running";
+        if (error) *error = JW_UI("scrape worker not running");
         return -1;
     }
     int rc = jw__queue_push(have_sources ? &sources : NULL, system, rom_path);
     if (rc > 0) pthread_cond_broadcast(&jw__w.cv);
     pthread_mutex_unlock(&jw__w.mu);
     if (rc < 0) {
-        if (error) *error = "scrape queue is full";
+        if (error) *error = JW_UI("scrape queue is full");
         return -1;
     }
     if (rc > 0) jw__log_scrape_policy(system);
@@ -1284,7 +1284,7 @@ int jw_scrape_count_missing_system(const char *system, int *out_missing,
     if (jw_db_list_games_for_system(jw__w.db_path, system, games,
                                     JW__SCRAPE_LIST_MAX, &game_count) != 0) {
         free(games);
-        if (error) *error = "could not list games for this system";
+        if (error) *error = JW_UI("could not list games for this system");
         return -1;
     }
 
@@ -1365,7 +1365,7 @@ int jw_scrape_enqueue_all_full(bool missing_only,
     memset(out, 0, sizeof(*out));
     if (error) *error = NULL;
     if (!jw_ss_available()) {
-        if (error) *error = "scraping unavailable in this build";
+        if (error) *error = JW_UI("scraping unavailable in this build");
         return -1;
     }
     jw_system_entry *systems = calloc(JW__SCRAPE_SYS_MAX, sizeof(*systems));
@@ -1377,7 +1377,7 @@ int jw_scrape_enqueue_all_full(bool missing_only,
     if (jw_db_list_systems(jw__w.db_path, systems, JW__SCRAPE_SYS_MAX,
                            &sys_count) != 0) {
         free(systems);
-        if (error) *error = "could not list systems";
+        if (error) *error = JW_UI("could not list systems");
         return -1;
     }
     for (int i = 0; i < sys_count; i++) {
@@ -1410,11 +1410,11 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
         return -1;
     }
     if (!jw_ss_available()) {
-        if (error) *error = "scraping unavailable in this build";
+        if (error) *error = JW_UI("scraping unavailable in this build");
         return -1;
     }
     if (jw__platform_ids_for_system(system, NULL, 0) == 0) {
-        if (error) *error = "no ScreenScraper mapping for this system";
+        if (error) *error = JW_UI("no ScreenScraper mapping for this system");
         return -1;
     }
 
@@ -1427,7 +1427,7 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
     if (jw_db_list_games_for_system(jw__w.db_path, system, games,
                                     JW__SCRAPE_LIST_MAX, &game_count) != 0) {
         free(games);
-        if (error) *error = "could not list games for this system";
+        if (error) *error = JW_UI("could not list games for this system");
         return -1;
     }
 
@@ -1464,7 +1464,7 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
         pthread_mutex_unlock(&jw__w.mu);
         jw_art_index_free(art_index);
         free(games);
-        if (error) *error = "scrape worker not running";
+        if (error) *error = JW_UI("scrape worker not running");
         return -1;
     }
     for (int i = 0; i < game_count; i++) {
