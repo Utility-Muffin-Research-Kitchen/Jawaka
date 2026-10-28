@@ -145,6 +145,7 @@ typedef enum {
     JW_SETTING_BOOT_SPLASH_ENABLED,
     JW_SETTING_SAVE_STATE_ON_POWER_HOLD,
     JW_SETTING_RESUME_GAME_ON_BOOT,
+    JW_SETTING_SHOW_FOLDERS,
     JW_SETTING_SCREENSHOTS_ENABLED,
     JW_SETTING_RECORDING_ENABLED,
     JW_SETTING_RECORDING_SPLIT,
@@ -205,6 +206,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_BOOT_SPLASH_ENABLED] = "boot_splash_enabled",
     [JW_SETTING_SAVE_STATE_ON_POWER_HOLD] = "save_state_on_power_hold",
     [JW_SETTING_RESUME_GAME_ON_BOOT] = JW_BOOT_RESUME_SETTING_KEY,
+    [JW_SETTING_SHOW_FOLDERS] = JW_SHOW_FOLDERS_SETTING_KEY,
     [JW_SETTING_SCREENSHOTS_ENABLED] = "screenshots_enabled",
     [JW_SETTING_RECORDING_ENABLED]   = "recording_enabled",
     [JW_SETTING_RECORDING_SPLIT]     = "recording_split",
@@ -1676,6 +1678,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->boot_splash_supported = false;
     ui->power_hold_save_enabled = false;   /* opt-in */
     ui->boot_resume_enabled = false;       /* opt-in */
+    ui->show_folders = false;              /* opt-in */
 #ifdef PLATFORM_MLP1
     ui->power_hold_save_supported = true;
 #else
@@ -1894,6 +1897,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             if (jw__setting_has(values, found, JW_SETTING_RESUME_GAME_ON_BOOT))
                 ui->boot_resume_enabled =
                     (strcmp(values[JW_SETTING_RESUME_GAME_ON_BOOT], "1") == 0);
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_FOLDERS))
+                ui->show_folders =
+                    (strcmp(values[JW_SETTING_SHOW_FOLDERS], "1") == 0);
             if (jw__setting_has(values, found, JW_SETTING_SCREENSHOTS_ENABLED))
                 ui->screenshots_enabled = (strcmp(values[JW_SETTING_SCREENSHOTS_ENABLED], "1") == 0);
             if (jw__setting_has(values, found, JW_SETTING_RECORDING_ENABLED))
@@ -4639,6 +4645,8 @@ static void jw__render_games(const jw_settings_ui *ui, int x, int y, int w, int 
                         "Reset RetroArch Config", "Defaults", false);
 
     jw__render_nav_row(&ui->games_list, x, ly, w, JW_GAMES_ACCOUNTS, "Accounts");
+    jw__render_toggle_row(&ui->games_list, x, ly, w, JW_GAMES_SHOW_FOLDERS,
+                          JW_UI("Show Folders"), ui->show_folders ? "On" : "Off");
     jw__render_nav_row(&ui->games_list, x, ly, w, JW_GAMES_HIDDEN_GAMES, JW_UI("Hidden Games"));
 }
 
@@ -8344,9 +8352,9 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
             case CAT_BTN_LEFT:
             case CAT_BTN_RIGHT:
             case CAT_BTN_A: {
-                /* Game Performance cycles and the two power-off switches
-                   flip; every other row here opens something, so Left and
-                   Right must not act on them. */
+                /* Game Performance cycles and the three switches flip;
+                   every other row here opens something, so Left and Right
+                   must not act on them. */
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
                 int row = ui->games_list.cursor;
                 if (row == JW_GAMES_POWER_HOLD_SAVE) {
@@ -8355,6 +8363,13 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 }
                 if (row == JW_GAMES_BOOT_RESUME) {
                     jw__toggle_boot_resume(ui, status_buf, status_size);
+                    break;
+                }
+                if (row == JW_GAMES_SHOW_FOLDERS) {
+                    /* The launcher rebuilds an open game list when it sees
+                       this change; see jw__browse_sync_setting. */
+                    ui->show_folders = !ui->show_folders;
+                    jw__persist_bool(ui, JW_SHOW_FOLDERS_SETTING_KEY, ui->show_folders);
                     break;
                 }
                 if (row == JW_GAMES_PERFORMANCE) {

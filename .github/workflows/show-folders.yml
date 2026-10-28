@@ -1,0 +1,29 @@
+name: Show Folders
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Jawaka
+      - uses: actions/checkout@v4
+        with:
+          repository: Utility-Muffin-Research-Kitchen/Catastrophe
+          # The newest pin among the launcher UI workflows (launch-notice, i18n).
+          ref: 42cbc368600994608debc6accd266de6abad19e2
+          path: Catastrophe
+      - name: Install native renderer dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libsqlite3-dev libcurl4-openssl-dev
+      - name: Folder model
+        run: make -C Jawaka game-folders-test
+      - name: Launcher rows, folder input, reload, resume and picker
+        run: make -C Jawaka folders-ui-test

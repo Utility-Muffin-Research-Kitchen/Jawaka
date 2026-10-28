@@ -135,6 +135,10 @@ msgid "%d favorites"
 msgstr "%d favorites"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d game"
+msgstr "%d jeu"
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d games"
 msgstr "%d jeux"
 
@@ -4680,6 +4684,10 @@ msgstr "Pixels nets"
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Shimmerless"
 msgstr "Netteté sans scintillement"
+
+#: internal/settings/settings.c
+msgid "Show Folders"
+msgstr "Afficher les dossiers"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"

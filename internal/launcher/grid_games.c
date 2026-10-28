@@ -49,6 +49,10 @@ static cat_draw_color gg_ink(cat_draw_color under) {
                       : (cat_draw_color){ 0xEE, 0xF1, 0xEC, 0xFF };
 }
 
+cat_draw_color jw_grid_games_ink(const jw_grid_games_style *style) {
+    return style->ink.a ? style->ink : gg_ink(style->underlay);
+}
+
 /* SDL2's renderer has no blur, so the soft edge is four rounded rects at
    falling alpha. They are drawn as a ring around the panel, never under it: a
    translucent panel over black reads grey no matter how opaque it is. */
@@ -304,7 +308,7 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
 
     /* A theme may state its text colour; otherwise it is derived from the
        underlay so a theme cannot end up with white on white. */
-    cat_draw_color ink = st->ink.a ? st->ink : gg_ink(st->underlay);
+    cat_draw_color ink = jw_grid_games_ink(st);
 
     /* ── left: the list ─────────────────────────────────────────────────── */
     int lx = M, ly = top, lw = gg_list_w(), lh = sh - top - M;

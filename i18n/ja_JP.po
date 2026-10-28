@@ -133,6 +133,10 @@ msgid "%d favorites"
 msgstr "%d お気に入り"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d game"
+msgstr "%d ゲーム"
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d games"
 msgstr "%d ゲーム"
 
@@ -4618,6 +4622,10 @@ msgstr ""
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Shimmerless"
 msgstr ""
+
+#: internal/settings/settings.c
+msgid "Show Folders"
+msgstr "フォルダーを表示"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"
