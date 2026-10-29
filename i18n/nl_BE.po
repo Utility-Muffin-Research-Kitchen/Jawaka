@@ -1070,15 +1070,15 @@ msgstr "Beide"
 
 #: internal/settings/settings.c
 msgid "Box art"
-msgstr "Hoes"
+msgstr "Coverart"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Box art (2D)"
-msgstr "Hoes (2D)"
+msgstr "Coverart (2D)"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Box art (3D)"
-msgstr "Hoes (3D)"
+msgstr "Coverart (3D)"
 
 #: internal/settings/timezones.c
 msgid "Brazil (East)"
