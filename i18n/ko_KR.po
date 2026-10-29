@@ -6,8 +6,8 @@
 # were changed." keeps its leading space. On import of the revision, the two
 # "Scraping %d game(s) in %.140s" strings keep the English placeholder
 # order, which printf cannot change; that wording and "%d game" and
-# "Show Folders" (Jawaka#263) are drafts by Claude, awaiting review in
-# Jawaka#254.
+# "Show Folders" (Jawaka#263) were drafted by Claude and confirmed by the
+# translator in Jawaka#254.
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
