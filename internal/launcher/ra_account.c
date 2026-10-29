@@ -81,17 +81,28 @@ static bool jw__ra_flycast_record_matches(const char *platform_dir,
     return jw__ra_record_matches(dir, name, id);
 }
 
-/* DSperate's account adapter first shipped in pak 2.1.1. Older installed
-   builds ignore the snapshot and must receive none, which is exactly the
-   "unknown/older consumer gets no secrets" rule. */
-static bool jw__ra_dsperate_version_capable(const char *text) {
-    int version[3];
-    if (jw_pak_version_parse(text, version) != 0) return false;
-    return version[0] > 2 || (version[0] == 2 && version[1] > 1) ||
-           (version[0] == 2 && version[1] == 1 && version[2] >= 1);
+/* The first pak_version each DSperate core can consume the snapshot from:
+   the account adapter shipped in pak 2.1.1, and the TATE core, which shares
+   run.sh and the adapter, first ships in 3.0.5. Older installed builds ignore
+   the snapshot or lack the core and must receive none, which is exactly the
+   "unknown/older consumer gets no secrets" rule. NULL for any other core. */
+static const int *jw__ra_dsperate_min_version(const char *core_id) {
+    static const int dsperate[3] = { 2, 1, 1 };
+    static const int dsperate_tate[3] = { 3, 0, 5 };
+    if (strcmp(core_id, "dsperate") == 0) return dsperate;
+    if (strcmp(core_id, "dsperate_tate") == 0) return dsperate_tate;
+    return NULL;
 }
 
-static bool jw__ra_dsperate_manifest_capable(const char *pak_json_path) {
+static bool jw__ra_dsperate_version_capable(const char *text,
+                                            const int minimum[3]) {
+    int version[3];
+    if (jw_pak_version_parse(text, version) != 0) return false;
+    return jw_version_cmp(version, minimum) >= 0;
+}
+
+static bool jw__ra_dsperate_manifest_capable(const char *pak_json_path,
+                                             const int minimum[3]) {
     char *raw = malloc(65536);
     if (!raw) return false;
     bool capable = false;
@@ -104,7 +115,8 @@ static bool jw__ra_dsperate_manifest_capable(const char *pak_json_path) {
             capable = cJSON_IsString(id) && id->valuestring &&
                       strcmp(id->valuestring, "org.umrk.dsperate") == 0 &&
                       cJSON_IsString(version) && version->valuestring &&
-                      jw__ra_dsperate_version_capable(version->valuestring);
+                      jw__ra_dsperate_version_capable(version->valuestring,
+                                                      minimum);
             cJSON_Delete(root);
         }
     }
@@ -153,16 +165,16 @@ bool jw_ra_account_target_authorized(const char *launcher_path,
                                              JW_RA_ACCOUNT_CONTRACT_ID);
     }
 
+    const int *dsperate_min = jw__ra_dsperate_min_version(core_id);
     if (policy->provider_bound && provider &&
-        strcmp(provider, "mlp1/DSperate.pak") == 0 &&
-        strcmp(core_id, "dsperate") == 0) {
+        strcmp(provider, "mlp1/DSperate.pak") == 0 && dsperate_min) {
         char pak_root[1024];
         char manifest[1024 + 12];
         return jw__ra_dsperate_launcher_root(launcher_path, pak_root,
                                              sizeof(pak_root)) &&
                snprintf(manifest, sizeof(manifest), "%s/pak.json", pak_root) <
                    (int)sizeof(manifest) &&
-               jw__ra_dsperate_manifest_capable(manifest) &&
+               jw__ra_dsperate_manifest_capable(manifest, dsperate_min) &&
                /* The version says the build could consume the contract; the
                   shipped record says this installed payload does. */
                jw__ra_record_matches(pak_root, "ra-account-v1",

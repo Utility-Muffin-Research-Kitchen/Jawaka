@@ -7,8 +7,9 @@ name: RetroAchievements account handoff
 #      launch resolve that never hands out CONFIGURED without a revision.
 #   2. ra-account-launch-test: which resolved targets may receive the
 #      snapshot (bundled Flycast; DSperate by provider, core, launcher,
-#      id, pak_version >= 2.1.1 and its shipped ra-account-v1 record) and the
-#      child environment built from a stored account.
+#      id, pak_version >= 2.1.1, or >= 3.0.5 for dsperate_tate, and its
+#      shipped ra-account-v1 record) and the child environment built from a
+#      stored account.
 #   3. ra-account-retroarch-test: stored rows -> JAWAKA_CHEEVOS_* ->
 #      cheevos_username/password in the generated RetroArch config.
 #   4. ra-account-contract-test: every fixture of the pinned leaf-contracts
@@ -17,7 +18,7 @@ name: RetroAchievements account handoff
 #      and classified by the pinned reference classifier.
 #   5. ra-account-env-ipc-smoke: a real jawakad; the environment each launched
 #      child actually got (authorized, unauthorized, spoofed, app, service,
-#      DSperate grant and refusals).
+#      DSperate and DSperate TATE grants and refusals).
 #   6. settings-account-test: Settings > Accounts shows an invalid stored
 #      account as not saved, never as a truncated name.
 
