@@ -17,6 +17,8 @@ int main(void) {
     expect_int("PC-98 count", (int)jw_scrape_platform_ids("pc98", ids, 4), 1);
     expect_int("PC-98 id", ids[0], 208);
     expect_int("Atomiswave id", jw_scrape_platform_id("atomiswave"), 53);
+    expect_int("Pokemon mini folder id", jw_scrape_platform_id("POKEMINI"), 211);
+    expect_int("Pokemon mini tag", jw_scrape_platform_id("PKM"), 211);
 
     expect_int("Amiga count", (int)jw_scrape_platform_ids("AMIGA", ids, 4), 4);
     expect_int("Amiga", ids[0], 64);
