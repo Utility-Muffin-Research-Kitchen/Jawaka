@@ -185,6 +185,33 @@ ARCADE:zip:1942|Street Fighter II|Final Fight|Cadillacs and Dinosaurs|Sunset Rid
 PORTS:sh:DOOM|Quake|OpenLara
 EOF
 
+# Show Folders: ROMs in subfolders. Top Gear and Mortal Kombat hold several
+# games; Hacks nests a folder; the PS per-game folder and MD/Sonic collapse into
+# their game; PS/Translated holds one game and stays a folder. Only the metadata
+# scanner descends into folders: without expanded RetroArch metadata the daemon
+# falls back to the flat compatibility scanner, which skips these.
+create_nested_rom() {
+    local sys="$1"
+    local rel="$2"
+    local rom_path="$ROMS_ROOT/$sys/$rel"
+    mkdir -p "$(dirname "$rom_path")"
+    if [[ ! -f "$rom_path" ]]; then
+        printf 'mock rom for %s\n' "$rel" >"$rom_path"
+        ROM_COUNT=$((ROM_COUNT + 1))
+    fi
+}
+
+create_nested_rom SFC "Top Gear/Top Gear (USA).zip"
+create_nested_rom SFC "Top Gear/Top Gear 2 (USA).zip"
+create_nested_rom SFC "Top Gear/Top Gear 3000 (USA).zip"
+create_nested_rom SFC "Hacks/Super Mario World - Kaizo.zip"
+create_nested_rom SFC "Hacks/Translated/Seiken Densetsu 3 (Translated).zip"
+create_nested_rom MD "Mortal Kombat/Mortal Kombat (USA).zip"
+create_nested_rom MD "Mortal Kombat/Mortal Kombat II (USA).zip"
+create_nested_rom MD "Sonic/Sonic.zip"
+create_nested_rom PS "Final Fantasy IX/Final Fantasy IX (USA).chd"
+create_nested_rom PS "Translated/Tokimeki Memorial.chd"
+
 create_app "HelloApp.pak" "Hello App" "Hello from a Jawaka mock pak!" "res/icon.png" "$PLATFORM"
 create_app "Tools.pak" "Tools" "Tools placeholder" "" "shared"
 

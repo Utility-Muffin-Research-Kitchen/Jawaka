@@ -133,6 +133,10 @@ msgid "%d favorites"
 msgstr "%d yêu thích"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d game"
+msgstr "%d trò chơi"
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d games"
 msgstr "%d trò chơi"
 
@@ -4535,6 +4539,10 @@ msgstr "Pixel sắc cạnh"
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Shimmerless"
 msgstr "Sắc nét khử nhấp nháy"
+
+#: internal/settings/settings.c
+msgid "Show Folders"
+msgstr "Hiện thư mục"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"

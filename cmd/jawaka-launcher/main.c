@@ -23,6 +23,7 @@
 #include <SDL2/SDL_image.h>
 #include "internal/launcher/focus_screen.h"
 #include "internal/launcher/game_switcher.h"
+#include "internal/launcher/game_folders.h"
 #include "internal/launcher/bios.h"
 #include "internal/launcher/standalone_policy.h"
 #include "internal/launcher/system_names.h"
@@ -35,6 +36,7 @@
 #include "internal/platform/platform_id.h"
 #include "internal/platform/wifi.h"
 #include "internal/retroarch/catalog.h"
+#include "internal/discovery/art_path.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
 #include "internal/settings/storage_ui.h"
@@ -330,6 +332,15 @@ typedef struct {
     char               game_system_display[64];  /* full name for the browser title */
     bool               games_open;
     bool               games_are_favorites;  /* browser is showing the Favorites list */
+    /* Show Folders. games stays the whole loaded list; the browser shows
+       browse rows and game_list's cursor indexes them. Without a folder tree
+       (folders off, Favorites, Recents, the 5-Game picker) row i is game i.
+       Read rows only through jw__browse_count and jw__browse_game. */
+    jw_game_folder_tree *folder_tree;
+    jw_game_folder_row  *browse_rows;
+    int                browse_row_count;
+    int                browse_folder;        /* folder id of the open level */
+    bool               browse_folders_on;    /* Show Folders when the list was built */
     cat_list_state     game_list;
     /* Favorites tab (tabbed layout): favorited games, reloaded on tab entry */
     jw_game_entry      favorites[JW_MAX_FAVORITES];
@@ -507,6 +518,25 @@ typedef struct {
     bool                haptics_muted;
 } jw_launcher_state;
 
+/* Rows the game browser shows: every renderer, cursor bound and game action
+   goes through these two, so a row never shows one game while an action
+   targets another. */
+static int jw__browse_count(const jw_launcher_state *state) {
+    return state->folder_tree ? state->browse_row_count : state->game_count;
+}
+
+/* The game on a browser row; NULL for a folder row or no row. */
+static jw_game_entry *jw__browse_game(const jw_launcher_state *state, int row) {
+    if (row < 0 || row >= jw__browse_count(state)) return NULL;
+    if (!state->folder_tree) return &state->games[row];
+    const jw_game_folder_row *r = &state->browse_rows[row];
+    return r->kind == JW_GAME_FOLDER_ROW_GAME ? &state->games[r->index] : NULL;
+}
+
+static jw_game_entry *jw__browse_selected_game(const jw_launcher_state *state) {
+    return jw__browse_game(state, state->game_list.cursor);
+}
+
 /* Forward declarations: shared preview helper used by Tabs games-tab and the
  * Vertical preview pane. Defined alongside jw__load_system_icon below; it takes
  * the launcher state because the system-icon pack is a setting. */
@@ -671,10 +701,28 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
    place can hand back the same allocation and leave its window key unchanged. */
 static void jw__cover_prewarm_invalidate(void);
 
+/* A folder's game count. The i18n tables carry no plural forms, so the two
+   are separate strings, as elsewhere. */
+static const char *jw__games_fmt(int n) {
+    return n == 1 ? T("%d game") : T("%d games");
+}
+
+/* Back to identity rows: drops the folder tree and its rows. */
+static void jw__browse_clear(jw_launcher_state *state) {
+    jw_game_folder_tree_free(state->folder_tree);
+    state->folder_tree = NULL;
+    free(state->browse_rows);
+    state->browse_rows = NULL;
+    state->browse_row_count = 0;
+    state->browse_folder = 0;
+}
+
 static void jw__reset_game_data(jw_launcher_state *state) {
     if (!state) {
         return;
     }
+    /* The tree indexes games, so it never outlives them. */
+    jw__browse_clear(state);
     free(state->games);
     state->games = NULL;
     state->game_count = 0;
@@ -700,6 +748,232 @@ static void jw__replace_game_data(jw_launcher_state *state, jw_game_entry *games
     state->game_capacity = capacity;
     state->game_count = count;
     jw__cover_prewarm_invalidate();
+}
+
+/* ─── Show Folders: browse levels ────────────────────────────────────────── */
+
+/* A folder path is part of a rom_relpath, so it fits the same field. */
+#define JW_BROWSE_PATH_MAX sizeof(((jw_game_entry *)0)->rom_relpath)
+
+/* Only a system's own list shows folders: Favorites and Recents mix systems,
+   and the 5-Game picker's input has no way into a folder. */
+static bool jw__browse_wants_folders(const jw_launcher_state *state) {
+    return state->settings.show_folders && state->games_open &&
+           !state->games_are_favorites && !state->focus_pick_active &&
+           state->game_system[0] &&
+           strcmp(state->game_system, "Recently Played") != 0;
+}
+
+static const char *jw__browse_relpath_at(void *userdata, int i) {
+    const jw_launcher_state *state = userdata;
+    return state->games[i].rom_relpath;
+}
+
+static bool jw__browse_is_marker(void *userdata, const char *rel_subpath,
+                                 const char *filename) {
+    const jw_launcher_state *state = userdata;
+    const jw_ra_system *system = state->system_catalog
+        ? jw_ra_catalog_find_system(state->system_catalog, state->game_system)
+        : NULL;
+    return jw_art_is_folder_marker(system, rel_subpath, filename);
+}
+
+/* Show one folder's rows, cursor on row 0. A level change keeps the same games
+   allocation, so the cover sweep and the Coverflow carousel start over. */
+static bool jw__browse_set_level(jw_launcher_state *state, int folder) {
+    int n = jw_game_folder_rows(state->folder_tree, folder, NULL, 0);
+    if (n < 0) return false;
+    jw_game_folder_row *rows = NULL;
+    if (n > 0) {
+        rows = malloc((size_t)n * sizeof(*rows));
+        if (!rows) return false;
+        jw_game_folder_rows(state->folder_tree, folder, rows, n);
+    }
+    free(state->browse_rows);
+    state->browse_rows = rows;
+    state->browse_row_count = n;
+    state->browse_folder = folder;
+    cat_list_state_jump(&state->game_list, 0, n);
+    jw__cover_prewarm_invalidate();
+    state->cf.games_cf.inited = false;
+    return true;
+}
+
+/* After any (re)load of the open list: folder rows at the system root when
+   Show Folders applies, identity rows otherwise. A tree that cannot be built
+   leaves identity rows, so the list still works, flat. */
+static void jw__browse_build(jw_launcher_state *state) {
+    jw__browse_clear(state);
+    state->browse_folders_on = state->settings.show_folders;
+    if (!jw__browse_wants_folders(state)) return;
+    state->folder_tree = jw_game_folder_tree_build(state->game_count,
+                                                   jw__browse_relpath_at,
+                                                   jw__browse_is_marker, state);
+    if (state->folder_tree && !jw__browse_set_level(state, 0)) {
+        jw__browse_clear(state);
+    }
+}
+
+/* The folder id on a browser row, or -1 for a game row or no row. */
+static int jw__browse_folder_at(const jw_launcher_state *state, int row) {
+    if (!state->folder_tree || row < 0 || row >= state->browse_row_count) return -1;
+    const jw_game_folder_row *r = &state->browse_rows[row];
+    return r->kind == JW_GAME_FOLDER_ROW_FOLDER ? r->index : -1;
+}
+
+/* A cut that lands inside a UTF-8 sequence leaves a broken character at the
+   end; drop it rather than draw a replacement glyph. */
+static void jw__utf8_trim_tail(char *s) {
+    size_t len = strlen(s);
+    size_t lead = len;
+    while (lead > 0 && ((unsigned char)s[lead - 1] & 0xC0) == 0x80) lead--;
+    if (lead == 0) return;
+    unsigned char c = (unsigned char)s[lead - 1];
+    size_t need = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+    if (len - (lead - 1) < need) s[lead - 1] = '\0';
+}
+
+/* The browser title: the system name at its root, "System / Top Gear / Sub"
+   inside a folder, or just "Top Gear / Sub" without the system when `system`
+   is false. When that does not fit out, leading folders give way to "... /"
+   so the deepest folder, the one you are in, survives. */
+static void jw__browse_title(const jw_launcher_state *state, bool system,
+                             char *out, size_t n) {
+    const char *path = state->folder_tree && state->browse_folder > 0
+        ? jw_game_folder_path(state->folder_tree, state->browse_folder) : "";
+    if (!path[0]) {
+        snprintf(out, n, "%s", state->game_system_display);
+        return;
+    }
+    char shown[JW_BROWSE_PATH_MAX * 3];
+    size_t len = 0;
+    for (const char *c = path; *c && len + 4 < sizeof(shown); c++) {
+        if (*c == '/') { memcpy(shown + len, " / ", 3); len += 3; }
+        else           shown[len++] = *c;
+    }
+    shown[len] = '\0';
+    const char *tail = shown;
+    const char *prefix = system ? state->game_system_display : NULL;
+    while ((prefix ? strlen(prefix) + 3 : 0) + strlen(tail) >= n) {
+        const char *next = strstr(tail, " / ");
+        if (!next) break;                          /* last folder: let it clip */
+        tail = next + 3;
+        prefix = "...";                            /* as Catastrophe ellipsizes */
+    }
+    if (prefix) snprintf(out, n, "%s / %s", prefix, tail);
+    else        snprintf(out, n, "%s", tail);
+    jw__utf8_trim_tail(out);
+}
+
+/* The row showing the game with this stable key, or -1. */
+static int jw__browse_find_game(const jw_launcher_state *state, const char *source_id,
+                                const char *rom_relpath) {
+    int n = jw__browse_count(state);
+    for (int row = 0; row < n; row++) {
+        const jw_game_entry *game = jw__browse_game(state, row);
+        if (game && strcmp(game->source_id, source_id) == 0 &&
+            strcmp(game->rom_relpath, rom_relpath) == 0) {
+            return row;
+        }
+    }
+    return -1;
+}
+
+/* A on a folder row opens it. False when the selected row is not a folder. */
+static bool jw__browse_enter_selected(jw_launcher_state *state) {
+    int folder = jw__browse_folder_at(state, state->game_list.cursor);
+    if (folder < 0 || !jw__browse_set_level(state, folder)) return false;
+    int n = jw_game_folder_game_count(state->folder_tree, folder);
+    snprintf(state->status, sizeof(state->status), jw__games_fmt(n), n);
+    return true;
+}
+
+/* B inside a folder goes up one level, onto the row for the folder it left.
+   Nothing is remembered between levels, so this works the same after the
+   launcher restarts from a game. False at the system root. */
+static bool jw__browse_leave_folder(jw_launcher_state *state) {
+    if (!state->folder_tree || state->browse_folder <= 0) return false;
+    char child[JW_BROWSE_PATH_MAX];
+    snprintf(child, sizeof(child), "%s",
+             jw_game_folder_path(state->folder_tree, state->browse_folder));
+    int parent = jw_game_folder_parent(state->folder_tree, state->browse_folder);
+    if (parent < 0 || !jw__browse_set_level(state, parent)) return false;
+    int row = jw_game_folder_row_for_child(state->folder_tree, parent, child);
+    if (row > 0) cat_list_state_jump(&state->game_list, row, state->browse_row_count);
+    if (parent > 0) {
+        int n = jw_game_folder_game_count(state->folder_tree, parent);
+        snprintf(state->status, sizeof(state->status), jw__games_fmt(n), n);
+    } else {
+        snprintf(state->status, sizeof(state->status), T("%d %s games"),
+                 state->game_count, state->game_system_display);
+    }
+    return true;
+}
+
+/* Where the game browser stands, by identity rather than row number, so the
+   place survives a reload or a launcher restart. Empty for flat lists. */
+typedef struct {
+    char folder[JW_BROWSE_PATH_MAX];       /* open folder, "" at the system root */
+    char game_source[sizeof(((jw_game_entry *)0)->source_id)];
+    char game_relpath[JW_BROWSE_PATH_MAX]; /* selected game, "" on a folder row */
+    char row_folder[JW_BROWSE_PATH_MAX];   /* selected folder row, "" on a game */
+} jw_browse_place;
+
+static void jw__browse_capture(const jw_launcher_state *state, jw_browse_place *out) {
+    memset(out, 0, sizeof(*out));
+    if (!state->folder_tree) return;
+    snprintf(out->folder, sizeof(out->folder), "%s",
+             jw_game_folder_path(state->folder_tree, state->browse_folder));
+    const jw_game_entry *game = jw__browse_selected_game(state);
+    int folder = jw__browse_folder_at(state, state->game_list.cursor);
+    if (game) {
+        snprintf(out->game_source, sizeof(out->game_source), "%s", game->source_id);
+        snprintf(out->game_relpath, sizeof(out->game_relpath), "%s", game->rom_relpath);
+    } else if (folder >= 0) {
+        snprintf(out->row_folder, sizeof(out->row_folder), "%s",
+                 jw_game_folder_path(state->folder_tree, folder));
+    }
+}
+
+/* Put the browser back after jw__browse_build, against the tree as it is now:
+   into the saved folder or, when hiding, deleting or collapsing took it away,
+   its nearest surviving ancestor; then onto the saved game, else the row that
+   now stands for where you were, else the old row number. Flat lists keep the
+   old row number, exactly as before Show Folders. */
+static void jw__browse_restore(jw_launcher_state *state, const jw_browse_place *place,
+                               int cursor) {
+    jw_game_folder_tree *tree = state->folder_tree;
+    if (tree) {
+        int was = jw_game_folder_lookup(tree, place->folder);
+        int target = jw_game_folder_resolve(tree, place->folder);
+        if (target != state->browse_folder) jw__browse_set_level(state, target);
+        int row = -1;
+        if (place->game_relpath[0])
+            row = jw__browse_find_game(state, place->game_source, place->game_relpath);
+        if (row < 0 && was != state->browse_folder)
+            row = jw_game_folder_row_for_child(tree, state->browse_folder, place->folder);
+        if (row < 0 && place->row_folder[0])
+            row = jw_game_folder_row_for_child(tree, state->browse_folder, place->row_folder);
+        if (row >= 0) cursor = row;
+    }
+    int rows = jw__browse_count(state);
+    if (cursor >= rows) cursor = rows - 1;
+    if (cursor < 0) cursor = 0;
+    cat_list_state_jump(&state->game_list, cursor, rows);
+}
+
+/* Show Folders flipped in Settings while a system list was open: rebuild that
+   list at its root. Favorites and Recents never show folders, so they only
+   note the new value. */
+static void jw__browse_sync_setting(jw_launcher_state *state) {
+    if (state->browse_folders_on == state->settings.show_folders) return;
+    state->browse_folders_on = state->settings.show_folders;
+    if (!state->games_open || state->games_are_favorites || state->focus_pick_active ||
+        strcmp(state->game_system, "Recently Played") == 0) {
+        return;
+    }
+    jw__browse_build(state);
+    cat_list_state_jump(&state->game_list, 0, jw__browse_count(state));
 }
 
 typedef int (*jw__game_list_loader)(const char *db_path, jw_game_entry *out,
@@ -1074,6 +1348,7 @@ static bool jw__system_settings_input(jw_launcher_state *state, jw_settings_ui *
         if (jw__refresh_after_visibility_write(state->db_path, state) != 0)
             snprintf(feedback, sizeof(feedback), "%s", T("Game unhidden. Library refresh failed."));
     }
+    if (ui == &state->settings) jw__browse_sync_setting(state);
     if (!open || before != jw_settings_ui_screen(ui))
         state->system_activity.feedback.text[0] = '\0';
     else if (feedback[0])
@@ -1511,6 +1786,8 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
         int rc = -1;
         char open_system[64];
         snprintf(open_system, sizeof(open_system), "%s", state->game_system);
+        jw_browse_place place;
+        jw__browse_capture(state, &place);
         if (state->games_are_favorites) {
             rc = jw__load_bounded_game_browser(db_path, state,
                                                jw_db_list_favorite_games,
@@ -1523,10 +1800,8 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
             rc = jw__load_system_games_full(db_path, open_system, state, 0);
         }
         if (rc == 0 && state->game_count > 0) {
-            if (game_cursor >= state->game_count) {
-                game_cursor = state->game_count - 1;
-            }
-            cat_list_state_jump(&state->game_list, game_cursor, state->game_count);
+            jw__browse_build(state);
+            jw__browse_restore(state, &place, game_cursor);
         } else if (rc == 1 || (rc == 0 && state->game_count <= 0)) {
             jw__close_game_browser(state);
         } else if (rc != 0) {
@@ -2605,6 +2880,7 @@ static void jw__switch_tab(jw_launcher_state *state, int direction, const char *
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
 typedef struct { const jw_app_entry   *apps;    } jw__apps_ctx;
 typedef struct { const jw_launcher_state *st; } jw__pakrat_ctx;
+/* games is a plain list (the home tabs); NULL means the game browser's rows. */
 typedef struct { const jw_game_entry  *games; const jw_launcher_state *st; } jw__roms_ctx;
 typedef struct { const jw_search_result *results; } jw__search_ctx;
 
@@ -2953,9 +3229,52 @@ static void jw__draw_pakrat_item(int idx, int ix, int iy, int iw, int ih,
     }
 }
 
+/* A Show Folders row, drawn like the BIOS picker's: "Name/" with the number of
+   games inside, subfolders included, where an app row shows its status. */
+static void jw__draw_folder_item(const jw_launcher_state *state, int idx, int ix,
+                                 int iy, int iw, int ih, float focus) {
+    int folder = jw__browse_folder_at(state, idx);
+    if (folder < 0) return;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+
+    int pill_h = TTF_FontHeight(body) + CAT_S(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    bool settled = focus >= 0.999f;
+    ap_color name_c = cat_draw_color_lerp(theme->text,
+                                           theme->highlighted_text, focus);
+    ap_color meta_c = cat_draw_color_lerp(theme->hint,
+                                           theme->highlighted_text, focus);
+    int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+    int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
+
+    char name[300];
+    snprintf(name, sizeof(name), "%s/", jw_game_folder_name(state->folder_tree, folder));
+    char count[64];
+    int n = jw_game_folder_game_count(state->folder_tree, folder);
+    snprintf(count, sizeof(count), jw__games_fmt(n), n);
+    int count_w = cat_measure_text(small, count);
+    int name_max = iw - count_w - CAT_S(36);
+    if (name_max < CAT_S(96)) {
+        name_max = iw - CAT_S(20);
+        count_w = 0;
+    }
+    jw__draw_row_name(body, name, ix + CAT_S(10), text_y, name_c, name_max, settled);
+    if (count_w > 0) {
+        cat_draw_text(small, count, ix + iw - count_w - CAT_S(14), small_y, meta_c);
+    }
+}
+
 static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
                                float focus, void *user) {
     jw__roms_ctx *ctx = (jw__roms_ctx *)user;
+    const jw_game_entry *game = ctx->games ? &ctx->games[idx]
+                                           : jw__browse_game(ctx->st, idx);
+    if (!game) {
+        if (!ctx->games) jw__draw_folder_item(ctx->st, idx, ix, iy, iw, ih, focus);
+        return;
+    }
     ap_theme *theme   = cat_get_theme();
     TTF_Font *body    = cat_get_font(CAT_FONT_MEDIUM);
 
@@ -2967,14 +3286,14 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     char name[256];
-    jw__clean_rom_name(ctx->games[idx].name, name, sizeof(name));
+    jw__clean_rom_name(game->name, name, sizeof(name));
     int name_max = iw - CAT_S(20);
 
     int name_x = ix + CAT_S(10);
     if (ctx->st && ctx->st->focus_pick_active) {
         /* 5-Game Mode Pick: a clear checkmark on chosen games (favorites are
            irrelevant here). */
-        if (jw__fsetup_is_picked(ctx->st, ctx->games[idx].id)) {
+        if (jw__fsetup_is_picked(ctx->st, game->id)) {
             ap_color chk_c = cat_draw_color_lerp(theme->highlight,
                                                   theme->highlighted_text, focus);
             int body_h = TTF_FontHeight(body);
@@ -2984,7 +3303,7 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
             name_x += advance;
             name_max -= advance;
         }
-    } else if (ctx->games[idx].favorite) {
+    } else if (game->favorite) {
         /* Drawn star (not a font glyph — the body font lacks U+2605). Use the
            bright selection-pill color on a normal row (the accent/chrome tone is
            too dark to read on the row bg), and highlighted_text on a selected
@@ -4239,6 +4558,25 @@ static SDL_Texture *jw__load_cached_image(const char *path, int *out_w, int *out
     return tex;
 }
 
+/* Show Folders' glyph: a white mark (res/ui/folder.png) that each layout tints,
+   found beside the built-in themes the way the Grid wordmarks are. The color
+   modulation is set on every use, since the texture is shared. NULL when the
+   file is missing, and the slot then stays empty. */
+static SDL_Texture *jw__folder_glyph(cat_draw_color tint, int *w, int *h) {
+    *w = 0; *h = 0;
+    const char *themes = cat_get_active_theme_dir();
+    if (!themes || !themes[0]) return NULL;
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/../ui/folder.png", themes);
+    if (n < 0 || n >= (int)sizeof(path)) return NULL;
+    SDL_Texture *tex = jw__load_cached_image(path, w, h);
+    if (!tex) return NULL;
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureColorMod(tex, tint.r, tint.g, tint.b);
+    SDL_SetTextureAlphaMod(tex, 255);
+    return tex;
+}
+
 static bool jw__readable_path(const char *path) {
     return path && path[0] && access(path, R_OK) == 0;
 }
@@ -4692,31 +5030,61 @@ static void jw__cover_prewarm_invalidate(void) {
     s_prewarm_cursor = -1;
 }
 
-static void jw__cover_prewarm(const jw_launcher_state *state,
-                              const jw_game_entry *games, int count, int cursor) {
-    if (!state || !games || count <= 0) return;
+static void jw__cover_prewarm_one(const jw_launcher_state *state,
+                                  const jw_game_entry *game) {
+    const char *rel = game->image_path;
+    if (!rel[0]) return;
+    char abs[PATH_MAX];
+    if (jw__resolve_sdcard_path(state, rel, abs, sizeof(abs)) != 0) return;
+    if (cat_cache_get(abs, NULL, NULL)) return;            /* already decoded */
+    char thumb[PATH_MAX];
+    const char *tp = jw__cover_thumb_path(abs, thumb, sizeof(thumb)) ? thumb : NULL;
+    if (tp && cat_thumbnail_is_cached(abs, tp)) return;    /* already built */
+    jw_cover_loader_enqueue(jw__covers(), abs, tp, JW_COVER_THUMB_MAX);
+}
+
+/* Whether the window (list identity, count, cursor) moved since the last
+   sweep, recording it when it did. */
+static bool jw__cover_prewarm_moved(const jw_game_entry *games, int count, int cursor) {
     if (games == s_prewarm_games && count == s_prewarm_count &&
         cursor == s_prewarm_cursor) {
-        return;                                    /* window unchanged */
+        return false;                              /* window unchanged */
     }
     s_prewarm_games  = games;
     s_prewarm_count  = count;
     s_prewarm_cursor = cursor;
+    return true;
+}
+
+static void jw__cover_prewarm(const jw_launcher_state *state,
+                              const jw_game_entry *games, int count, int cursor) {
+    if (!state || !games || count <= 0) return;
+    if (!jw__cover_prewarm_moved(games, count, cursor)) return;
 
     int from = cursor - JW_PREWARM_BEHIND;
     if (from < 0) from = 0;
     int to = cursor + JW_PREWARM_AHEAD;
     if (to > count - 1) to = count - 1;
     for (int i = from; i <= to; ++i) {
-        const char *rel = games[i].image_path;
-        if (!rel[0]) continue;
-        char abs[PATH_MAX];
-        if (jw__resolve_sdcard_path(state, rel, abs, sizeof(abs)) != 0) continue;
-        if (cat_cache_get(abs, NULL, NULL)) continue;          /* already decoded */
-        char thumb[PATH_MAX];
-        const char *tp = jw__cover_thumb_path(abs, thumb, sizeof(thumb)) ? thumb : NULL;
-        if (tp && cat_thumbnail_is_cached(abs, tp)) continue;  /* already built */
-        jw_cover_loader_enqueue(jw__covers(), abs, tp, JW_COVER_THUMB_MAX);
+        jw__cover_prewarm_one(state, &games[i]);
+    }
+}
+
+/* The same sweep over the game browser's rows, skipping folder rows. Entering
+   or leaving a folder keeps the same games allocation, so every level change
+   calls jw__cover_prewarm_invalidate. */
+static void jw__cover_prewarm_browse(const jw_launcher_state *state, int cursor) {
+    int count = state ? jw__browse_count(state) : 0;
+    if (!state || !state->games || count <= 0) return;
+    if (!jw__cover_prewarm_moved(state->games, count, cursor)) return;
+
+    int from = cursor - JW_PREWARM_BEHIND;
+    if (from < 0) from = 0;
+    int to = cursor + JW_PREWARM_AHEAD;
+    if (to > count - 1) to = count - 1;
+    for (int i = from; i <= to; ++i) {
+        const jw_game_entry *game = jw__browse_game(state, i);
+        if (game) jw__cover_prewarm_one(state, game);
     }
 }
 
@@ -5597,7 +5965,12 @@ static SDL_Texture *jw__cf_cover(jw_launcher_state *state, const jw_game_entry *
    These match jw_cf_icon_fn: ctx is the launcher state (opaque to the CF module). */
 static SDL_Texture *jw__cf_icon_game(void *ctx, int idx, int *tw, int *th) {
     jw_launcher_state *state = (jw_launcher_state *)ctx;
-    return jw__cf_cover(state, &state->games[idx], tw, th);
+    const jw_game_entry *game = jw__browse_game(state, idx);
+    if (!game) {
+        /* A folder: its glyph, white like the stage's titles. */
+        return jw__folder_glyph((cat_draw_color){ 236, 238, 240, 255 }, tw, th);
+    }
+    return jw__cf_cover(state, game, tw, th);
 }
 static SDL_Texture *jw__cf_icon_favorite(void *ctx, int idx, int *tw, int *th) {
     jw_launcher_state *state = (jw_launcher_state *)ctx;
@@ -5762,23 +6135,28 @@ static void jw__draw_coverflow_games_stage(jw_launcher_state *state) {
     SDL_SetRenderDrawColor(ren, 6, 7, 9, 255);   /* glossy black stage */
     SDL_RenderClear(ren);
 
-    int count = state->game_count;
+    int count = jw__browse_count(state);
     if (count <= 0) {
         return;
     }
     int cur = state->game_list.cursor;
 
     /* Prewarm covers around the cursor (reuses the game-grid pipeline). */
-    jw__cover_prewarm(state, state->games, count, cur);
+    jw__cover_prewarm_browse(state, cur);
 
     jw__cf_animating |= jw_cf_draw_cards(&state->cf.games_cf, count, cur, jw__cf_icon_game,
                                          state, jw_cf_layouts[JW_CF_SECTION_GAMES]);
 
-    /* Centred game title, near the top. Tags like " (USA)" / " [!]" stripped. */
-    if (cur >= 0 && cur < count) {
+    /* Centred game title, near the top. Tags like " (USA)" / " [!]" stripped.
+       A folder shows "Name/", as in the lists. */
+    const jw_game_entry *game = jw__browse_game(state, cur);
+    int folder = jw__browse_folder_at(state, cur);
+    if (game || folder >= 0) {
         TTF_Font *font = cat_get_font(CAT_FONT_LARGE);
         char title[192];
-        jw__clean_rom_name(state->games[cur].name, title, sizeof(title));
+        if (game) jw__clean_rom_name(game->name, title, sizeof(title));
+        else      snprintf(title, sizeof(title), "%s/",
+                           jw_game_folder_name(state->folder_tree, folder));
         int maxw = sw - CAT_S(96);
         int nw   = cat_measure_text(font, title);
         int tx   = (sw - (nw < maxw ? nw : maxw)) / 2;
@@ -5786,6 +6164,17 @@ static void jw__draw_coverflow_games_stage(jw_launcher_state *state) {
         cat_draw_color white = { 236, 238, 240, 255 };
         if (nw > maxw) cat_draw_text_ellipsized(font, title, tx, ty, white, maxw);
         else           cat_draw_text(font, title, tx, ty, white);
+        if (!game) {
+            /* Under a folder's name, what is inside it, subfolders included. */
+            TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+            char count[64];
+            int n = jw_game_folder_game_count(state->folder_tree, folder);
+            snprintf(count, sizeof(count), jw__games_fmt(n), n);
+            int cw = cat_measure_text(small, count);
+            cat_draw_text(small, count, (sw - cw) / 2,
+                          ty + TTF_FontHeight(font) + CAT_S(2),
+                          (cat_draw_color){ 168, 172, 178, 255 });
+        }
     }
 }
 
@@ -5866,14 +6255,14 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     int region_y = header_h;
     int region_h = cat_get_screen_height() - header_h - jw__footer_height(state);
 
-    char title[96];
+    char title[160];
     if (state->focus_pick_active)
         snprintf(title, sizeof(title), "%s   %d / %d", state->game_system_display,
                  state->focus_setup_count, JW_FOCUS_SCREEN_MAX_TILES);
     else if (state->games_are_favorites)
         snprintf(title, sizeof(title), "%s", "Favorites");
     else
-        snprintf(title, sizeof(title), "%s", state->game_system_display);
+        jw__browse_title(state, true, title, sizeof(title));
 
     /* A title longer than title_max scrolls (looping marquee) instead of
        truncating, so the full system name is always readable. State is
@@ -5881,7 +6270,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
        changes. */
     {
         static cat_marquee title_marquee;
-        static char        last_title[96] = "";
+        static char        last_title[160] = "";
         static uint32_t    last_ms = 0;
         uint32_t now = SDL_GetTicks();
         if (strcmp(title, last_title) != 0) {
@@ -5899,27 +6288,27 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     (void)region_h;
     SDL_Rect list, image;
     int item_h;
-    jw__browse_boxes(state, region_y, state->game_count,
+    int rows = jw__browse_count(state);
+    jw__browse_boxes(state, region_y, rows,
                      &state->game_list, &list, &image, &item_h);
 
-    if (state->game_count == 0) {
+    if (rows == 0) {
         cat_draw_text_wrapped(body, T("No games found"),
             list.x + CAT_S(8), list.y + CAT_S(8),
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
-        jw__roms_ctx ctx = { state->games, state };
+        jw__roms_ctx ctx = { NULL, state };
         jw__draw_browse_list(list.x, list.y, list.w, list.h,
-            state->game_count, &state->game_list, item_h,
+            rows, &state->game_list, item_h,
             jw__draw_rom_item, &ctx);
     }
 
     cat_draw_rounded_rect(image.x, image.y, image.w, image.h, CAT_S(8),
         cat_hex_to_color("#ffffff10"));
 
-    if (state->game_count > 0 && state->game_list.cursor < state->game_count) {
-        const jw_game_entry *game = &state->games[state->game_list.cursor];
-        jw__cover_prewarm(state, state->games, state->game_count,
-                          state->game_list.cursor);
+    jw__cover_prewarm_browse(state, state->game_list.cursor);
+    const jw_game_entry *game = jw__browse_selected_game(state);
+    if (game) {
         /* Show the cover centered/fit in the panel — no name (it's in the list
            on the left). When a game has no cover, fall back to the system icon
            as a placeholder so the panel is never empty. */
@@ -5945,6 +6334,15 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
                 jw__draw_image_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
                                    image.w - art_pad * 2, image.h - art_pad * 2);
         }
+    } else if (jw__browse_folder_at(state, state->game_list.cursor) >= 0) {
+        /* A folder row: its glyph in the text color, square like the icon
+           fallback above. */
+        int art_pad = CAT_S(16);
+        int iw = 0, ih = 0;
+        SDL_Texture *tex = jw__folder_glyph(theme->text, &iw, &ih);
+        if (tex)
+            jw__draw_image_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
+                               image.w - art_pad * 2, image.h - art_pad * 2);
     }
 
     if (state->focus_pick_active) {
@@ -5955,6 +6353,14 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
             { CAT_BTN_A,     "Select", true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 4);
+    } else if (jw__browse_folder_at(state, state->game_list.cursor) >= 0) {
+        /* A folder row: nothing to favorite and no actions of its own. */
+        cat_footer_item footer[] = {
+            { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
+            { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
+            { CAT_BTN_A,  "Open",     true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, tabbed ? footer : footer + 1, tabbed ? 3 : 2);
     } else if (tabbed) {
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
@@ -7616,23 +8022,32 @@ static void jw__grid_status(jw_launcher_state *state, int pct, int y) {
 
 static const char *jw__gg_name(void *ctx, int idx) {
     jw_launcher_state *st = (jw_launcher_state *)ctx;
-    if (idx < 0 || idx >= st->game_count) return "";
+    const jw_game_entry *game = jw__browse_game(st, idx);
+    int folder = jw__browse_folder_at(st, idx);
+    if (!game && folder < 0) return "";
     /* Display only: the stored name keeps its region and dump tags so box-art
        matching and search still work on the full filename. Rotating buffers
        because a frame asks for several rows before drawing any of them. */
     static char buf[4][256];
     static int  slot;
     slot = (slot + 1) % 4;
-    jw__clean_rom_name(st->games[idx].name, buf[slot], sizeof(buf[slot]));
+    if (game) jw__clean_rom_name(game->name, buf[slot], sizeof(buf[slot]));
+    else      snprintf(buf[slot], sizeof(buf[slot]), "%s/",
+                       jw_game_folder_name(st->folder_tree, folder));
     return buf[slot];
 }
+
+/* The Grid games view's ink for this frame, set before it draws, so a folder
+   row's glyph matches the list text. */
+static cat_draw_color s_gg_folder_ink = { 0xEE, 0xF1, 0xEC, 0xFF };
 
 static SDL_Texture *jw__gg_art(void *ctx, int idx, int *w, int *h) {
     jw_launcher_state *st = (jw_launcher_state *)ctx;
     *w = 0; *h = 0;
-    if (idx < 0 || idx >= st->game_count) return NULL;
-    const jw_game_entry *g = &st->games[idx];
-    if (!g->image_path[0]) return NULL;
+    const jw_game_entry *g = jw__browse_game(st, idx);
+    if (!g && jw__browse_folder_at(st, idx) >= 0)
+        return jw__folder_glyph(s_gg_folder_ink, w, h);
+    if (!g || !g->image_path[0]) return NULL;
     char abs[PATH_MAX];
     if (jw__resolve_sdcard_path(st, g->image_path, abs, sizeof(abs)) != 0) return NULL;
     bool pending = false;
@@ -7804,8 +8219,8 @@ static void jw__render_grid_games(jw_launcher_state *state) {
     static int gm_game_id = -1;
     static int gm_generation = -1;
     const char *synopsis = NULL;
-    if (state->game_count > 0 && state->game_list.cursor < state->game_count) {
-        const jw_game_entry *g = &state->games[state->game_list.cursor];
+    const jw_game_entry *g = jw__browse_selected_game(state);
+    if (g) {
         if (g->id != gm_game_id || gm_generation != state->library_generation) {
             gm_game_id = g->id;
             gm_generation = state->library_generation;
@@ -7829,7 +8244,7 @@ static void jw__render_grid_games(jw_launcher_state *state) {
         if (gm.synopsis[0]) synopsis = gm.synopsis;
     }
 
-    jw__cover_prewarm(state, state->games, state->game_count, state->game_list.cursor);
+    jw__cover_prewarm_browse(state, state->game_list.cursor);
 
     int wmw = 0, wmh = 0;
     bool wm_color = false;
@@ -7842,11 +8257,19 @@ static void jw__render_grid_games(jw_launcher_state *state) {
     const int status_y   = CAT_S(6);
     const int top_bar    = status_y + CAT_DS(CAT__PILL_SIZE) * status_pct / 100 + CAT_S(8);
 
-    jw_grid_games_draw(&state->game_list, state->game_count,
+    /* The Grid has no title of its own: the wordmark names the system. Inside
+       a folder the path matters more, so the folder path takes the wordmark's
+       place; the slot is narrow, so the system name is left out. */
+    char title[160];
+    bool in_folder = state->folder_tree && state->browse_folder > 0;
+    jw__browse_title(state, !in_folder, title, sizeof(title));
+    if (in_folder) wm = NULL;
+    s_gg_folder_ink = jw_grid_games_ink(&style);
+    jw_grid_games_draw(&state->game_list, jw__browse_count(state),
                        jw__gg_name, jw__gg_art, state,
                        meta, meta_n, synopsis,
                        wm, wmw, wmh, wm_color,
-                       state->game_system_display, top_bar, &style);
+                       title, top_bar, &style);
 
     /* Status cluster last so it floats over everything, at the same reduced size
        and sampled polarity as the grid home. */
@@ -9480,10 +9903,11 @@ static bool jw__open_context_actions(const char *db_path, jw_launcher_state *sta
     if (!state) {
         return false;
     }
-    if (state->games_open &&
-        state->game_count > 0 &&
-        state->game_list.cursor < state->game_count) {
-        jw__open_game_actions(db_path, state, &state->games[state->game_list.cursor]);
+    if (state->games_open) {
+        /* A folder row has no actions of its own in v1. */
+        const jw_game_entry *game = jw__browse_selected_game(state);
+        if (!game) return false;
+        jw__open_game_actions(db_path, state, game);
         return true;
     }
 
@@ -9560,7 +9984,8 @@ static int jw__open_system_games(const char *db_path, const char *system,
     state->games_are_favorites = false;
     state->games_open = true;
     cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
-    cat_list_state_jump(&state->game_list, 0, state->game_count);
+    jw__browse_build(state);
+    cat_list_state_jump(&state->game_list, 0, jw__browse_count(state));
     snprintf(state->status, sizeof(state->status), T("%d %s games"),
              state->game_count, state->game_system_display);
     return 0;
@@ -9579,7 +10004,7 @@ static int jw__open_favorites(const char *db_path, jw_launcher_state *state) {
     state->games_are_favorites = true;
     state->games_open = true;
     cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
-    cat_list_state_jump(&state->game_list, 0, state->game_count);
+    cat_list_state_jump(&state->game_list, 0, jw__browse_count(state));
     if (state->game_count == 0) {
         snprintf(state->status, sizeof(state->status), "%s",
                  T("No favorites yet — press Y on a game to add one"));
@@ -9602,7 +10027,7 @@ static int jw__open_recents(const char *db_path, jw_launcher_state *state) {
     state->games_are_favorites = false;
     state->games_open = true;
     cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
-    cat_list_state_jump(&state->game_list, 0, state->game_count);
+    cat_list_state_jump(&state->game_list, 0, jw__browse_count(state));
     if (state->game_count == 0) {
         snprintf(state->status, sizeof(state->status), "%s", T("No recent games yet"));
     } else {
@@ -10432,6 +10857,7 @@ typedef struct {
     int  games_fav;
     int  game_cursor;
     char game_system[64];
+    jw_browse_place browse;   /* Show Folders: folder and game by identity */
 } jw_resume;
 
 static void jw__save_resume(const jw_launcher_state *state) {
@@ -10443,6 +10869,14 @@ static void jw__save_resume(const jw_launcher_state *state) {
     fprintf(fp, "games_fav=%d\n", state->games_are_favorites ? 1 : 0);
     fprintf(fp, "game_cursor=%d\n", state->game_list.cursor);
     fprintf(fp, "game_system=%s\n", state->game_system);
+    jw_browse_place place;
+    jw__browse_capture(state, &place);
+    if (state->folder_tree) {
+        fprintf(fp, "game_folder=%s\n", place.folder);
+        fprintf(fp, "game_source=%s\n", place.game_source);
+        fprintf(fp, "game_relpath=%s\n", place.game_relpath);
+        fprintf(fp, "game_row_folder=%s\n", place.row_folder);
+    }
     fclose(fp);
 }
 
@@ -10604,8 +11038,18 @@ static bool jw__load_resume(jw_resume *out) {
     if (!fp) return false;
     memset(out, 0, sizeof(*out));
     out->tab = -1;
-    char line[160];
+    /* Fits the longest value written here: a rom_relpath. */
+    char line[JW_BROWSE_PATH_MAX + 32];
     while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+        if (len == sizeof(line) - 1 && line[len - 1] != '\n') {
+            /* Longer than anything written here: skip it whole rather than
+               parse its pieces as lines of their own. */
+            int c;
+            while ((c = fgetc(fp)) != EOF && c != '\n') {}
+            continue;
+        }
+        line[strcspn(line, "\r\n")] = '\0';
         int v;
         if (sscanf(line, "tab=%d", &v) == 1) out->tab = v;
         else if (sscanf(line, "list_cursor=%d", &v) == 1) out->list_cursor = v;
@@ -10614,8 +11058,15 @@ static bool jw__load_resume(jw_resume *out) {
         else if (sscanf(line, "game_cursor=%d", &v) == 1) out->game_cursor = v;
         else if (strncmp(line, "game_system=", 12) == 0) {
             jw__str_copy(out->game_system, sizeof(out->game_system), line + 12);
-            out->game_system[strcspn(out->game_system, "\r\n")] = '\0';
         }
+        else if (strncmp(line, "game_folder=", 12) == 0)
+            jw__str_copy(out->browse.folder, sizeof(out->browse.folder), line + 12);
+        else if (strncmp(line, "game_source=", 12) == 0)
+            jw__str_copy(out->browse.game_source, sizeof(out->browse.game_source), line + 12);
+        else if (strncmp(line, "game_relpath=", 13) == 0)
+            jw__str_copy(out->browse.game_relpath, sizeof(out->browse.game_relpath), line + 13);
+        else if (strncmp(line, "game_row_folder=", 16) == 0)
+            jw__str_copy(out->browse.row_folder, sizeof(out->browse.row_folder), line + 16);
     }
     fclose(fp);
     remove(JW_RESUME_PATH);
@@ -10649,9 +11100,9 @@ static void jw__apply_resume(const char *db_path, jw_launcher_state *state,
         else if (recents)   rc = jw__open_recents(db_path, state);
         else                rc = jw__open_system_games(db_path, r->game_system, state);
         if (rc == 0 && state->game_count > 0)
-            /* Recents reorders the just-played game to the top -> land on row 0. */
-            cat_list_state_jump(&state->game_list, recents ? 0 : r->game_cursor,
-                                state->game_count);
+            /* Recents reorders the just-played game to the top -> land on row 0.
+               A system list goes back into its folder, onto the same game. */
+            jw__browse_restore(state, &r->browse, recents ? 0 : r->game_cursor);
         state->haptics_muted = was_muted;
     }
     /* Every tabbed tab list (Recents/Favorites/Games systems/Apps) navigates
@@ -10834,12 +11285,12 @@ static int jw__launch_game_entry(const char *socket_path, jw_launcher_state *sta
 
 static int jw__launch_selected_game(const char *socket_path, jw_launcher_state *state,
                                     bool *running) {
-    if (state->game_count <= 0 || state->game_list.cursor >= state->game_count) {
+    const jw_game_entry *game = jw__browse_selected_game(state);
+    if (!game) {
         jw__launch_notice(state, "No game selected");
         return -1;
     }
-    return jw__launch_game_entry(socket_path, state,
-                                 &state->games[state->game_list.cursor], running);
+    return jw__launch_game_entry(socket_path, state, game, running);
 }
 
 static int jw__launch_selected_app(const char *socket_path, jw_launcher_state *state,
@@ -11538,10 +11989,10 @@ static void jw__handle_search_input(const char *socket_path, const char *db_path
 }
 
 static void jw__toggle_favorite_selected(const char *db_path, jw_launcher_state *state) {
-    if (state->game_count <= 0 || state->game_list.cursor >= state->game_count) {
+    jw_game_entry *game = jw__browse_selected_game(state);
+    if (!game) {
         return;
     }
-    jw_game_entry *game = &state->games[state->game_list.cursor];
     int want_on = !game->favorite;
 
     if (jw_db_set_favorite(db_path, "game", game->id, want_on) != 0) {
@@ -11559,9 +12010,10 @@ static void jw__toggle_favorite_selected(const char *db_path, jw_launcher_state 
         state->haptics_muted = true;
         jw__open_favorites(db_path, state);
         state->haptics_muted = was_muted;
-        if (state->game_count > 0) {
-            int c = prev_cursor >= state->game_count ? state->game_count - 1 : prev_cursor;
-            cat_list_state_jump(&state->game_list, c, state->game_count);
+        int rows = jw__browse_count(state);
+        if (rows > 0) {
+            int c = prev_cursor >= rows ? rows - 1 : prev_cursor;
+            cat_list_state_jump(&state->game_list, c, rows);
         }
         return;
     }
@@ -11602,7 +12054,11 @@ static void jw__favorite_selected_search_result(const char *db_path,
 /* Label accessor for alphabetical letter-jump in the coverflow game carousel. */
 static const char *jw__games_label_cb(int i, void *user) {
     const jw_launcher_state *st = (const jw_launcher_state *)user;
-    return (i >= 0 && i < st->game_count) ? st->games[i].name : "";
+    const jw_game_entry *game = jw__browse_game(st, i);
+    if (game) return game->name;
+    /* Letter jump skips empty labels, so a folder answers with its name. */
+    int folder = jw__browse_folder_at(st, i);
+    return folder >= 0 ? jw_game_folder_name(st->folder_tree, folder) : "";
 }
 
 static void jw__handle_game_browser_input(const char *socket_path, const char *db_path,
@@ -11612,42 +12068,45 @@ static void jw__handle_game_browser_input(const char *socket_path, const char *d
        L1/R1 shoulders) step one cover with wrap-around, Up/Down jump to the next
        alphabetical letter. The grid layouts keep their row/page navigation. */
     bool cf = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW);
+    int rows = jw__browse_count(state);
     switch (button) {
         case CAT_BTN_UP:
             if (cf) cat_list_state_jump_letter(&state->game_list, jw__games_label_cb,
-                                               state, state->game_count, -1);
-            else    cat_list_state_move(&state->game_list, -1, state->game_count);
+                                               state, rows, -1);
+            else    cat_list_state_move(&state->game_list, -1, rows);
             break;
         case CAT_BTN_DOWN:
             if (cf) cat_list_state_jump_letter(&state->game_list, jw__games_label_cb,
-                                               state, state->game_count, +1);
-            else    cat_list_state_move(&state->game_list, +1, state->game_count);
+                                               state, rows, +1);
+            else    cat_list_state_move(&state->game_list, +1, rows);
             break;
         case CAT_BTN_LEFT:
-            if (cf) jw__cf_carousel_step(&state->game_list, -1, state->game_count,
+            if (cf) jw__cf_carousel_step(&state->game_list, -1, rows,
                                          CAT_LAUNCHER_COVERFLOW);
-            else    cat_list_state_page(&state->game_list, -1, state->game_count);
+            else    cat_list_state_page(&state->game_list, -1, rows);
             break;
         case CAT_BTN_RIGHT:
-            if (cf) jw__cf_carousel_step(&state->game_list, +1, state->game_count,
+            if (cf) jw__cf_carousel_step(&state->game_list, +1, rows,
                                          CAT_LAUNCHER_COVERFLOW);
-            else    cat_list_state_page(&state->game_list, +1, state->game_count);
+            else    cat_list_state_page(&state->game_list, +1, rows);
             break;
         case CAT_BTN_L1:
-            if (cf) jw__cf_carousel_step(&state->game_list, -1, state->game_count,
+            if (cf) jw__cf_carousel_step(&state->game_list, -1, rows,
                                          CAT_LAUNCHER_COVERFLOW);
             break;
         case CAT_BTN_R1:
-            if (cf) jw__cf_carousel_step(&state->game_list, +1, state->game_count,
+            if (cf) jw__cf_carousel_step(&state->game_list, +1, rows,
                                          CAT_LAUNCHER_COVERFLOW);
             break;
         case CAT_BTN_A:
-            jw__launch_selected_game(socket_path, state, running);
+            if (!jw__browse_enter_selected(state))
+                jw__launch_selected_game(socket_path, state, running);
             break;
         case CAT_BTN_Y:
             jw__toggle_favorite_selected(db_path, state);
             break;
         case CAT_BTN_B:
+            if (jw__browse_leave_folder(state)) break;
             jw__close_game_browser(state);
             state->status[0] = '\0';
             break;
@@ -12388,14 +12847,18 @@ static void jw__handle_pick_input(const char *db_path, jw_launcher_state *state,
                                   cat_button button) {
     state->focus_setup_note[0] = '\0';
     if (state->games_open) {
+        /* The picker forces the identity rows (see jw__open_system_games), so
+           every row here is a game. */
+        int rows = jw__browse_count(state);
+        jw_game_entry *game = jw__browse_selected_game(state);
         switch (button) {
-            case CAT_BTN_UP:    cat_list_state_move(&state->game_list, -1, state->game_count); break;
-            case CAT_BTN_DOWN:  cat_list_state_move(&state->game_list, +1, state->game_count); break;
-            case CAT_BTN_LEFT:  cat_list_state_page(&state->game_list, -1, state->game_count); break;
-            case CAT_BTN_RIGHT: cat_list_state_page(&state->game_list, +1, state->game_count); break;
+            case CAT_BTN_UP:    cat_list_state_move(&state->game_list, -1, rows); break;
+            case CAT_BTN_DOWN:  cat_list_state_move(&state->game_list, +1, rows); break;
+            case CAT_BTN_LEFT:  cat_list_state_page(&state->game_list, -1, rows); break;
+            case CAT_BTN_RIGHT: cat_list_state_page(&state->game_list, +1, rows); break;
             case CAT_BTN_A:
-                if (state->game_count > 0 && state->game_list.cursor < state->game_count)
-                    jw__fsetup_toggle(state, state->games[state->game_list.cursor].id);
+                if (game)
+                    jw__fsetup_toggle(state, game->id);
                 break;
             case CAT_BTN_Y:     jw__pick_clear(state); break;
             case CAT_BTN_START: jw__pick_done(state); break;
@@ -13082,6 +13545,9 @@ static void jw__handle_input_inner(const char *socket_path, const char *db_path,
             return;
         }
         if (button == CAT_BTN_X) {
+            /* A folder row has no actions in v1, and X must not fall through
+               to Search the way it does on an empty list. */
+            if (jw__browse_folder_at(state, state->game_list.cursor) >= 0) return;
             if (!jw__open_context_actions(db_path, state)) {
                 jw__open_search(db_path, state);
             }

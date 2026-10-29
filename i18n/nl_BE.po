@@ -133,6 +133,10 @@ msgid "%d favorites"
 msgstr "%d favorieten"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d game"
+msgstr "%d game"
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d games"
 msgstr "%d games"
 
@@ -4535,6 +4539,10 @@ msgstr "Scherpe pixels"
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Shimmerless"
 msgstr "Scherp zonder flikkeren"
+
+#: internal/settings/settings.c
+msgid "Show Folders"
+msgstr "Mappen tonen"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"

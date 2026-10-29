@@ -471,6 +471,7 @@ UI_SRCS := \
 	internal/launcher/grid_games.c \
 	internal/launcher/user_themes.c \
 	internal/launcher/focus_screen.c \
+	internal/launcher/game_folders.c \
 	internal/launcher/game_switcher.c \
 	internal/launcher/standalone_policy.c \
 	internal/launcher/system_names.c \
@@ -780,6 +781,20 @@ game-switcher-test: | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/game-switcher-test \
 		internal/launcher/game_switcher_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
 	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/game-switcher-test
+
+# Show Folders: the pure folder model, then the launcher driven through its
+# real handlers with folders on and off.
+.PHONY: game-folders-test folders-ui-test
+
+game-folders-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/game-folders-test \
+		internal/launcher/game_folders_test.c internal/launcher/game_folders.c
+	$(BUILD)/bin/game-folders-test
+
+folders-ui-test: | $(BUILD)/bin check-catastrophe check-sdl
+	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/folders-ui-test \
+		internal/launcher/folders_ui_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
+	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/folders-ui-test
 
 rumble-settings-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/rumble-settings-test \

@@ -42,6 +42,11 @@ typedef struct {
 typedef const char *(*jw_grid_games_name_fn)(void *ctx, int idx);
 typedef SDL_Texture *(*jw_grid_games_art_fn)(void *ctx, int idx, int *w, int *h);
 
+/* The ink the view draws its text in: the style's own, else derived from the
+   underlay. White marks drawn on the view (wordmarks, the folder glyph) take
+   it too, so they read as part of the interface. */
+cat_draw_color jw_grid_games_ink(const jw_grid_games_style *style);
+
 /* Draw the whole view. `top_bar` is the band reserved above both columns;
    the caller sizes it from the status cluster it is about to draw, so the
    columns clear it whatever scale that cluster ends up at.

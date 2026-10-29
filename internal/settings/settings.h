@@ -191,8 +191,15 @@ typedef enum {
 #define JW_GAMES_BOOT_RESUME     6
 #define JW_GAMES_RESET_RETROARCH 7   /* was General > Reset RetroArch Config */
 #define JW_GAMES_ACCOUNTS        8   /* -> Accounts, was a top-level category */
-#define JW_GAMES_HIDDEN_GAMES    9
-#define JW_GAMES_ROW_COUNT      10
+/* Show Folders sits next to Hidden Games: both decide what a game list shows. */
+#define JW_GAMES_SHOW_FOLDERS    9
+#define JW_GAMES_HIDDEN_GAMES   10
+#define JW_GAMES_ROW_COUNT      11
+
+/* A system's game list shows its ROM subfolders. Opt-in: anything but "1" is
+   Off. The launcher reads it from its own settings instance. */
+#define JW_SHOW_FOLDERS_SETTING_KEY "game_folders"
+
 /* Capacity for the priority editors (catalogs are 10 entries each today). */
 #define JW_SCRAPE_PRIO_SLOTS  16
 
@@ -433,6 +440,7 @@ typedef struct {
     bool               power_hold_save_enabled;   /* "save_state_on_power_hold"; Off by default */
     bool               power_hold_save_supported; /* platform qualified the power button */
     bool               boot_resume_enabled;       /* "resume_game_on_boot"; Off by default */
+    bool               show_folders;              /* "game_folders"; Off by default */
     bool               screenshots_enabled; /* Menu+L1 screenshot hotkey (daemon reads the DB key) */
     bool               recording_enabled;   /* Menu+R1 game recording hotkey (daemon reads the DB key) */
     bool               recording_split;     /* cut clips over 10MB into postable parts */

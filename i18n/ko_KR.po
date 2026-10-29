@@ -136,6 +136,10 @@ msgid "%d favorites"
 msgstr "%d개 즐겨찾기"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d game"
+msgstr "%d개 게임"
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d games"
 msgstr "%d개 게임"
 
@@ -4538,6 +4542,10 @@ msgstr "선명한 픽셀"
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Shimmerless"
 msgstr "선명하고 떨림 없음"
+
+#: internal/settings/settings.c
+msgid "Show Folders"
+msgstr "폴더 표시"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"

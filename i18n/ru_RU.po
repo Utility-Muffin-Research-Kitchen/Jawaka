@@ -155,6 +155,10 @@ msgid "%d favorites"
 msgstr "В избранном: %d"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d game"
+msgstr "Игры: %d"
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d games"
 msgstr "Игры: %d"
 
@@ -4563,6 +4567,10 @@ msgstr "Резкие пиксели"
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Shimmerless"
 msgstr "Резкие без мерцания"
+
+#: internal/settings/settings.c
+msgid "Show Folders"
+msgstr "Показывать папки"
 
 # A-button action when organizing Home Tabs; not the Visible/Hidden values.
 #: cmd/jawaka-launcher/main.c

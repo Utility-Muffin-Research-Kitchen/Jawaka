@@ -43,6 +43,10 @@ msgid "%d favorites"
 msgstr "%d 个收藏"
 
 #: cmd/jawaka-launcher/main.c
+msgid "%d game"
+msgstr "%d 个游戏"
+
+#: cmd/jawaka-launcher/main.c
 msgid "%d games"
 msgstr "%d 个游戏"
 
@@ -2559,6 +2563,10 @@ msgstr "锐利像素"
 #: internal/retroarch/shader_strings.c
 msgid "Sharp Shimmerless"
 msgstr "锐利无闪烁"
+
+#: internal/settings/settings.c
+msgid "Show Folders"
+msgstr "显示文件夹"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"
