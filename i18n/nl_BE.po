@@ -3602,7 +3602,7 @@ msgstr "Map wordt gelezen..."
 
 #: internal/settings/settings.c
 msgid "Ready Check"
-msgstr "Klaar voor controle"
+msgstr "Gereedheidscontrole"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reboot"
