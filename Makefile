@@ -772,6 +772,13 @@ visibility-test: | $(BUILD)/bin
 		internal/storage/sources.c $(LDLIBS_COMMON)
 	$(BUILD)/bin/visibility-test
 
+.PHONY: source-visibility-test
+source-visibility-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/source-visibility-test \
+		internal/db/source_visibility_test.c internal/db/db.c internal/db/relocation.c \
+		internal/storage/sources.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/source-visibility-test
+
 visibility-ui-test: | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/visibility-ui-test \
 		internal/launcher/visibility_ui_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
