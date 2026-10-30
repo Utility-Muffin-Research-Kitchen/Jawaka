@@ -13956,6 +13956,18 @@ static void jw__storage_health_refresh(jw_daemon_state *state) {
     }
 }
 
+static void jw__log_card_keys(jw_daemon_state *state) {
+    jw_storage_source_list sources;
+    if (jw__storage_sources(state, &sources) != 0) return;
+    for (int i = 0; i < sources.count; i++) {
+        const jw_storage_source *source = &sources.sources[i];
+        jw_log_info("storage: source %s card key %s", source->id,
+                    source->card_key_state == JW_CARD_KEY_KNOWN ? source->card_key
+                    : source->card_key_state == JW_CARD_KEY_UNREADABLE ? "unreadable"
+                    : "none");
+    }
+}
+
 static void jw__tick_storage_health(jw_daemon_state *state) {
     long long now = jw__monotonic_ms();
     bool requested = jw_storage_take_refresh_request();
@@ -18150,6 +18162,7 @@ int main(int argc, char *argv[]) {
                         reason);
         }
     }
+    jw__log_card_keys(&state);
     bool db_opened = jw_db_open(state.db_path, &state.db) == 0;
     if (db_opened && jw_db_apply_schema(state.db) != 0) {
         if (!state.storage_db_read_only) {

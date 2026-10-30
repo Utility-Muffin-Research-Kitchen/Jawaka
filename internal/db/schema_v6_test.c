@@ -85,6 +85,21 @@ static void check_unreleased_v7_and_read_only(void) {
         scalar(db, "PRAGMA user_version") != 6) {
         fail(db, "writable open did not add the visibility table");
     }
+    /* The same open adds the card registry, with at most one owner of the slot. */
+    if (jw_db_apply_schema(db) != 0 ||
+        scalar(db, "SELECT COUNT(*) FROM main.sqlite_master WHERE name='library_cards'") != 1 ||
+        scalar(db, "SELECT COUNT(*) FROM main.sqlite_master WHERE name='library_cards_one_live'") != 1 ||
+        scalar(db, "PRAGMA user_version") != 6) {
+        fail(db, "writable open did not add the card registry");
+    }
+    exec_ok(db, "INSERT INTO library_cards(card_key,is_live,last_seen) VALUES"
+                "('fat:aaaa0001',1,1),('fat:aaaa0002',0,1),('fat:aaaa0003',0,1);");
+    if (sqlite3_exec(db, "UPDATE library_cards SET is_live=1 WHERE card_key='fat:aaaa0002';",
+                     NULL, NULL, NULL) != SQLITE_CONSTRAINT ||
+        sqlite3_exec(db, "INSERT INTO library_cards(card_key,last_seen) VALUES('fat:aaaa0001',2);",
+                     NULL, NULL, NULL) != SQLITE_CONSTRAINT) {
+        fail(db, "the card registry allowed a second owner or a repeated key");
+    }
     sqlite3_close(db);
     unlink(path);
     rmdir(dir);

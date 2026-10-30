@@ -201,4 +201,16 @@ CREATE TABLE IF NOT EXISTS hidden_roms (
     PRIMARY KEY (source_id, rom_relpath, member)
 );
 
+CREATE TABLE IF NOT EXISTS library_cards (
+    id          INTEGER PRIMARY KEY,
+    card_key    TEXT NOT NULL UNIQUE,         -- 'fat:87611d18'
+    is_live     INTEGER NOT NULL DEFAULT 0,   -- 1: its rows are under secondary_sd
+    live_digest TEXT,                         -- live only: count and id sum of those rows
+    label       TEXT NOT NULL DEFAULT '',     -- FAT volume label, for logs and later UI
+    last_seen   INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS library_cards_one_live
+    ON library_cards(is_live) WHERE is_live = 1;
+
 PRAGMA user_version = 6;

@@ -14,6 +14,14 @@
 #define JW_STORAGE_MAX_SOURCES 8
 #define JW_STORAGE_SOURCE_ID_MAX 32
 
+/* What can be said about which card is in a slot. */
+typedef enum {
+    JW_CARD_KEY_NONE = 0,    /* can't be told apart: not mounted, a filesystem with no
+                                serial or link, or a platform with one source */
+    JW_CARD_KEY_KNOWN,       /* card_key names this card */
+    JW_CARD_KEY_UNREADABLE,  /* a FAT card whose boot sector can't be read right now */
+} jw_card_key_state;
+
 typedef struct {
     char id[JW_STORAGE_SOURCE_ID_MAX];
     char root[JW_STORAGE_PATH_MAX];
@@ -41,6 +49,11 @@ typedef struct {
     char filesystem_fingerprint[128];
     char roms_filesystem_fingerprint[128];
     char images_filesystem_fingerprint[128];
+    /* One spelling per card, unlike the fingerprints above, which can read as
+       uuid: or fat: for the same card depending on whether the by-uuid link
+       exists yet. Those stay as they are because records on cards store them. */
+    char card_key[64];
+    jw_card_key_state card_key_state;
 } jw_storage_source;
 
 typedef struct {
@@ -68,6 +81,11 @@ int jw_storage_db_path_for_source(const jw_storage_source *source,
                                   const char *absolute_path,
                                   char *out, size_t out_size);
 bool jw_storage_relative_path_valid(const char *path);
+/* Writes a card's "fat:%08x" key from its 512-byte boot sector. A card with no
+   extended boot signature has no serial, so it reads as a zero serial, and cards
+   sharing a serial count as one card. False when this isn't a boot sector. */
+bool jw_storage_card_key_from_boot_sector(const unsigned char *sector,
+                                          char *out, size_t out_size);
 int jw_storage_resolve_rom(const jw_storage_source *source,
                            const char *rom_relpath,
                            bool require_regular_file,

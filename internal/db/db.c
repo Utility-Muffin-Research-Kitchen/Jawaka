@@ -165,6 +165,20 @@ static const char *kSchemaSql =
     "    ON pakrat_installs(install_path);\n"
     "PRAGMA user_version = 6;\n";
 
+/* Which card owns the second slot's rows. is_live marks the owner, and the partial
+   index allows only one. See plans/Jawaka/second-card-identity.md. */
+static const char *kCardsSchemaSql =
+    "CREATE TABLE IF NOT EXISTS library_cards (\n"
+    " id INTEGER PRIMARY KEY,\n"
+    " card_key TEXT NOT NULL UNIQUE,\n"
+    " is_live INTEGER NOT NULL DEFAULT 0,\n"
+    " live_digest TEXT,\n"
+    " label TEXT NOT NULL DEFAULT '',\n"
+    " last_seen INTEGER NOT NULL\n"
+    ");\n"
+    "CREATE UNIQUE INDEX IF NOT EXISTS library_cards_one_live\n"
+    "    ON library_cards(is_live) WHERE is_live = 1;\n";
+
 static const char *kRelocationSchemaSql =
     "PRAGMA foreign_keys = ON;\n"
     "CREATE TABLE IF NOT EXISTS library_relocation_ops (\n"
@@ -800,7 +814,8 @@ int jw_db_open(const char *path, sqlite3 **out) {
 static int jw__apply_additive(sqlite3 *db) {
     return jw__ensure_apps_min_leaf_version(db) == 0 &&
                    jw__ensure_pakrat_commit_token(db) == 0 &&
-                   jw__exec(db, kRelocationSchemaSql) == 0
+                   jw__exec(db, kRelocationSchemaSql) == 0 &&
+                   jw__exec(db, kCardsSchemaSql) == 0
                ? jw__visibility_table(db)
                : -1;
 }

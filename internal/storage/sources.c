@@ -199,48 +199,95 @@ bool jw_storage_source_paths_v2_valid(void) {
     return true;
 }
 
-#if defined(PLATFORM_MLP1) && defined(__linux__)
 static uint32_t jw__le32(const unsigned char *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* Offset of the volume serial: FAT32 has no root entry count or 16-bit FAT size. */
+static size_t jw__boot_sector_serial_offset(const unsigned char *sector) {
+    return (sector[17] == 0 && sector[18] == 0 &&
+            sector[22] == 0 && sector[23] == 0) ? 67 : 39;
+}
+
+bool jw_storage_card_key_from_boot_sector(const unsigned char *sector,
+                                          char *out, size_t out_size) {
+    if (!sector || !out || out_size == 0 ||
+        sector[510] != 0x55 || sector[511] != 0xaa) {
+        return false;
+    }
+    size_t offset = jw__boot_sector_serial_offset(sector);
+    unsigned char signature = sector[offset - 1];
+    uint32_t serial = signature == 0x29 || signature == 0x28
+        ? jw__le32(&sector[offset]) : 0;
+    return jw__format(out, out_size, "fat:%08x", serial);
+}
+
+#if defined(PLATFORM_MLP1) && defined(__linux__)
+static bool jw__is_fat_filesystem(const char *filesystem) {
+    return filesystem && (strcmp(filesystem, "vfat") == 0 ||
+                          strcmp(filesystem, "msdos") == 0 ||
+                          strcmp(filesystem, "fat") == 0);
+}
+
+static bool jw__read_boot_sector(const char *device, unsigned char *sector) {
+    if (!device || device[0] != '/') return false;
+    int fd = open(device, O_RDONLY | O_CLOEXEC);
+    ssize_t got = fd >= 0 ? pread(fd, sector, 512, 0) : -1;
+    if (fd >= 0) close(fd);
+    return got == 512;
+}
+
+/* Writes the by-uuid link for this device, when there is one. False only when
+   the links can't be listed at all. */
+static bool jw__uuid_fingerprint(unsigned major_id, unsigned minor_id,
+                                 char *out, size_t out_size) {
+    DIR *uuid_dir = opendir("/dev/disk/by-uuid");
+    if (!uuid_dir) return false;
+    struct dirent *entry = NULL;
+    while ((entry = readdir(uuid_dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char path[JW_STORAGE_PATH_MAX];
+        struct stat st;
+        if (jw__format(path, sizeof(path), "/dev/disk/by-uuid/%s", entry->d_name) &&
+            stat(path, &st) == 0 && S_ISBLK(st.st_mode) &&
+            major(st.st_rdev) == major_id && minor(st.st_rdev) == minor_id) {
+            jw__format(out, out_size, "uuid:%s", entry->d_name);
+            break;
+        }
+    }
+    closedir(uuid_dir);
+    return true;
 }
 
 static void jw__filesystem_fingerprint(unsigned major_id, unsigned minor_id,
                                        const char *filesystem,
                                        const char *device,
                                        char *out, size_t out_size) {
-    DIR *uuid_dir = opendir("/dev/disk/by-uuid");
-    if (uuid_dir) {
-        struct dirent *entry = NULL;
-        while ((entry = readdir(uuid_dir)) != NULL) {
-            if (entry->d_name[0] == '.') continue;
-            char path[JW_STORAGE_PATH_MAX];
-            struct stat st;
-            if (jw__format(path, sizeof(path), "/dev/disk/by-uuid/%s", entry->d_name) &&
-                stat(path, &st) == 0 && S_ISBLK(st.st_mode) &&
-                major(st.st_rdev) == major_id && minor(st.st_rdev) == minor_id) {
-                jw__format(out, out_size, "uuid:%s", entry->d_name);
-                break;
-            }
-        }
-        closedir(uuid_dir);
-        if (out[0]) return;
+    if (jw__uuid_fingerprint(major_id, minor_id, out, out_size) && out[0]) return;
+    unsigned char sector[512];
+    if (jw__is_fat_filesystem(filesystem) && jw__read_boot_sector(device, sector) &&
+        sector[510] == 0x55 && sector[511] == 0xaa) {
+        uint32_t serial = jw__le32(&sector[jw__boot_sector_serial_offset(sector)]);
+        if (serial) jw__format(out, out_size, "fat:%08x", serial);
     }
-    if (filesystem && device && device[0] == '/' &&
-        (strcmp(filesystem, "vfat") == 0 || strcmp(filesystem, "msdos") == 0 ||
-         strcmp(filesystem, "fat") == 0)) {
+}
+
+/* The boot sector, read directly, so the key can't depend on udev's timing. */
+static void jw__read_card_key(jw_storage_source *source, unsigned major_id, unsigned minor_id,
+                              const char *filesystem, const char *device) {
+    source->card_key[0] = '\0';
+    if (jw__is_fat_filesystem(filesystem)) {
         unsigned char sector[512];
-        int fd = open(device, O_RDONLY | O_CLOEXEC);
-        ssize_t got = fd >= 0 ? pread(fd, sector, sizeof(sector), 0) : -1;
-        if (fd >= 0) close(fd);
-        if (got == (ssize_t)sizeof(sector) &&
-            sector[510] == 0x55 && sector[511] == 0xaa) {
-            size_t offset = (sector[17] == 0 && sector[18] == 0 &&
-                             sector[22] == 0 && sector[23] == 0) ? 67 : 39;
-            uint32_t serial = jw__le32(&sector[offset]);
-            if (serial) jw__format(out, out_size, "fat:%08x", serial);
-        }
+        source->card_key_state =
+            jw__read_boot_sector(device, sector) &&
+            jw_storage_card_key_from_boot_sector(sector, source->card_key,
+                                                 sizeof(source->card_key))
+                ? JW_CARD_KEY_KNOWN : JW_CARD_KEY_UNREADABLE;
+        return;
     }
+    (void)jw__uuid_fingerprint(major_id, minor_id, source->card_key, sizeof(source->card_key));
+    source->card_key_state = source->card_key[0] ? JW_CARD_KEY_KNOWN : JW_CARD_KEY_NONE;
 }
 
 static void jw__mountinfo_unescape(char *path) {
@@ -263,6 +310,22 @@ static void jw__mountinfo_unescape(char *path) {
         }
     }
     *write = '\0';
+}
+#endif
+
+#if !(defined(PLATFORM_MLP1) && defined(__linux__))
+/* Hosts have no boot sector to read, so tests name the card in a slot with
+   JAWAKA_TEST_CARD_KEY_<source id>, or say "unreadable". */
+static void jw__test_card_key(jw_storage_source *source) {
+    char name[64];
+    const char *value = jw__format(name, sizeof(name), "JAWAKA_TEST_CARD_KEY_%s", source->id)
+        ? jw__env_value(name) : NULL;
+    if (!value) return;
+    if (strcmp(value, "unreadable") == 0) {
+        source->card_key_state = JW_CARD_KEY_UNREADABLE;
+    } else if (jw__format(source->card_key, sizeof(source->card_key), "%s", value)) {
+        source->card_key_state = JW_CARD_KEY_KNOWN;
+    }
 }
 #endif
 
@@ -314,6 +377,7 @@ static int jw__source_availability(jw_storage_source *source) {
             jw__filesystem_fingerprint(major, minor, filesystem, device,
                                        source->filesystem_fingerprint,
                                        sizeof(source->filesystem_fingerprint));
+            jw__read_card_key(source, major, minor, filesystem, device);
         }
         if (mountpoint[0] && mount_len > roms_mount_len &&
             jw__path_is_within(roms_abs, mountpoint)) {
@@ -338,6 +402,7 @@ static int jw__source_availability(jw_storage_source *source) {
     source->available = source->mount_id > 0;
 #else
     source->available = true;
+    jw__test_card_key(source);
 #endif
     return 0;
 }
