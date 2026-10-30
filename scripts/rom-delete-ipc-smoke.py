@@ -86,6 +86,7 @@ class Fixture:
         self.runtime, self.state, self.platform = root / "runtime", root / "state", root / "platform"
         self.socket, self.db_path = self.runtime / "d.sock", self.state / "library.db"
         self.log, self.proc, self.log_file = root / "daemon.log", None, None
+        self.card_key = None
         self.readonly_marker = root / "readonly-source"
         self.failure_marker = root / "fail-after"
         for directory in (self.runtime, self.state, self.platform / "defaults",
@@ -136,6 +137,11 @@ class Fixture:
                    JAWAKA_TEST_DELETE_READONLY_FILE=str(self.readonly_marker),
                    JAWAKA_TEST_DELETE_FAIL_AFTER_FILE=str(self.failure_marker),
                    JAWAKA_TEST_DELETE_COMMIT_DELAY_MS="500")
+        if self.card_key:
+            env["JAWAKA_TEST_CARD_KEY_secondary_sd"] = self.card_key
+            # A launch has to pass its core checks to reach the library lookup.
+            env.update(CORES_PATH=str(self.root / "cores"),
+                       UMRK_RETROARCH_BIN=str(self.root / "retroarch-fixture"))
         self.log_file = self.log.open("ab")
         self.proc = subprocess.Popen([str(self.daemon), "--daemon-only"], env=env,
                                      cwd=Path(__file__).resolve().parents[1], stdout=self.log_file,
@@ -466,6 +472,43 @@ def run(fixture):
 
     test_hash_filenames(fixture)
     test_generated_playlist(fixture)
+    test_card_ownership(fixture)
+
+
+def test_card_ownership(fixture):
+    """A row for another card must not delete or launch whatever sits at its path."""
+    fixture.stop()
+    write(fixture.root / "cores/fixture_libretro.dylib", "fixture core\n")
+    write(fixture.root / "retroarch-fixture", "#!/bin/sh\nexit 0\n")
+    (fixture.root / "retroarch-fixture").chmod(0o755)
+    fixture.card_key = "fat:aaaa0001"
+    fixture.start()
+    fixture.stop()
+    # An open relocation defers the swap, so the first card's rows stay under the
+    # slot while a different card is mounted, as a read-only library card would.
+    with sqlite3.connect(fixture.db_path) as db:
+        game = db.execute("SELECT id FROM games WHERE source_id='secondary_sd' "
+                          "AND rom_relpath='GBA/Delete.gba'").fetchone()[0]
+        db.execute("INSERT INTO library_relocation_ops(operation_id,state,expected_generation,"
+                   "item_count,request_fingerprint,updated_at) VALUES('held','prepared',0,1,'',1)")
+        db.execute("INSERT INTO library_relocation_items VALUES('held',0,?,'secondary_sd',"
+                   "'GBA/Delete.gba','','','x','','secondary_sd','GBA/Held.gba','','','y','','s','t')",
+                   (game,))
+    db.close()
+    fixture.card_key = "fat:bbbb0002"
+    fixture.start()
+    deleted = fixture.secondary / "Roms/GBA/Delete.gba"
+    launched = fixture.secondary / "Roms/GBA/ReadOnly.gba"
+    with Client(fixture.socket) as client:
+        reply = client.preview("GBA/Delete.gba", "secondary_sd")
+        rejected(reply)
+        assert "not mounted" in reply.get("error", ""), reply
+        reply = client.request("launch-game", system="GBA", rom_path=str(launched))
+        assert reply.get("type") == "error" and reply.get("message") == "ROM path missing", reply
+    assert "launch: refused game id" in fixture.log.read_text(errors="replace")
+    assert deleted.read_text() == "Other card must survive\n"
+    fixture.stop()
+    fixture.card_key = None
 
 
 def main():

@@ -73,6 +73,11 @@ static int jw__build(const char *db_path, const char *sdcard_root, const char *s
         snprintf(view->error, sizeof(view->error), JW_UI("Could not read your game's library identity."));
         goto done;
     }
+    /* A stale entry would otherwise delete another card's file through this row. */
+    if (jw_db_card_owner_check_at(db_path, source) == JW_CARD_OWNER_MISMATCH) {
+        snprintf(view->error, sizeof(view->error), JW_UI("Your selected ROM card is not mounted."));
+        goto done;
+    }
     snprintf(view->name, sizeof(view->name), "%s", selected.name);
     catalog = jw_ra_catalog_load(sdcard_root, view->error, sizeof(view->error));
     if (!catalog) goto done;

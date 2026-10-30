@@ -6482,6 +6482,22 @@ static int jw__resolve_library_game(jw_daemon_state *state, int game_id,
                                out_path, out_path_size) != 0) {
         return -1;
     }
+    /* Every library launch passes here. A stale list entry or Focus tile must not
+       run another card's same-path ROM with this row's settings and playtime. If
+       the card can't be told apart, launch anyway: a game shown but refused is the
+       worse failure, and saves come from the card's own folders either way. */
+    if (!source->primary) {
+        jw_card_owner owner = jw_db_card_owner_check_at(state->db_path, source);
+        if (owner == JW_CARD_OWNER_MISMATCH) {
+            jw_log_warn("launch: refused game id=%d; card %s doesn't own source %s",
+                        game_id, source->card_key, source->id);
+            return -1;
+        }
+        if (owner == JW_CARD_OWNER_UNKNOWN) {
+            jw_log_info("launch: no card ownership to check for game id=%d on source %s",
+                        game_id, source->id);
+        }
+    }
     *out_source = source;
     return 0;
 }
@@ -7120,7 +7136,8 @@ static bool jw__legacy_flat_ambiguous(jw_daemon_state *state,
     if (jw__storage_sources(state, &sources) != 0) return false;
 
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(state->db, "SELECT system, rom_path FROM games;",
+    if (sqlite3_prepare_v2(state->db, "SELECT system, rom_path FROM games "
+                           "WHERE substr(source_id,1,5)<>'card-';",
                            -1, &stmt, NULL) != SQLITE_OK) {
         return false;
     }
@@ -18189,6 +18206,18 @@ int main(int argc, char *argv[]) {
         }
         jw_log_warn("storage: library database unreadable on a read-only card; "
                     "showing an empty library");
+    }
+    /* Before the first frame and boot resume, so both see the right card's rows.
+       Hotplug and rescans reconcile at the start of their scan instead. */
+    if (db_opened && !state.storage_db_read_only) {
+        long long started = jw__monotonic_ms();
+        jw_cards_outcome cards = JW_CARDS_UNCHANGED;
+        if (jw_db_cards_reconcile_root(state.db, state.sdcard_root, &cards) != 0) {
+            jw_log_warn("storage: second-card reconcile failed: %s", sqlite3_errmsg(state.db));
+        } else if (cards != JW_CARDS_UNCHANGED) {
+            jw_log_info("storage: second card %s in %lld ms", jw_db_cards_outcome_name(cards),
+                        jw__monotonic_ms() - started);
+        }
     }
     jw__load_library_generation(&state);
     jw__perf_load_global(&state);

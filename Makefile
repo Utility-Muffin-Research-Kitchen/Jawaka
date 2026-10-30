@@ -772,6 +772,13 @@ visibility-test: | $(BUILD)/bin
 		internal/storage/sources.c $(LDLIBS_COMMON)
 	$(BUILD)/bin/visibility-test
 
+.PHONY: card-identity-test
+card-identity-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/card-identity-test \
+		internal/discovery/card_identity_test.c $(filter-out cmd/jawaka-scan-smoke/main.c,$(sort $(SCAN_SMOKE_SRCS))) \
+		$(LDLIBS_COMMON)
+	$(BUILD)/bin/card-identity-test
+
 .PHONY: source-visibility-test
 source-visibility-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/source-visibility-test \

@@ -43,6 +43,7 @@ typedef struct {
     int      writes;
     bool     active;
     bool     savepoint;
+    bool     stage;            /* hold game rows until the card is proven */
     jw_art_index *art_index;   /* art folders read once per scan */
 } jw_scan_tx;
 
@@ -184,9 +185,13 @@ static int jw__scan_insert_game(jw_scan_tx *tx,
         image_root_kind = "source";
         image_relpath = image_path;
     }
-    if (jw_db_insert_game_stable(tx->db, system, name, source->id,
-                                 rom_relpath, rom_path, image_root_kind,
-                                 image_relpath, image_path) != 0) {
+    int write_rc = tx->stage
+        ? jw_db_scan_stage_game(tx->db, system, name, source->id, rom_relpath, rom_path,
+                                image_root_kind, image_relpath, image_path)
+        : jw_db_insert_game_stable(tx->db, system, name, source->id,
+                                   rom_relpath, rom_path, image_root_kind,
+                                   image_relpath, image_path);
+    if (write_rc != 0) {
         fprintf(stderr,
                 "ROM discovery: database write failed for %s: %s\n",
                 rom_path, sqlite3_errmsg(tx->db));
@@ -1223,6 +1228,61 @@ static int jw__scan_roms_metadata(jw_scan_tx *tx,
     return 0;
 }
 
+/* Identity, not only the mount: a card can change without the mount id moving far
+   enough to notice, and every row of a scan has to be proven to come from one card. */
+static bool jw__scan_source_unchanged(const char *sdcard_root, const jw_storage_source *source,
+                                      jw_storage_source_list *current) {
+    const jw_storage_source *after = NULL;
+    if (jw_storage_sources_resolve(sdcard_root, current) == 0) {
+        after = jw_storage_sources_find_by_id(current, source->id);
+    }
+    return after && after->available &&
+           after->device_id == source->device_id &&
+           after->roms_device_id == source->roms_device_id &&
+           after->mount_id == source->mount_id &&
+           after->roms_mount_id == source->roms_mount_id &&
+           after->card_key_state == source->card_key_state &&
+           strcmp(after->card_key, source->card_key) == 0 &&
+           strcmp(after->root_abs, source->root_abs) == 0;
+}
+
+/* Every staged row is proven to come from the owner card by now, so a swap during
+   the apply can't misattribute one, and batching keeps the write lock short. */
+static int jw__scan_apply_staged(jw_scan_tx *tx) {
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(tx->db,
+            "SELECT rowid,system,name,source_id,rom_relpath,rom_path,image_root_kind,"
+            "image_relpath,image_path FROM _scan_staged_games WHERE rowid>?1 "
+            "ORDER BY rowid LIMIT 1;", -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_int64 last = 0;
+    int rc = 0;
+    while (rc == 0) {
+        sqlite3_reset(stmt);
+        sqlite3_bind_int64(stmt, 1, last);
+        if (sqlite3_step(stmt) != SQLITE_ROW) break;
+        last = sqlite3_column_int64(stmt, 0);
+        rc = jw__scan_tx_begin(tx);
+        if (rc == 0) {
+            rc = jw_db_insert_game_stable(tx->db,
+                (const char *)sqlite3_column_text(stmt, 1),
+                (const char *)sqlite3_column_text(stmt, 2),
+                (const char *)sqlite3_column_text(stmt, 3),
+                (const char *)sqlite3_column_text(stmt, 4),
+                (const char *)sqlite3_column_text(stmt, 5),
+                (const char *)sqlite3_column_text(stmt, 6),
+                (const char *)sqlite3_column_text(stmt, 7),
+                (const char *)sqlite3_column_text(stmt, 8));
+        }
+        sqlite3_reset(stmt);
+        if (rc == 0) rc = jw__scan_tx_note_write(tx);
+    }
+    sqlite3_finalize(stmt);
+    if (rc == 0) rc = jw_db_scan_drop_staged(tx->db);
+    return rc;
+}
+
 static int jw__scan_roms(jw_scan_tx *tx, const char *sdcard_root,
                          const jw_ra_catalog *catalog, bool compatibility,
                          jw_scan_result *out) {
@@ -1244,9 +1304,20 @@ static int jw__scan_roms(jw_scan_tx *tx, const char *sdcard_root,
                     source->id, source->root);
             continue;
         }
+        /* A second card is scanned only when it's the recorded owner of the slot's
+           rows, or can't be told apart at all, which is the slot-keyed behavior. */
+        bool keyed = !source->primary && source->card_key_state == JW_CARD_KEY_KNOWN;
+        if ((!source->primary && source->card_key_state == JW_CARD_KEY_UNREADABLE) ||
+            (keyed && jw_db_card_owner_check(tx->db, source) != JW_CARD_OWNER_MATCH)) {
+            fprintf(stderr, "ROM discovery: retaining rows; %s isn't the owner of source %s\n",
+                    keyed ? source->card_key : "an unreadable card", source->id);
+            continue;
+        }
+        tx->stage = keyed;
         int scan_rc = compatibility
             ? jw__scan_roms_compat(tx, source, out)
             : jw__scan_roms_metadata(tx, sdcard_root, source, catalog, out);
+        tx->stage = false;
         if (scan_rc < 0) {
             free(current);
             free(sources);
@@ -1256,18 +1327,30 @@ static int jw__scan_roms(jw_scan_tx *tx, const char *sdcard_root,
             fprintf(stderr,
                     "ROM discovery: enumeration failed for source %s; retaining prior rows\n",
                     source->id);
+            if (keyed && jw_db_scan_drop_staged(tx->db) != 0) {
+                free(current);
+                free(sources);
+                return -1;
+            }
             continue;
         }
-        const jw_storage_source *after = NULL;
-        if (jw_storage_sources_resolve(sdcard_root, current) == 0) {
-            after = jw_storage_sources_find_by_id(current, source->id);
+        bool unchanged = jw__scan_source_unchanged(sdcard_root, source, current);
+        if (!unchanged) {
+            if (keyed && jw_db_scan_drop_staged(tx->db) != 0) {
+                free(current);
+                free(sources);
+                return -1;
+            }
+        } else if (keyed) {
+            /* A card that left during the apply must not be pruned against. */
+            if (jw__scan_apply_staged(tx) != 0) {
+                free(current);
+                free(sources);
+                return -1;
+            }
+            unchanged = jw__scan_source_unchanged(sdcard_root, source, current);
         }
-        if (!after || !after->available ||
-            after->device_id != source->device_id ||
-            after->roms_device_id != source->roms_device_id ||
-            after->mount_id != source->mount_id ||
-            after->roms_mount_id != source->roms_mount_id ||
-            strcmp(after->root_abs, source->root_abs) != 0) {
+        if (!unchanged) {
             fprintf(stderr,
                     "ROM discovery: source %s changed during scan; retaining prior rows\n",
                     source->id);
@@ -1828,7 +1911,8 @@ static void jw__refresh_result_counts(sqlite3 *db, jw_scan_result *out) {
         return;
     }
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT COUNT(DISTINCT system) FROM games;",
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(DISTINCT system) FROM games "
+                           "WHERE substr(source_id,1,5)<>'card-';",
                            -1, &stmt, NULL) == SQLITE_OK) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             out->system_count = sqlite3_column_int(stmt, 0);
@@ -1838,7 +1922,9 @@ static void jw__refresh_result_counts(sqlite3 *db, jw_scan_result *out) {
     /* Recompute from the table rather than trusting the insert tally: alias
        dedup deletes rows after they were counted, so the tally would overcount. */
     stmt = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM games;", -1, &stmt, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM games "
+                               "WHERE substr(source_id,1,5)<>'card-';",
+                           -1, &stmt, NULL) == SQLITE_OK) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             out->game_count = sqlite3_column_int(stmt, 0);
         }
@@ -2110,6 +2196,15 @@ int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     fprintf(stderr, "RetroArch discovery: scanning with %zu systems / %zu cores\n",
             catalog ? catalog->system_count : (size_t)0,
             catalog ? catalog->core_count : (size_t)0);
+
+    /* Whichever way a scan started, a different card first swaps the rows it would
+       otherwise prune. A failure only means the scan gate retains the slot. */
+    jw_cards_outcome cards = JW_CARDS_UNCHANGED;
+    if (jw_db_cards_reconcile_root(db, sdcard_root, &cards) != 0) {
+        fprintf(stderr, "ROM discovery: second-card reconcile failed: %s\n", sqlite3_errmsg(db));
+    } else if (cards != JW_CARDS_UNCHANGED) {
+        fprintf(stderr, "ROM discovery: second card %s\n", jw_db_cards_outcome_name(cards));
+    }
 
     /* Non-destructive rescan: upsert keeps stable ids so favorites/recents
        survive, then prune only the rows whose ROM/pak vanished from disk. */
