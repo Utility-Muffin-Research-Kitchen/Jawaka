@@ -24,6 +24,11 @@
     "NOT EXISTS (SELECT 1 FROM hidden_roms h WHERE h.source_id=" table ".source_id " \
     "AND h.rom_relpath=" table ".rom_relpath AND h.member='') "
 
+/* Browsing also leaves out a card that isn't there. Those rows stay, so the same
+   entries and their preferences return with the card; see jw__source_hidden. */
+#define JW_LISTED_GAME(table) \
+    JW_VISIBLE_GAME(table) "AND NOT jw_source_hidden(" table ".source_id) "
+
 /* An additive v6 table: older releases open the library and ignore it. */
 #define JW_HIDDEN_TABLE_SQL(schema) \
     "CREATE TABLE IF NOT EXISTS " schema "hidden_roms (" \
@@ -713,11 +718,72 @@ static void jw__ensure_visibility_table(sqlite3 *db) {
     if (missing) (void)jw__visibility_table(db);
 }
 
+typedef struct {
+    bool resolved;
+    int count;
+    char ids[JW_STORAGE_MAX_SOURCES][JW_STORAGE_SOURCE_ID_MAX];
+} jw__hidden_sources;
+
+/* A source is hidden only when it resolves as configured and is missing or has
+   no Roms folder: its games can't launch, and its scan is retained rather than
+   completed. Everything else shows, so a resolver failure or an unknown id
+   leaves a working library on screen. */
+static void jw__hidden_sources_resolve(jw__hidden_sources *hidden) {
+    hidden->resolved = true;
+    jw_storage_source_list *sources = malloc(sizeof(*sources));
+    if (sources && jw_storage_sources_resolve(NULL, sources) == 0) {
+        for (int i = 0; i < sources->count; i++) {
+            const jw_storage_source *source = &sources->sources[i];
+            if (source->primary || !source->configured ||
+                (source->available && source->roms_device_id != 0)) {
+                continue;
+            }
+            snprintf(hidden->ids[hidden->count], sizeof(hidden->ids[0]), "%s", source->id);
+            hidden->count++;
+        }
+    }
+    free(sources);
+}
+
+/* jw_source_hidden(source_id). Resolved on first use and kept for the connection,
+   because resolving reads the mount table and jw_db_open also serves frequent
+   settings reads. That is safe for browsing: each listing helper opens its own
+   short connection, and a scan's generation bump makes the launcher reload after
+   a card change. The Primary never needs resolving, so a library with no second
+   card never pays for it. */
+static void jw__source_hidden(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    jw__hidden_sources *hidden = sqlite3_user_data(ctx);
+    const char *id = (const char *)sqlite3_value_text(argv[0]);
+    if (!id || strcmp(id, "primary") == 0) {
+        sqlite3_result_int(ctx, 0);
+        return;
+    }
+    if (!hidden->resolved) jw__hidden_sources_resolve(hidden);
+    for (int i = 0; i < hidden->count; i++) {
+        if (strcmp(hidden->ids[i], id) == 0) {
+            sqlite3_result_int(ctx, 1);
+            return;
+        }
+    }
+    sqlite3_result_int(ctx, 0);
+}
+
 int jw_db_open(const char *path, sqlite3 **out) {
     if (!path || !out) {
         return -1;
     }
     if (sqlite3_open(path, out) != SQLITE_OK) {
+        return -1;
+    }
+    /* SQLite calls free on the state when the connection closes, or at once if
+       registration fails. */
+    jw__hidden_sources *hidden = calloc(1, sizeof(*hidden));
+    if (!hidden ||
+        sqlite3_create_function_v2(*out, "jw_source_hidden", 1, SQLITE_UTF8, hidden,
+                                   jw__source_hidden, NULL, NULL, free) != SQLITE_OK) {
+        sqlite3_close(*out);
+        *out = NULL;
         return -1;
     }
     /* Launcher, menu, and daemon each open their own connection on the same
@@ -1476,7 +1542,7 @@ int jw_db_read_stats(const char *db_path, jw_library_stats *out) {
             "  ON manual.game_id = g.id AND manual.key = 'display_name' "
             "LEFT JOIN game_settings imported "
             "  ON imported.game_id = g.id AND imported.key = 'imported_display_name' "
-            "WHERE g.playtime_s > 0 AND " JW_VISIBLE_GAME("g")
+            "WHERE g.playtime_s > 0 AND " JW_LISTED_GAME("g")
             "ORDER BY g.playtime_s DESC, "
             "         COALESCE(NULLIF(manual.value, ''), NULLIF(imported.value, ''), g.name) "
             "LIMIT ?;",
@@ -1534,7 +1600,7 @@ int jw_db_list_systems(const char *db_path, jw_system_entry *out, int max_count,
     }
 
     static const char *sql =
-        "SELECT system, COUNT(*) FROM games WHERE " JW_VISIBLE_GAME("games")
+        "SELECT system, COUNT(*) FROM games WHERE " JW_LISTED_GAME("games")
         "GROUP BY system ORDER BY system LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
@@ -1574,13 +1640,13 @@ int jw_db_read_summary(const char *db_path, jw_library_summary *out) {
 
     int rc = 0;
     rc |= jw__query_int(db, "SELECT COUNT(*) FROM games WHERE "
-                       JW_VISIBLE_GAME("games") ";", &out->game_count);
+                       JW_LISTED_GAME("games") ";", &out->game_count);
     rc |= jw__query_int(db, "SELECT COUNT(*) FROM apps;", &out->app_count);
     rc |= jw__query_int(db, "SELECT COUNT(DISTINCT system) FROM games WHERE "
-                       JW_VISIBLE_GAME("games") ";", &out->system_count);
+                       JW_LISTED_GAME("games") ";", &out->system_count);
     rc |= jw__query_string(db,
         "SELECT group_concat(system, ', ') FROM ("
-        "SELECT DISTINCT system FROM games WHERE " JW_VISIBLE_GAME("games")
+        "SELECT DISTINCT system FROM games WHERE " JW_LISTED_GAME("games")
         "ORDER BY system LIMIT 4"
         ");",
         out->systems_summary, sizeof(out->systems_summary));
@@ -1592,7 +1658,7 @@ int jw_db_read_summary(const char *db_path, jw_library_summary *out) {
         "  ON manual.game_id = g.id AND manual.key = 'display_name' "
         "LEFT JOIN game_settings imported "
         "  ON imported.game_id = g.id AND imported.key = 'imported_display_name' "
-        "WHERE " JW_VISIBLE_GAME("g") "ORDER BY name LIMIT 4"
+        "WHERE " JW_LISTED_GAME("g") "ORDER BY name LIMIT 4"
         ");",
         out->sample_summary, sizeof(out->sample_summary));
 
@@ -2676,7 +2742,7 @@ int jw_db_count_games_for_system(const char *db_path, const char *system, int *o
     }
 
     static const char *sql = "SELECT COUNT(*) FROM games WHERE system = ? AND "
-        JW_VISIBLE_GAME("games") ";";
+        JW_LISTED_GAME("games") ";";
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
         jw_db_close(db);
@@ -2720,7 +2786,7 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
         "FROM games g "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
-        "WHERE g.system = ? AND " JW_VISIBLE_GAME("g")
+        "WHERE g.system = ? AND " JW_LISTED_GAME("g")
         "ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
@@ -3424,7 +3490,7 @@ int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
         "FROM games g JOIN favorites f ON f.kind = 'game' AND f.target_id = g.id "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
-        "WHERE " JW_VISIBLE_GAME("g")
+        "WHERE " JW_LISTED_GAME("g")
         "ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) COLLATE NOCASE ASC, "
         "         f.added_at DESC LIMIT ?;";
 
@@ -3538,7 +3604,7 @@ int jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
         "FROM games g JOIN recents r ON r.kind = 'game' AND r.target_id = g.id "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
-        "WHERE " JW_VISIBLE_GAME("g")
+        "WHERE " JW_LISTED_GAME("g")
         "ORDER BY r.last_opened DESC LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
@@ -3726,7 +3792,7 @@ int jw_db_search_library(const char *db_path, const char *query,
         "    FROM games_fts JOIN games ON games_fts.rowid = games.id"
         "    LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name'"
         "    LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name'"
-        "   WHERE games_fts MATCH ? AND " JW_VISIBLE_GAME("games")
+        "   WHERE games_fts MATCH ? AND " JW_LISTED_GAME("games")
         "  UNION ALL"
         "  SELECT 0 AS kind,games.id AS id,COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name) AS name, games.system AS system,"
         "         games.source_id,games.rom_relpath,COALESCE(games.image_root_kind,''),"
@@ -3737,7 +3803,7 @@ int jw_db_search_library(const char *db_path, const char *query,
         "    LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name'"
         "    LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name'"
         "   WHERE lower(COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name)) LIKE ?"
-        "     AND " JW_VISIBLE_GAME("games")
+        "     AND " JW_LISTED_GAME("games")
         "     AND games.id NOT IN (SELECT rowid FROM games_fts WHERE games_fts MATCH ?)"
         "  UNION ALL"
         "  SELECT 1 AS kind,apps.id AS id,apps.name AS name,'' AS system,"
@@ -3807,7 +3873,7 @@ int jw_db_search_library(const char *db_path, const char *query,
             "FROM games "
             "LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name' "
             "LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name' "
-            "WHERE " JW_VISIBLE_GAME("games")
+            "WHERE " JW_LISTED_GAME("games")
             "ORDER BY effective_name COLLATE BINARY ASC, games.id ASC;";
         sqlite3_stmt *fallback = NULL;
         if (sqlite3_prepare_v2(db, fallback_sql, -1, &fallback, NULL) != SQLITE_OK) {
