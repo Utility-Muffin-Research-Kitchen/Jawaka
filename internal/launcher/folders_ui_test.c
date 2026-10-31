@@ -170,6 +170,60 @@ int main(void) {
     check_rows_agree(state);
     render_all_layouts(state, "off");
 
+    /* Reload, flat: a title edit moves rows, and the selection stays on its game. */
+    jw_game_entry alpha = game_at(state, "SFC/Alpha.zip");
+    jw_game_entry top_gear = game_at(state, "SFC/Top Gear/Top Gear (USA).zip");
+    select_row(state, row_labeled(state, "Top Gear"));
+    int top_gear_row = state->game_list.cursor;
+    assert(jw_db_set_game_setting(state->db_path, alpha.id, "display_name", "Zz Last") == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    assert(state->game_list.cursor == top_gear_row - 1);
+    assert(jw__browse_selected_game(state)->id == top_gear.id);
+
+    /* Renaming the selected game itself carries the selection along. */
+    assert(jw_db_set_game_setting(state->db_path, top_gear.id, "display_name", "Aa First") == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    assert(state->game_list.cursor == 0 && jw__browse_selected_game(state)->id == top_gear.id);
+    assert(jw_db_delete_game_setting(state->db_path, alpha.id, "display_name") == 0);
+    assert(jw_db_delete_game_setting(state->db_path, top_gear.id, "display_name") == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    assert(state->game_list.cursor == top_gear_row && jw__browse_selected_game(state)->id == top_gear.id);
+
+    /* A game that's gone leaves the cursor on its old row, and the last row at worst. */
+    select_row(state, 2);
+    jw_game_entry third = *jw__browse_selected_game(state);
+    assert(jw_db_set_game_hidden(state->db_path, third.id, 1) == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    assert(state->game_list.cursor == 2 && jw__browse_selected_game(state)->id != third.id);
+    assert(jw_db_set_game_hidden(state->db_path, third.id, 0) == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    select_row(state, total - 2);
+    jw_game_entry second_last = state->games[total - 2];
+    jw_game_entry very_last = state->games[total - 1];
+    assert(jw_db_set_game_hidden(state->db_path, second_last.id, 1) == 0);
+    assert(jw_db_set_game_hidden(state->db_path, very_last.id, 1) == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    assert(state->game_list.cursor == total - 3);
+    assert(jw_db_set_game_hidden(state->db_path, second_last.id, 0) == 0);
+    assert(jw_db_set_game_hidden(state->db_path, very_last.id, 0) == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    check_rows_agree(state);
+
+    /* Favorites is flat too, and follows its game through the same reload. */
+    assert(jw_db_set_favorite(state->db_path, "game", alpha.id, 1) == 0);
+    assert(jw_db_set_favorite(state->db_path, "game", top_gear.id, 1) == 0);
+    jw__close_game_browser(state);
+    assert(jw__open_favorites(state->db_path, state) == 0);
+    select_row(state, 1);
+    assert(jw__browse_selected_game(state)->id == top_gear.id);
+    assert(jw_db_set_favorite(state->db_path, "game", alpha.id, 0) == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    assert(state->game_list.cursor == 0 && jw__browse_selected_game(state)->id == top_gear.id);
+    assert(jw_db_set_favorite(state->db_path, "game", top_gear.id, 0) == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    assert(!state->games_open);
+    assert(jw__open_system_games(state->db_path, "SFC", state) == 0);
+
     /* Turning it on in Settings > Games rebuilds the open list at its root. */
     jw_settings_ui_open(&state->settings, JW_SETTINGS_GAMES);
     cat_list_state_jump(&state->settings.games_list, JW_GAMES_SHOW_FOLDERS, JW_GAMES_ROW_COUNT);
@@ -281,6 +335,19 @@ int main(void) {
     assert(state->games_open);
     assert(strcmp(jw_game_folder_path(state->folder_tree, state->browse_folder), "Hacks") == 0);
     assert(jw__browse_count(state) == 1 && jw__browse_selected_game(state));
+
+    /* Reload: a title edit moves rows at this level, and the selection follows. */
+    while (jw__browse_leave_folder(state)) {}
+    jw_game_entry zelda = game_at(state, "SFC/Zelda/Zelda (USA).zip");
+    select_row(state, row_labeled(state, "Zelda"));
+    int zelda_row = state->game_list.cursor;
+    jw_game_entry root_alpha = game_at(state, "SFC/Alpha.zip");
+    assert(jw_db_set_game_setting(state->db_path, root_alpha.id, "display_name", "Zz Last") == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    assert(state->game_list.cursor == zelda_row - 1 && jw__browse_selected_game(state)->id == zelda.id);
+    assert(jw_db_delete_game_setting(state->db_path, root_alpha.id, "display_name") == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    assert(state->game_list.cursor == zelda_row && jw__browse_selected_game(state)->id == zelda.id);
 
     /* Resume: from deep inside the chain, onto the long game, through a
        restart; then B lands on the folder the game sat in. */
