@@ -588,6 +588,10 @@ static int jw__pakrat_rescan_impl(const jw_pakrat_context *ctx,
     if (jw_db_open(ctx->db_path, &db) != 0 || !db) {
         return -1;
     }
+    /* The daemon may still be scanning, often the scan an install just asked for.
+       This runs on the worker thread, so waiting costs the UI nothing, and failing
+       would report a package change that worked as a failed one. */
+    sqlite3_busy_timeout(db, JW_PAKRAT_COMMIT_BUSY_TIMEOUT_MS);
     jw_scan_result result;
     int rc = jw_db_apply_schema(db) == 0 &&
              jw_scan_library(db, ctx->sdcard_root, &result) == 0 ? 0 : -1;

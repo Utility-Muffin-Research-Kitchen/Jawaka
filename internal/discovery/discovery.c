@@ -57,11 +57,13 @@ static int jw__scan_tx_begin(jw_scan_tx *tx) {
     /* Pak Rat P1 performs a complete discovery scan inside its outer
        install-record transaction. SQLite has no nested BEGIN, so use a
        savepoint when the caller already owns a transaction. Ordinary scans
-       retain the existing batched BEGIN/COMMIT behavior. */
+       retain the existing batched BEGIN/COMMIT behavior. IMMEDIATE because a scan
+       reads before it writes, and SQLite won't run the busy handler to upgrade a
+       read lock: another writer would fail the scan at once, whatever the timeout. */
     tx->savepoint = sqlite3_get_autocommit(tx->db) == 0;
     if (jw__exec(tx->db, tx->savepoint
                              ? "SAVEPOINT jawaka_scan;"
-                             : "BEGIN DEFERRED;") != 0) {
+                             : "BEGIN IMMEDIATE;") != 0) {
         return -1;
     }
     tx->active = true;
