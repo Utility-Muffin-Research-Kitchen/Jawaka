@@ -64,7 +64,102 @@ static void set_path2_one_card(const char *card) {
     setenv("STATES_PATHS", value, 1);
 }
 
+/* A FAT32 boot sector, from the offsets on a real card: serial 8761-1D18 reads
+   as 18 1d 61 87 at offset 67, behind the signature at 66. */
+static void make_fat32_sector(unsigned char *sector) {
+    memset(sector, 0, 512);
+    sector[66] = 0x29;
+    sector[67] = 0x18;
+    sector[68] = 0x1d;
+    sector[69] = 0x61;
+    sector[70] = 0x87;
+    sector[510] = 0x55;
+    sector[511] = 0xaa;
+}
+
+static void test_card_key_from_boot_sector(void) {
+    unsigned char sector[512];
+    char key[64];
+
+    make_fat32_sector(sector);
+    assert(jw_storage_card_key_from_boot_sector(sector, key, sizeof(key)));
+    assert(strcmp(key, "fat:87611d18") == 0);
+
+    sector[66] = 0x28;
+    assert(jw_storage_card_key_from_boot_sector(sector, key, sizeof(key)));
+    assert(strcmp(key, "fat:87611d18") == 0);
+
+    /* No extended signature means those bytes aren't a serial. */
+    sector[66] = 0;
+    assert(jw_storage_card_key_from_boot_sector(sector, key, sizeof(key)));
+    assert(strcmp(key, "fat:00000000") == 0);
+
+    /* A zero serial is still an identity, unlike in the fingerprint. */
+    make_fat32_sector(sector);
+    memset(&sector[67], 0, 4);
+    assert(jw_storage_card_key_from_boot_sector(sector, key, sizeof(key)));
+    assert(strcmp(key, "fat:00000000") == 0);
+
+    /* FAT16 keeps its signature at 38 and its serial at 39. */
+    make_fat32_sector(sector);
+    sector[17] = 0x02;
+    sector[38] = 0x29;
+    sector[39] = 0x78;
+    sector[40] = 0x56;
+    sector[41] = 0x34;
+    sector[42] = 0x12;
+    assert(jw_storage_card_key_from_boot_sector(sector, key, sizeof(key)));
+    assert(strcmp(key, "fat:12345678") == 0);
+
+    make_fat32_sector(sector);
+    sector[511] = 0;
+    assert(!jw_storage_card_key_from_boot_sector(sector, key, sizeof(key)));
+    assert(!jw_storage_card_key_from_boot_sector(NULL, key, sizeof(key)));
+}
+
+static void test_card_key_seam(const char *card1) {
+    jw_storage_source_list sources;
+    char missing[JW_STORAGE_PATH_MAX];
+    char value[JW_STORAGE_PATH_MAX * 2];
+    const char *saved = getenv("SDCARD_PATHS");
+    char *saved_copy = saved ? strdup(saved) : NULL;
+
+    assert(jw_storage_sources_resolve(card1, &sources) == 0);
+    assert(sources.sources[1].card_key_state == JW_CARD_KEY_NONE);
+    assert(sources.sources[1].card_key[0] == '\0');
+
+    setenv("JAWAKA_TEST_CARD_KEY_secondary_sd", "fat:aaaa0001", 1);
+    assert(jw_storage_sources_resolve(card1, &sources) == 0);
+    assert(sources.sources[0].card_key_state == JW_CARD_KEY_NONE);
+    assert(sources.sources[1].card_key_state == JW_CARD_KEY_KNOWN);
+    assert(strcmp(sources.sources[1].card_key, "fat:aaaa0001") == 0);
+
+    setenv("JAWAKA_TEST_CARD_KEY_secondary_sd", "unreadable", 1);
+    assert(jw_storage_sources_resolve(card1, &sources) == 0);
+    assert(sources.sources[1].card_key_state == JW_CARD_KEY_UNREADABLE);
+    assert(sources.sources[1].card_key[0] == '\0');
+
+    /* A card that isn't there has no key, whatever the seam says. */
+    snprintf(missing, sizeof(missing), "%s-missing", card1);
+    snprintf(value, sizeof(value), "%s:%s", card1, missing);
+    setenv("SDCARD_PATHS", value, 1);
+    setenv("JAWAKA_TEST_CARD_KEY_secondary_sd", "fat:aaaa0001", 1);
+    if (jw_storage_sources_resolve(card1, &sources) == 0) {
+        assert(!sources.sources[1].available);
+        assert(sources.sources[1].card_key_state == JW_CARD_KEY_NONE);
+    }
+
+    unsetenv("JAWAKA_TEST_CARD_KEY_secondary_sd");
+    if (saved_copy) {
+        setenv("SDCARD_PATHS", saved_copy, 1);
+    } else {
+        unsetenv("SDCARD_PATHS");
+    }
+    free(saved_copy);
+}
+
 int main(void) {
+    test_card_key_from_boot_sector();
     char temp[] = "/tmp/jw-sources-XXXXXX";
     assert(mkdtemp(temp));
     char card1[JW_STORAGE_PATH_MAX];
@@ -198,6 +293,7 @@ int main(void) {
     assert(jw_storage_sources_resolve(card1, &sources) == 0);
     assert(sources.count == 2);
     assert(strcmp(sources.sources[1].id, "secondary_sd") == 0);
+    test_card_key_seam(card1);
 
     unlink(game);
     rmdir(roms);
