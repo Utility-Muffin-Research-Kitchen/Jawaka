@@ -15,6 +15,15 @@
 /* A description the user wrote. Read ahead of the scraped ss.synopsis, and a
    rescrape never touches it. */
 #define JW_GAME_SETTING_USER_SYNOPSIS "user_synopsis"
+/* Pins a game above the rest of its list, lowest first. Not unique: a pinned game
+   on a card that isn't in the slot keeps its rank while the others are renumbered. */
+#define JW_GAME_SETTING_SORT_RANK "sort_rank"
+/* The same for a folder, which has no row of its own: system_settings key
+   <prefix><path below the system folder, ASCII lowercase>. */
+#define JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX "folder_rank:"
+/* A system's game list shows its ROM subfolders. Opt-in: anything but "1" is
+   Off. The launcher reads it from its own settings instance. */
+#define JW_SHOW_FOLDERS_SETTING_KEY "game_folders"
 
 typedef struct {
     int game_count;
@@ -100,6 +109,7 @@ typedef struct {
     int  favorite;   /* 1 if present in favorites, else 0 */
     long long last_played;  /* unix seconds, 0 if never */
     int  playtime_s;        /* seconds accumulated in this game */
+    int  sort_rank;         /* 0 when not pinned; only a system's own list reads it */
 } jw_game_entry;
 
 typedef enum {
@@ -365,6 +375,18 @@ int  jw_db_set_game_setting(const char *db_path, int game_id,
                             const char *key, const char *value);
 int  jw_db_delete_game_setting(const char *db_path, int game_id,
                                const char *key);
+/* A system's folder ranks. Absent or unreadable ranks leave count 0, which just means
+   nothing is pinned. Free with jw_db_free_folder_ranks. */
+typedef struct {
+    char *path;
+    int   rank;
+} jw_folder_rank;
+void jw_db_list_folder_ranks(const char *db_path, const char *system,
+                             jw_folder_rank **out, int *out_count);
+void jw_db_free_folder_ranks(jw_folder_rank *ranks, int count);
+/* The rank of a folder at path, compared without ASCII case, or 0. */
+int  jw_db_folder_rank(const jw_folder_rank *ranks, int count, const char *path);
+
 int  jw_db_get_system_setting(const char *db_path, const char *system,
                               const char *key, char *out, size_t out_size);
 int  jw_db_set_system_setting(const char *db_path, const char *system,

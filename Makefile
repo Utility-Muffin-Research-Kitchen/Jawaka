@@ -199,6 +199,7 @@ CFLAGS_DAEMON += $(SCRAPE_CFLAGS)
 LDLIBS_DAEMON += $(CURL_LDFLAGS) -lpthread -lm
 
 DAEMON_SRCS := \
+	internal/launcher/game_folders.c \
 	internal/discovery/content.c \
 	internal/discovery/delete.c \
 	internal/discovery/delete_job.c \

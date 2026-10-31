@@ -196,10 +196,6 @@ typedef enum {
 #define JW_GAMES_HIDDEN_GAMES   10
 #define JW_GAMES_ROW_COUNT      11
 
-/* A system's game list shows its ROM subfolders. Opt-in: anything but "1" is
-   Off. The launcher reads it from its own settings instance. */
-#define JW_SHOW_FOLDERS_SETTING_KEY "game_folders"
-
 /* Capacity for the priority editors (catalogs are 10 entries each today). */
 #define JW_SCRAPE_PRIO_SLOTS  16
 

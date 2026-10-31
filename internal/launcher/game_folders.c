@@ -28,6 +28,7 @@ typedef struct {
     int row_count;        /* -1 when collapsed */
     int row_fill;
     int row_in_parent;    /* -1 for the root and collapsed folders */
+    int rank;             /* 0 when not pinned */
 } jw__folder;
 
 struct jw_game_folder_tree {
@@ -37,6 +38,7 @@ struct jw_game_folder_tree {
     int game_total;
     int *game_folder;     /* of_game */
     int *game_row;        /* the game's row index within of_game's rows */
+    int *game_rank;       /* NULL when no game can be pinned */
     jw_game_folder_row *rows;
     /* Open-addressed child table keyed on (parent, case-folded name), so a path
        resolves one segment at a time without scanning siblings. */
@@ -542,10 +544,97 @@ static bool jw__layout_rows(jw_game_folder_tree *tree) {
     return true;
 }
 
-jw_game_folder_tree *jw_game_folder_tree_build(int count,
-                                               jw_game_folder_relpath_fn relpath,
-                                               jw_game_folder_marker_fn is_marker,
-                                               void *userdata) {
+int jw_game_folder_row_rank(const jw_game_folder_tree *tree, jw_game_folder_row row) {
+    if (!tree) {
+        return 0;
+    }
+    if (row.kind == JW_GAME_FOLDER_ROW_FOLDER) {
+        return row.index > 0 && row.index < tree->folder_count ? tree->folders[row.index].rank : 0;
+    }
+    return tree->game_rank && row.index >= 0 && row.index < tree->game_total ? tree->game_rank[row.index] : 0;
+}
+
+typedef struct {
+    jw_game_folder_row row;
+    int rank;
+    int position;
+} jw__ranked_row;
+
+static int jw__ranked_order(const void *a, const void *b) {
+    const jw__ranked_row *x = a;
+    const jw__ranked_row *y = b;
+    if (x->rank != y->rank) {
+        return x->rank < y->rank ? -1 : 1;
+    }
+    return x->position - y->position;
+}
+
+/* Move each level's pinned rows to its top. Rows already stand folders first by
+   name, then games in input order, so a row's position settles a tie in rank, and
+   a level with no pins is left as it is. */
+static bool jw__apply_pins(jw_game_folder_tree *tree) {
+    int widest = 0;
+    bool any = false;
+    for (int id = 0; id < tree->folder_count; id++) {
+        const jw__folder *f = &tree->folders[id];
+        if (f->row_count > widest) {
+            widest = f->row_count;
+        }
+        for (int k = 0; k < f->row_count && !any; k++) {
+            any = jw_game_folder_row_rank(tree, tree->rows[f->row_start + k]) > 0;
+        }
+    }
+    if (!any) {
+        return true;
+    }
+    jw__ranked_row *pinned = malloc((size_t)widest * sizeof(*pinned));
+    jw_game_folder_row *rest = malloc((size_t)widest * sizeof(*rest));
+    if (!pinned || !rest) {
+        free(pinned);
+        free(rest);
+        return false;
+    }
+    for (int id = 0; id < tree->folder_count; id++) {
+        const jw__folder *f = &tree->folders[id];
+        int pins = 0;
+        int others = 0;
+        for (int k = 0; k < f->row_count; k++) {
+            jw_game_folder_row row = tree->rows[f->row_start + k];
+            int rank = jw_game_folder_row_rank(tree, row);
+            if (rank > 0) {
+                pinned[pins].row = row;
+                pinned[pins].rank = rank;
+                pinned[pins].position = k;
+                pins++;
+            } else {
+                rest[others++] = row;
+            }
+        }
+        if (pins == 0) {
+            continue;
+        }
+        qsort(pinned, (size_t)pins, sizeof(*pinned), jw__ranked_order);
+        for (int k = 0; k < f->row_count; k++) {
+            jw_game_folder_row row = k < pins ? pinned[k].row : rest[k - pins];
+            tree->rows[f->row_start + k] = row;
+            if (row.kind == JW_GAME_FOLDER_ROW_FOLDER) {
+                tree->folders[row.index].row_in_parent = k;
+            } else {
+                tree->game_row[row.index] = k;
+            }
+        }
+    }
+    free(pinned);
+    free(rest);
+    return true;
+}
+
+jw_game_folder_tree *jw_game_folder_tree_build_ranked(int count,
+                                                      jw_game_folder_relpath_fn relpath,
+                                                      jw_game_folder_marker_fn is_marker,
+                                                      jw_game_folder_game_rank_fn game_rank,
+                                                      jw_game_folder_path_rank_fn folder_rank,
+                                                      void *userdata) {
     if (count < 0 || (count > 0 && !relpath)) {
         return NULL;
     }
@@ -558,6 +647,16 @@ jw_game_folder_tree *jw_game_folder_tree_build(int count,
     b.tree = tree;
     tree->game_total = count;
     size_t games = (size_t)(count ? count : 1);
+    if (game_rank && count > 0) {
+        tree->game_rank = malloc(games * sizeof(*tree->game_rank));
+        if (!tree->game_rank) {
+            free(tree);
+            return NULL;
+        }
+        for (int i = 0; i < count; i++) {
+            tree->game_rank[i] = game_rank(userdata, i);
+        }
+    }
     tree->game_folder = malloc(games * sizeof(*tree->game_folder));
     tree->game_row = malloc(games * sizeof(*tree->game_row));
     b.home = malloc(games * sizeof(*b.home));
@@ -605,7 +704,13 @@ jw_game_folder_tree *jw_game_folder_tree_build(int count,
             tree->folders[tree->folders[id].parent].game_count +=
                 tree->folders[id].game_count;
         }
-        ok = jw__layout_text(&b) && jw__layout_rows(tree);
+        ok = jw__layout_text(&b);
+        if (ok && folder_rank) {
+            for (int id = 1; id < tree->folder_count; id++) {
+                tree->folders[id].rank = folder_rank(userdata, tree->folders[id].path);
+            }
+        }
+        ok = ok && jw__layout_rows(tree) && jw__apply_pins(tree);
     }
 
     free(b.names);
@@ -619,10 +724,18 @@ jw_game_folder_tree *jw_game_folder_tree_build(int count,
     return tree;
 }
 
+jw_game_folder_tree *jw_game_folder_tree_build(int count,
+                                               jw_game_folder_relpath_fn relpath,
+                                               jw_game_folder_marker_fn is_marker,
+                                               void *userdata) {
+    return jw_game_folder_tree_build_ranked(count, relpath, is_marker, NULL, NULL, userdata);
+}
+
 void jw_game_folder_tree_free(jw_game_folder_tree *tree) {
     if (!tree) {
         return;
     }
+    free(tree->game_rank);
     free(tree->folders);
     free(tree->game_folder);
     free(tree->game_row);
