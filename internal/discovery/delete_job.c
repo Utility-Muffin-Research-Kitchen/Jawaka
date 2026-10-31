@@ -156,7 +156,14 @@ static int jw__guard(void *context, const jw_delete_file *file, char *error, siz
         return -1;
     }
 #endif
-    if (jw__writable(&job->view, job->db_path, "primary") != 0 ||
+    /* The card could have changed since the plan was built, and the digest can't tell a
+       same-named, same-sized file on another card. */
+    jw_storage_source_list *sources = calloc(1, sizeof(*sources));
+    bool wrong_card = sources && jw_storage_sources_resolve(job->sdcard_root, sources) == 0 &&
+                      jw__wrong_card(job->db_path, sources, file->source_id, &job->view);
+    free(sources);
+    if (wrong_card ||
+        jw__writable(&job->view, job->db_path, "primary") != 0 ||
         jw__writable(&job->view, file->path, file->source_id) != 0) {
         if (error != job->view.error) snprintf(error, size, "%s", job->view.error);
         return -1;

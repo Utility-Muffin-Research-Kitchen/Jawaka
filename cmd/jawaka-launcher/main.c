@@ -12701,6 +12701,26 @@ static void jw__focus_unlock_exit(jw_launcher_state *state) {
     cat_request_frame();
 }
 
+/* Setup can't show a pick whose card isn't here, so it can't be removed there either.
+   It stays stored, in any free place, so it returns with its card. */
+static int jw__focus_keep_absent_picks(const char *db_path, int *ids, int count) {
+    char csv[128] = "";
+    if (jw_db_get_setting(db_path, JW_FOCUS_KEY_IDS, csv, sizeof(csv)) != 0) return count;
+    int stored[JW_FOCUS_MAX_GAMES], n = 0;
+    jw_focus_ids_parse(csv, stored, &n);
+    for (int i = 0; i < n && count < JW_FOCUS_MAX_GAMES; i++) {
+        bool already = false;
+        for (int k = 0; k < count; k++) already = already || ids[k] == stored[i];
+        jw_game_entry g;
+        bool listed = true;
+        if (!already && jw_db_get_game_by_id(db_path, stored[i], &g) == 0 &&
+            jw_db_game_listed(db_path, stored[i], &listed) == 0 && !listed) {
+            ids[count++] = stored[i];
+        }
+    }
+    return count;
+}
+
 /* Commit the setup wizard's result: persist the config + write the SD lock file,
    then enter focus mode in place (no reboot — the daemon re-resolves focus on
    each launcher spawn, so the persisted state carries forward). */
@@ -12710,6 +12730,7 @@ static void jw__focus_setup_commit(jw_launcher_state *state) {
     cfg.active = true;
     cfg.id_count = state->focus_setup_count;
     for (int i = 0; i < cfg.id_count; i++) cfg.ids[i] = state->focus_setup_ids[i];
+    cfg.id_count = jw__focus_keep_absent_picks(state->db_path, cfg.ids, cfg.id_count);
     cfg.lock = state->focus_setup_lock;
     cfg.style = state->focus_setup_style;
     /* Capture the current Wi-Fi radio state so it can be restored on exit, then
@@ -12817,7 +12838,8 @@ static void jw__focus_setup_begin(jw_launcher_state *state) {
              state->focus_setup_count < JW_FOCUS_SCREEN_MAX_TILES; i++) {
             jw_game_entry g;
             bool listed = false;
-            /* A pick on a card that isn't here can't be seen in Pick to remove it. */
+            /* A pick on a card that isn't here can't be seen in Pick to remove it, so it's
+               kept aside, and jw__focus_keep_absent_picks puts it back on commit. */
             if (jw_db_get_game_by_id(state->db_path, ids[i], &g) == 0 &&
                 (jw_db_game_listed(state->db_path, ids[i], &listed) != 0 || listed))
                 state->focus_setup_ids[state->focus_setup_count++] = ids[i];

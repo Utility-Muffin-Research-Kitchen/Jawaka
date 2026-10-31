@@ -14499,6 +14499,8 @@ static int jw__handle_relocation_prepare(jw_daemon_state *state,
         const jw_storage_source *new_source =
             jw_storage_sources_find_by_id(&sources, items[i].new_identity.source_id);
         if (!old_source || !new_source || !old_source->available || !new_source->available ||
+            jw_db_card_owner_check_at(state->db_path, old_source) == JW_CARD_OWNER_MISMATCH ||
+            jw_db_card_owner_check_at(state->db_path, new_source) == JW_CARD_OWNER_MISMATCH ||
             jw__relocation_snapshot(old_source, items[i].old_source_snapshot,
                                     sizeof(items[i].old_source_snapshot)) != 0 ||
             jw__relocation_snapshot(new_source, items[i].new_source_snapshot,

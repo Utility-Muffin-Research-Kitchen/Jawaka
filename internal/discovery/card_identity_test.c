@@ -514,6 +514,8 @@ static void test_card_changes_during_apply(void) {
     remove_card("A");
 }
 
+static void older_build_scan(int first, int count, int playtime);
+
 /* Stops the staged apply at its Nth row, as a failing temp store would. */
 static int g_apply_reads;
 static int g_interrupt_at_read;
@@ -597,6 +599,22 @@ static void test_removing_a_rom_keeps_the_digest_current(void) {
     snprintf(removed.rom_relpath, sizeof(removed.rom_relpath), "NES/g000.nes");
     assert(jw_db_reconcile_removed_roms(g_db, &removed, 1) == 0);
     assert(count_live() == 2 && digest_current());
+
+    /* An out-of-date digest stays that way: it's how recovery spots an older build. */
+    older_build_scan(0, 3, 5);
+    assert(!digest_current());
+    char before[64] = "";
+    sqlite3_stmt *stmt = NULL;
+    assert(sqlite3_prepare_v2(g_db, "SELECT live_digest FROM library_cards WHERE is_live=1;",
+                              -1, &stmt, NULL) == SQLITE_OK);
+    assert(sqlite3_step(stmt) == SQLITE_ROW);
+    snprintf(before, sizeof(before), "%s", (const char *)sqlite3_column_text(stmt, 0));
+    sqlite3_reset(stmt);
+    snprintf(removed.rom_relpath, sizeof(removed.rom_relpath), "NES/g001.nes");
+    assert(jw_db_reconcile_removed_roms(g_db, &removed, 1) == 0);
+    assert(sqlite3_step(stmt) == SQLITE_ROW);
+    assert(strcmp(before, (const char *)sqlite3_column_text(stmt, 0)) == 0);
+    sqlite3_finalize(stmt);
     remove_card("A");
 }
 
@@ -829,7 +847,8 @@ static void test_older_build_wrote_a_parked_cards_rows(void) {
     /* Back to A, so B is parked with one extra row only it has. */
     swap_to("B", "A", KEY_A);
     assert(owner_is(KEY_A));
-    assert(jw_db_set_rom_hidden(g_db_path, "secondary_sd", "NES/g100.nes", "", 1) == 0);
+    /* A's own hide, on a path only A has. */
+    assert(jw_db_set_rom_hidden(g_db_path, "secondary_sd", "NES/g000.nes", "", 1) == 0);
     char parked_extra[256];
     int b_card = scalar("SELECT id FROM library_cards WHERE card_key='" KEY_B "'");
     snprintf(parked_extra, sizeof(parked_extra),
@@ -837,8 +856,9 @@ static void test_older_build_wrote_a_parked_cards_rows(void) {
              "('NES','g199','card-%d','NES/g199.nes','/.leaf-parked/x');", b_card);
     exec_ok(parked_extra);
 
-    /* An older build then scans B and plays it. */
+    /* An older build then scans B and plays it, and hides one of B's games there. */
     older_build_scan(100, 2, 500);
+    assert(jw_db_set_rom_hidden(g_db_path, "secondary_sd", "NES/g100.nes", "", 1) == 0);
 
     remove_card("A");
     add_games("B", 199, 1);
@@ -858,10 +878,13 @@ static void test_older_build_wrote_a_parked_cards_rows(void) {
     assert(jw_db_get_game_setting(g_db_path, live_b, "core_id", core, sizeof(core)) == 0);
     assert(strcmp(core, "fceumm") == 0);
     assert(game_id("secondary_sd", 199) != 0);
-    /* B's hide came back. A's key, on a path B also has, is gone with A's rows. */
+    /* B's parked hide came back, and the one set in the older build stayed. A's is gone
+       with A's rows. */
     assert(scalar("SELECT COUNT(*) FROM hidden_roms WHERE source_id='secondary_sd' "
                   "AND rom_relpath='NES/g101.nes'") == 1);
-    assert(scalar("SELECT COUNT(*) FROM hidden_roms WHERE rom_relpath='NES/g100.nes'") == 0);
+    assert(scalar("SELECT COUNT(*) FROM hidden_roms WHERE source_id='secondary_sd' "
+                  "AND rom_relpath='NES/g100.nes'") == 1);
+    assert(scalar("SELECT COUNT(*) FROM hidden_roms WHERE rom_relpath='NES/g000.nes'") == 0);
     remove_card("B");
 }
 
@@ -871,15 +894,17 @@ static void test_older_build_wrote_a_new_cards_rows(void) {
     add_games("C", 300, 2);
     insert_first("A", KEY_A);
     scan();
-    assert(jw_db_set_rom_hidden(g_db_path, "secondary_sd", "NES/g300.nes", "", 1) == 0);
+    assert(jw_db_set_rom_hidden(g_db_path, "secondary_sd", "NES/g000.nes", "", 1) == 0);
     older_build_scan(300, 2, 90);
+    assert(jw_db_set_rom_hidden(g_db_path, "secondary_sd", "NES/g300.nes", "", 1) == 0);
     remove_card("A");
     insert_card("C", KEY_C);
     jw_cards_outcome outcome = JW_CARDS_UNCHANGED;
     assert(jw_db_cards_reconcile_root(g_db, g_primary, &outcome) == 0);
     assert(outcome == JW_CARDS_RECOVERED);
     assert(owner_is(KEY_C) && count_cards() == 1 && count_parked() == 0 && count_live() == 2);
-    assert(scalar("SELECT COUNT(*) FROM hidden_roms") == 0);
+    assert(scalar("SELECT COUNT(*) FROM hidden_roms WHERE rom_relpath='NES/g000.nes'") == 0);
+    assert(scalar("SELECT COUNT(*) FROM hidden_roms WHERE rom_relpath='NES/g300.nes'") == 1);
     remove_card("C");
 }
 
@@ -922,6 +947,55 @@ static void test_normal_swap_never_merges(void) {
     assert(jw_db_get_game_by_id(g_db_path, a_row, &game) == 0 && game.playtime_s == 60);
     assert(jw_db_get_game_by_id(g_db_path, b_row, &game) == 0 && game.playtime_s == 5);
     remove_card("A");
+}
+
+/* The launcher's Pak Rat scan and the daemon's scan each reconcile on their own
+   connection. This one runs the other to completion in the gap before our write lock. */
+static sqlite3 *g_other_db;
+static bool g_other_ran;
+static int other_connection_trace(unsigned type, void *data, void *stmt, void *sql) {
+    (void)type; (void)data; (void)sql;
+    if (!g_other_ran && strstr(sqlite3_sql((sqlite3_stmt *)stmt), "BEGIN IMMEDIATE")) {
+        g_other_ran = true;
+        jw_cards_outcome outcome = JW_CARDS_UNCHANGED;
+        assert(jw_db_cards_reconcile_root(g_other_db, g_primary, &outcome) == 0);
+        assert(outcome == JW_CARDS_SWAPPED);
+    }
+    return 0;
+}
+
+static void test_two_connections_reconcile_at_once(void) {
+    begin_case();
+    add_games("A", 0, 3);
+    add_games("B", 100, 2);
+    insert_first("A", KEY_A);
+    scan();
+    swap_to("A", "B", KEY_B);
+    int b_row = game_id("secondary_sd", 100);
+    assert(jw_db_record_play_by_id(g_db_path, b_row, 77) == 0);
+    assert(jw_db_set_favorite(g_db_path, "game", b_row, 1) == 0);
+    swap_to("B", "A", KEY_A);
+    remove_card("A");
+    insert_card("B", KEY_B);
+
+    assert(jw_db_open(g_db_path, &g_other_db) == 0);
+    g_other_ran = false;
+    sqlite3_trace_v2(g_db, SQLITE_TRACE_STMT, other_connection_trace, NULL);
+    jw_cards_outcome outcome = JW_CARDS_CLAIMED;
+    assert(jw_db_cards_reconcile_root(g_db, g_primary, &outcome) == 0);
+    sqlite3_trace_v2(g_db, 0, NULL, NULL);
+    jw_db_close(g_other_db);
+    assert(g_other_ran);
+
+    /* The other connection already did it. B's rows stay B's, and A's stay A's. */
+    assert(outcome == JW_CARDS_UNCHANGED);
+    assert(owner_is(KEY_B) && count_live() == 2 && count_parked() == 3);
+    assert(game_id("secondary_sd", 100) == b_row);
+    jw_game_entry game;
+    assert(jw_db_get_game_by_id(g_db_path, b_row, &game) == 0);
+    assert(game.playtime_s == 77 && game.favorite == 1);
+    assert(digest_current());
+    remove_card("B");
 }
 
 static void test_owner_check_and_listing(void) {
@@ -1027,6 +1101,7 @@ int main(void) {
     test_older_build_wrote_a_new_cards_rows();
     test_older_build_rows_not_on_the_mounted_card();
     test_normal_swap_never_merges();
+    test_two_connections_reconcile_at_once();
     test_owner_check_and_listing();
 
     jw_db_close(g_db);

@@ -779,6 +779,11 @@ card-identity-test: | $(BUILD)/bin
 		$(LDLIBS_COMMON)
 	$(BUILD)/bin/card-identity-test
 
+# Linux only, with git history and the sqlite3 tool, so not in CI.
+.PHONY: card-identity-older-release-check
+card-identity-older-release-check:
+	scripts/card-identity-older-release-check.sh
+
 .PHONY: source-visibility-test
 source-visibility-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/source-visibility-test \

@@ -1721,14 +1721,49 @@ typedef struct {
     sqlite3_int64 restore_id; /* registry row whose parked rows come back, or 0 */
 } jw__cards_decision;
 
+/* What reconcile acts on. The launcher and the daemon each reconcile on their own
+   connections, so this has to read the same under the write lock as when the decision
+   was made. A decision based on an owner that has since changed would park the wrong
+   card's rows. */
+typedef struct {
+    sqlite3_int64 owner_id;
+    char owner_key[64];
+    char owner_digest[64];
+    char slot_digest[64];
+    char registry[64];
+} jw__cards_snapshot;
+
+static int jw__cards_read_snapshot(sqlite3 *db, jw__cards_snapshot *out) {
+    memset(out, 0, sizeof(*out));
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT id,card_key,COALESCE(live_digest,'') FROM library_cards"
+                               " WHERE is_live=1;", -1, &stmt, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        out->owner_id = sqlite3_column_int64(stmt, 0);
+        snprintf(out->owner_key, sizeof(out->owner_key), "%s", (const char *)sqlite3_column_text(stmt, 1));
+        snprintf(out->owner_digest, sizeof(out->owner_digest), "%s", (const char *)sqlite3_column_text(stmt, 2));
+    }
+    sqlite3_finalize(stmt);
+    if (jw__query_string(db, JW_CARDS_DIGEST_SQL ";", out->slot_digest, sizeof(out->slot_digest)) != 0) {
+        return -1;
+    }
+    return jw__query_string(db, "SELECT COUNT(*)||':'||COALESCE(SUM(id),0)||':'||"
+                                "COALESCE(SUM(last_seen),0) FROM library_cards;",
+                            out->registry, sizeof(out->registry));
+}
+
+static bool jw__cards_snapshot_same(const jw__cards_snapshot *a, const jw__cards_snapshot *b) {
+    return a->owner_id == b->owner_id && strcmp(a->owner_key, b->owner_key) == 0 &&
+           strcmp(a->owner_digest, b->owner_digest) == 0 &&
+           strcmp(a->slot_digest, b->slot_digest) == 0 &&
+           strcmp(a->registry, b->registry) == 0;
+}
+
 /* Works out what a different card means, with no writes. Sampling touches the card, which
    can be slow or failing, so it stays outside the write lock. */
 static int jw__cards_decide(sqlite3 *db, const jw_storage_source *source,
-                            const char *owner_digest, jw__cards_decision *out) {
+                            const jw__cards_snapshot *seen, jw__cards_decision *out) {
     memset(out, 0, sizeof(*out));
-    char digest[64] = "";
-    if (jw__query_string(db, JW_CARDS_DIGEST_SQL ";", digest, sizeof(digest)) != 0) return -1;
-
     sqlite3_stmt *stmt = NULL;
     sqlite3_int64 known_id = 0;
     if (sqlite3_prepare_v2(db, "SELECT id FROM library_cards WHERE card_key=?1;",
@@ -1742,7 +1777,7 @@ static int jw__cards_decide(sqlite3 *db, const jw_storage_source *source,
        them under the recorded owner would lose them at that owner's next scan. The older
        build has already pruned the owner's own rows. The adoption floor doesn't apply,
        because the digest is already evidence. */
-    if (owner_digest[0] && strcmp(owner_digest, digest) != 0 &&
+    if (seen->owner_digest[0] && strcmp(seen->owner_digest, seen->slot_digest) != 0 &&
         jw__cards_sample_matches(db, "secondary_sd", source, 1)) {
         out->outcome = JW_CARDS_RECOVERED;
         out->recovered = true;
@@ -1780,16 +1815,36 @@ static int jw__cards_decide(sqlite3 *db, const jw_storage_source *source,
     return 0;
 }
 
+static int jw__cards_insert_live(sqlite3 *db, const char *key, int seen) {
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "INSERT INTO library_cards(card_key,is_live,last_seen)"
+                               " VALUES(?1,1,?2) ON CONFLICT(card_key) DO UPDATE SET"
+                               " is_live=1,last_seen=excluded.last_seen;",
+                           -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, seen);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
 static int jw__cards_apply(sqlite3 *db, const jw_storage_source *source, sqlite3_int64 owner_id,
                            const jw__cards_decision *decision) {
     int seen = 0;
     if (jw__query_int(db, "SELECT COALESCE(MAX(last_seen),0)+1 FROM library_cards;", &seen) != 0) {
         return -1;
     }
-    /* The previous owner's rows are gone, so its hidden keys would only hide this card's
-       copies. This card's own keys, if any, come back with its parked rows. */
+    /* No row moves here: whichever card is in the slot takes the existing rows, the
+       same outcome as the slot-keyed scans before this table existed. */
+    if (!owner_id) return jw__cards_insert_live(db, source->card_key, seen);
+
+    /* The previous owner leaves the registry, so a key for a path only it had means
+       nothing now. A key on a path this card has may be one the user set on this card in
+       the older build, and those look the same, so it stays. It hid this copy there too. */
     if (decision->recovered &&
-        jw__cards_run(db, "DELETE FROM main.hidden_roms WHERE source_id='secondary_sd';",
+        jw__cards_run(db, "DELETE FROM main.hidden_roms WHERE source_id='secondary_sd' AND NOT EXISTS("
+                          "SELECT 1 FROM games g WHERE g.source_id='secondary_sd' "
+                          "AND g.rom_relpath=hidden_roms.rom_relpath);",
                       NULL, NULL, NULL, NULL) != 0) {
         return -1;
     }
@@ -1807,15 +1862,7 @@ static int jw__cards_apply(sqlite3 *db, const jw_storage_source *source, sqlite3
         if (jw__cards_unpark(db, decision->restore_id, source) != 0) return -1;
         return jw__cards_make_live(db, decision->restore_id, source->card_key, seen);
     }
-
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, "INSERT INTO library_cards(card_key,is_live,last_seen)"
-                               " VALUES(?1,1,?2);", -1, &stmt, NULL) != SQLITE_OK) return -1;
-    sqlite3_bind_text(stmt, 1, source->card_key, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 2, seen);
-    int rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-    return rc == SQLITE_DONE ? 0 : -1;
+    return jw__cards_insert_live(db, source->card_key, seen);
 }
 
 int jw_db_cards_digest_clear(sqlite3 *db) {
@@ -1827,6 +1874,11 @@ int jw_db_cards_digest_refresh(sqlite3 *db) {
                         ") WHERE is_live=1;");
 }
 
+static void jw__cards_unlock(sqlite3 *db, bool nested) {
+    sqlite3_exec(db, nested ? "ROLLBACK TO jawaka_cards; RELEASE jawaka_cards;" : "ROLLBACK;",
+                 NULL, NULL, NULL);
+}
+
 int jw_db_cards_reconcile(sqlite3 *db, const jw_storage_source *source, jw_cards_outcome *out) {
     if (out) *out = JW_CARDS_UNCHANGED;
     if (!db) return -1;
@@ -1836,69 +1888,55 @@ int jw_db_cards_reconcile(sqlite3 *db, const jw_storage_source *source, jw_cards
         return 0;
     }
 
-    sqlite3_int64 owner_id = 0;
-    char owner_key[64] = "";
-    char owner_digest[64] = "";
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT id,card_key,COALESCE(live_digest,'') FROM library_cards"
-                               " WHERE is_live=1;", -1, &stmt, NULL) != SQLITE_OK) return -1;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        owner_id = sqlite3_column_int64(stmt, 0);
-        snprintf(owner_key, sizeof(owner_key), "%s", (const char *)sqlite3_column_text(stmt, 1));
-        snprintf(owner_digest, sizeof(owner_digest), "%s", (const char *)sqlite3_column_text(stmt, 2));
-    }
-    sqlite3_finalize(stmt);
+    /* Pak Rat runs a scan inside its own BEGIN IMMEDIATE, and SQLite has no nested
+       BEGIN. If that transaction rolls back, this does too, and the next scan repeats it. */
+    bool nested = sqlite3_get_autocommit(db) == 0;
+    for (int attempt = 0; attempt < JW_CARDS_RECONCILE_ATTEMPTS; attempt++) {
+        jw__cards_snapshot seen;
+        if (jw__cards_read_snapshot(db, &seen) != 0) return -1;
+        /* Only eviction reads last_seen, and it's written when a card is parked. */
+        if (seen.owner_id && strcmp(seen.owner_key, source->card_key) == 0) return 0;
 
-    /* No row moves here: whichever card is in the slot takes the existing rows, the
-       same outcome as the slot-keyed scans before this table existed. */
-    if (!owner_id) {
-        if (sqlite3_prepare_v2(db,
-                "INSERT INTO library_cards(card_key,is_live,live_digest,last_seen)"
-                " VALUES(?1,1,(" JW_CARDS_DIGEST_SQL "),"
-                " (SELECT COALESCE(MAX(last_seen),0)+1 FROM library_cards))"
-                " ON CONFLICT(card_key) DO UPDATE SET is_live=1,"
-                " live_digest=excluded.live_digest,last_seen=excluded.last_seen;",
-                -1, &stmt, NULL) != SQLITE_OK) return -1;
-        sqlite3_bind_text(stmt, 1, source->card_key, -1, SQLITE_TRANSIENT);
-        int rc = sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-        if (rc != SQLITE_DONE) return -1;
-        if (out) *out = JW_CARDS_CLAIMED;
-        return 0;
-    }
-    /* Only eviction reads last_seen, and it's written when a card is parked. */
-    if (strcmp(owner_key, source->card_key) == 0) return 0;
+        jw__cards_decision decision;
+        memset(&decision, 0, sizeof(decision));
+        decision.outcome = JW_CARDS_CLAIMED;
+        if (seen.owner_id && jw__cards_decide(db, source, &seen, &decision) != 0) return -1;
 
-    /* A relocation's snapshot names the rows it holds, so they can't move under it.
-       Lists hide them and scans skip the slot until it ends. */
-    int open_ops = 0;
-    if (jw__query_int(db,
+        if (jw__exec(db, nested ? "SAVEPOINT jawaka_cards;" : "BEGIN IMMEDIATE;") != 0) return -1;
+        jw__cards_snapshot locked;
+        if (jw__cards_read_snapshot(db, &locked) != 0) {
+            jw__cards_unlock(db, nested);
+            return -1;
+        }
+        if (!jw__cards_snapshot_same(&seen, &locked)) {
+            jw__cards_unlock(db, nested);
+            continue;
+        }
+
+        /* A relocation's snapshot names the rows it holds, so they can't move under it.
+           Lists hide them and scans skip the slot until it ends. */
+        int open_ops = 0;
+        int rc = !seen.owner_id ? 0 : jw__query_int(db,
             "SELECT EXISTS(SELECT 1 FROM library_relocation_items ri"
             " JOIN library_relocation_ops ro USING(operation_id)"
             " WHERE ro.state IN ('prepared','committed','reverted')"
             " AND (ri.old_source_id='secondary_sd' OR ri.new_source_id='secondary_sd'));",
-            &open_ops) != 0) return -1;
-    if (open_ops) {
-        if (out) *out = JW_CARDS_DEFERRED;
-        return 0;
+            &open_ops);
+        if (rc == 0 && open_ops) {
+            jw__cards_unlock(db, nested);
+            if (out) *out = JW_CARDS_DEFERRED;
+            return 0;
+        }
+        if (rc == 0) rc = jw__cards_apply(db, source, seen.owner_id, &decision);
+        if (rc == 0) rc = jw_db_cards_digest_refresh(db);
+        if (rc == 0) rc = jw__cards_evict(db);
+        if (rc == 0 && jw__exec(db, nested ? "RELEASE jawaka_cards;" : "COMMIT;") == 0) {
+            if (out) *out = decision.outcome;
+            return 0;
+        }
+        jw__cards_unlock(db, nested);
+        return -1;
     }
-
-    jw__cards_decision decision;
-    if (jw__cards_decide(db, source, owner_digest, &decision) != 0) return -1;
-
-    /* Pak Rat runs a scan inside its own BEGIN IMMEDIATE, and SQLite has no nested
-       BEGIN. If that transaction rolls back, this does too, and the next scan repeats it. */
-    bool nested = sqlite3_get_autocommit(db) == 0;
-    if (jw__exec(db, nested ? "SAVEPOINT jawaka_cards;" : "BEGIN IMMEDIATE;") != 0) return -1;
-    int rc = jw__cards_apply(db, source, owner_id, &decision);
-    if (rc == 0) rc = jw_db_cards_digest_refresh(db);
-    if (rc == 0) rc = jw__cards_evict(db);
-    if (rc == 0 && jw__exec(db, nested ? "RELEASE jawaka_cards;" : "COMMIT;") == 0) {
-        if (out) *out = decision.outcome;
-        return 0;
-    }
-    sqlite3_exec(db, nested ? "ROLLBACK TO jawaka_cards; RELEASE jawaka_cards;" : "ROLLBACK;",
-                 NULL, NULL, NULL);
     return -1;
 }
 
@@ -1947,6 +1985,11 @@ int jw_db_reconcile_removed_roms(sqlite3 *db, const jw_db_rom_key *removed,
         return jw__write_error(db);
     sqlite3_stmt *games = NULL, *hidden = NULL;
     int ok = 0;
+    int digest_current = 0;
+    if (jw__query_int(db, "SELECT COALESCE((SELECT live_digest=(" JW_CARDS_DIGEST_SQL
+                          ") FROM library_cards WHERE is_live=1),0);", &digest_current) != 0) {
+        return jw__finish_rom_cleanup(db, jw__write_error(db));
+    }
     if (sqlite3_prepare_v2(db,
             "DELETE FROM games WHERE source_id=? AND rom_relpath=?;",
             -1, &games, NULL) != SQLITE_OK ||
@@ -1964,8 +2007,9 @@ int jw_db_reconcile_removed_roms(sqlite3 *db, const jw_db_rom_key *removed,
             goto done;
     }
     /* In this transaction, so a power cut before the next scan can't look like another
-       build changed the slot's rows. */
-    if (jw_db_cards_digest_refresh(db) != 0) goto done;
+       build changed the slot's rows. An out-of-date digest stays out of date: it's the
+       evidence that another build did, and recovery needs it. */
+    if (digest_current && jw_db_cards_digest_refresh(db) != 0) goto done;
     ok = 1;
 done:;
     int rc = ok ? 0 : jw__write_error(db);

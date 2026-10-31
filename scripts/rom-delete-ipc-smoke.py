@@ -512,6 +512,12 @@ def test_card_ownership(fixture):
         assert "not mounted" in reply.get("error", ""), reply
         reply = client.request("launch-game", system="GBA", rom_path=str(launched))
         assert reply.get("type") == "error" and "not mounted" in reply.get("message", ""), reply
+    with Client(fixture.socket) as client:
+        reply = client.request("library-relocate-prepare", operation_id="wrong-card",
+                               expected_generation=0,
+                               items=[{"old": {"source_id": "secondary_sd", "rom_relpath": "GBA/ReadOnly.gba"},
+                                       "new": {"source_id": "primary", "rom_relpath": "GBA/Moved.gba"}}])
+        assert "unknown or unavailable source" in json.dumps(reply), reply
     assert "launch: refused game id" in fixture.log.read_text(errors="replace")
     assert deleted.read_text() == "Other card must survive\n"
     assert far.read_text() == "far disc\n"

@@ -169,6 +169,8 @@ typedef enum {
 #define JW_CARDS_MAX_PARKED 8
 /* Fewer rows than this are weak evidence that two cards are the same card. */
 #define JW_CARDS_ADOPT_MIN_ROWS 16
+/* Another connection reconciled first this many times in a row: give up until the next scan. */
+#define JW_CARDS_RECONCILE_ATTEMPTS 3
 
 bool jw_db_source_parked(const char *source_id);
 jw_card_owner jw_db_card_owner_check(sqlite3 *db, const jw_storage_source *source);
