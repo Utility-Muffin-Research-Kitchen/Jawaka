@@ -481,6 +481,10 @@ def test_card_ownership(fixture):
     write(fixture.root / "cores/fixture_libretro.dylib", "fixture core\n")
     write(fixture.root / "retroarch-fixture", "#!/bin/sh\nexit 0\n")
     (fixture.root / "retroarch-fixture").chmod(0o755)
+    # A playlist on the main card that references a file on the second card.
+    far = fixture.secondary / "Roms/Other/Far.chd"
+    write(far, "far disc\n")
+    write(fixture.primary / "Roms/PS/Far.m3u", f"{far}\n")
     fixture.card_key = "fat:aaaa0001"
     fixture.start()
     fixture.stop()
@@ -503,10 +507,14 @@ def test_card_ownership(fixture):
         reply = client.preview("GBA/Delete.gba", "secondary_sd")
         rejected(reply)
         assert "not mounted" in reply.get("error", ""), reply
+        reply = client.preview("PS/Far.m3u")
+        rejected(reply)
+        assert "not mounted" in reply.get("error", ""), reply
         reply = client.request("launch-game", system="GBA", rom_path=str(launched))
-        assert reply.get("type") == "error" and reply.get("message") == "ROM path missing", reply
+        assert reply.get("type") == "error" and "not mounted" in reply.get("message", ""), reply
     assert "launch: refused game id" in fixture.log.read_text(errors="replace")
     assert deleted.read_text() == "Other card must survive\n"
+    assert far.read_text() == "far disc\n"
     fixture.stop()
     fixture.card_key = None
 

@@ -80,14 +80,26 @@ static void check_focus_follows_the_card(jw_launcher_state *state, const char *r
     assert(state->focus_count == 2 && state->focus_games[1].id == 900);
     state->focus_cursor = 1;
 
-    /* A different card: the pick leaves, and the cursor stays in range. */
+    /* A different card: the pick leaves on the next generation change, and the cursor
+       stays in range. */
     setenv(key, "fat:bbbb0002", 1);
-    jw__focus_refresh(state);
+    int generation = state->library_generation;
+    atomic_store(&jw__status_poller.generation, generation + 1);
+    jw__poll_library_generation("", state->db_path, state);
     assert(state->focus_count == 1 && state->focus_games[0].id == primary_id);
+    atomic_store(&jw__status_poller.generation, generation);
+    state->library_generation = generation;
     assert(state->focus_cursor == 0 && state->focus_active && state->focus_lock == JW_FOCUS_LOCK_PIN);
     char stored[64] = "";
     assert(jw_db_get_setting(state->db_path, JW_FOCUS_KEY_IDS, stored, sizeof(stored)) == 0);
     assert(strcmp(stored, ids) == 0);
+
+    /* Setup only offers picks it could also let you remove. */
+    state->focus_active = false;
+    jw__focus_setup_begin(state);
+    assert(state->focus_setup_count == 1 && state->focus_setup_ids[0] == primary_id);
+    jw__pick_cancel(state);
+    state->focus_active = true;
 
     /* Its rows parked, as once the scan has swapped the cards. */
     assert(sqlite3_exec(db, "UPDATE games SET source_id='card-1' WHERE id=900;",

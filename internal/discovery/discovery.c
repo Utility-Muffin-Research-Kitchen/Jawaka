@@ -1256,12 +1256,20 @@ static int jw__scan_apply_staged(jw_scan_tx *tx) {
             "ORDER BY rowid LIMIT 1;", -1, &stmt, NULL) != SQLITE_OK) {
         return -1;
     }
+    /* Cleared in the first batch, so no commit can leave rows the digest doesn't cover. */
     sqlite3_int64 last = 0;
-    int rc = 0;
+    int rc = jw__scan_tx_begin(tx);
+    if (rc == 0) rc = jw_db_cards_digest_clear(tx->db);
     while (rc == 0) {
         sqlite3_reset(stmt);
         sqlite3_bind_int64(stmt, 1, last);
-        if (sqlite3_step(stmt) != SQLITE_ROW) break;
+        int step = sqlite3_step(stmt);
+        if (step == SQLITE_DONE) break;
+        /* Stopping early would let prune delete every row not yet re-seen. */
+        if (step != SQLITE_ROW) {
+            rc = -1;
+            break;
+        }
         last = sqlite3_column_int64(stmt, 0);
         rc = jw__scan_tx_begin(tx);
         if (rc == 0) {
@@ -1279,8 +1287,23 @@ static int jw__scan_apply_staged(jw_scan_tx *tx) {
         if (rc == 0) rc = jw__scan_tx_note_write(tx);
     }
     sqlite3_finalize(stmt);
+    if (rc == 0) rc = jw__scan_tx_begin(tx);
+    if (rc == 0) rc = jw_db_cards_digest_refresh(tx->db);
     if (rc == 0) rc = jw_db_scan_drop_staged(tx->db);
     return rc;
+}
+
+static bool jw__source_is_slot_card(const jw_storage_source *source) {
+    return strcmp(source->id, "secondary_sd") == 0 && source->card_key_state == JW_CARD_KEY_KNOWN;
+}
+
+/* A second card is scanned only when it's the recorded owner of the slot's rows, or
+   can't be told apart at all, which is the slot-keyed behavior. */
+static bool jw__source_gated(sqlite3 *db, const jw_storage_source *source) {
+    if (strcmp(source->id, "secondary_sd") != 0) return false;
+    return source->card_key_state == JW_CARD_KEY_UNREADABLE ||
+           (jw__source_is_slot_card(source) &&
+            jw_db_card_owner_check(db, source) != JW_CARD_OWNER_MATCH);
 }
 
 static int jw__scan_roms(jw_scan_tx *tx, const char *sdcard_root,
@@ -1297,6 +1320,7 @@ static int jw__scan_roms(jw_scan_tx *tx, const char *sdcard_root,
         return -1;
     }
 
+    int rc = -1;
     for (int i = 0; i < sources->count; i++) {
         const jw_storage_source *source = &sources->sources[i];
         if (!source->available) {
@@ -1304,50 +1328,31 @@ static int jw__scan_roms(jw_scan_tx *tx, const char *sdcard_root,
                     source->id, source->root);
             continue;
         }
-        /* A second card is scanned only when it's the recorded owner of the slot's
-           rows, or can't be told apart at all, which is the slot-keyed behavior. */
-        bool keyed = !source->primary && source->card_key_state == JW_CARD_KEY_KNOWN;
-        if ((!source->primary && source->card_key_state == JW_CARD_KEY_UNREADABLE) ||
-            (keyed && jw_db_card_owner_check(tx->db, source) != JW_CARD_OWNER_MATCH)) {
+        if (jw__source_gated(tx->db, source)) {
             fprintf(stderr, "ROM discovery: retaining rows; %s isn't the owner of source %s\n",
-                    keyed ? source->card_key : "an unreadable card", source->id);
+                    source->card_key[0] ? source->card_key : "an unreadable card", source->id);
             continue;
         }
+        bool keyed = jw__source_is_slot_card(source);
         tx->stage = keyed;
         int scan_rc = compatibility
             ? jw__scan_roms_compat(tx, source, out)
             : jw__scan_roms_metadata(tx, sdcard_root, source, catalog, out);
         tx->stage = false;
-        if (scan_rc < 0) {
-            free(current);
-            free(sources);
-            return -1;
-        }
+        if (scan_rc < 0) goto done;
         if (scan_rc > 0) {
             fprintf(stderr,
                     "ROM discovery: enumeration failed for source %s; retaining prior rows\n",
                     source->id);
-            if (keyed && jw_db_scan_drop_staged(tx->db) != 0) {
-                free(current);
-                free(sources);
-                return -1;
-            }
+            if (keyed && jw_db_scan_drop_staged(tx->db) != 0) goto done;
             continue;
         }
         bool unchanged = jw__scan_source_unchanged(sdcard_root, source, current);
         if (!unchanged) {
-            if (keyed && jw_db_scan_drop_staged(tx->db) != 0) {
-                free(current);
-                free(sources);
-                return -1;
-            }
+            if (keyed && jw_db_scan_drop_staged(tx->db) != 0) goto done;
         } else if (keyed) {
             /* A card that left during the apply must not be pruned against. */
-            if (jw__scan_apply_staged(tx) != 0) {
-                free(current);
-                free(sources);
-                return -1;
-            }
+            if (jw__scan_apply_staged(tx) != 0) goto done;
             unchanged = jw__scan_source_unchanged(sdcard_root, source, current);
         }
         if (!unchanged) {
@@ -1359,14 +1364,14 @@ static int jw__scan_roms(jw_scan_tx *tx, const char *sdcard_root,
         if (jw__scan_tx_begin(tx) != 0 ||
             jw_db_scan_source_complete(tx->db, source->id) != 0 ||
             jw__scan_tx_note_write(tx) != 0) {
-            free(current);
-            free(sources);
-            return -1;
+            goto done;
         }
     }
+    rc = 0;
+done:
     free(current);
     free(sources);
-    return 0;
+    return rc;
 }
 
 static void jw__trim_pak_suffix(const char *name, char *out, size_t out_size) {
@@ -1885,7 +1890,8 @@ static int jw__scan_apps(jw_scan_tx *tx, const char *sdcard_root,
     }
     const char *platform = jw__scan_platform();
     for (int i = 0; i < sources->count; i++) {
-        if (!sources->sources[i].available) {
+        /* Rows from the ROM gate's rejected card stay, so its apps should too. */
+        if (!sources->sources[i].available || jw__source_gated(tx->db, &sources->sources[i])) {
             fprintf(stderr,
                     "App discovery: retaining rows because source %s is unavailable\n",
                     sources->sources[i].id);
@@ -1912,7 +1918,7 @@ static void jw__refresh_result_counts(sqlite3 *db, jw_scan_result *out) {
     }
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, "SELECT COUNT(DISTINCT system) FROM games "
-                           "WHERE substr(source_id,1,5)<>'card-';",
+                           "WHERE " JW_DB_NOT_PARKED("source_id") ";",
                            -1, &stmt, NULL) == SQLITE_OK) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             out->system_count = sqlite3_column_int(stmt, 0);
@@ -1923,7 +1929,7 @@ static void jw__refresh_result_counts(sqlite3 *db, jw_scan_result *out) {
        dedup deletes rows after they were counted, so the tally would overcount. */
     stmt = NULL;
     if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM games "
-                               "WHERE substr(source_id,1,5)<>'card-';",
+                               "WHERE " JW_DB_NOT_PARKED("source_id") ";",
                            -1, &stmt, NULL) == SQLITE_OK) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             out->game_count = sqlite3_column_int(stmt, 0);
@@ -2198,9 +2204,11 @@ int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
             catalog ? catalog->core_count : (size_t)0);
 
     /* Whichever way a scan started, a different card first swaps the rows it would
-       otherwise prune. A failure only means the scan gate retains the slot. */
+       otherwise prune. A failure only means the scan gate retains the slot, and the
+       caller is told so it can try again. */
     jw_cards_outcome cards = JW_CARDS_UNCHANGED;
-    if (jw_db_cards_reconcile_root(db, sdcard_root, &cards) != 0) {
+    bool unreconciled = jw_db_cards_reconcile_root(db, sdcard_root, &cards) != 0;
+    if (unreconciled) {
         fprintf(stderr, "ROM discovery: second-card reconcile failed: %s\n", sqlite3_errmsg(db));
     } else if (cards != JW_CARDS_UNCHANGED) {
         fprintf(stderr, "ROM discovery: second card %s\n", jw_db_cards_outcome_name(cards));
@@ -2235,5 +2243,6 @@ int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
 
     jw_art_index_free(tx.art_index);
     jw__refresh_result_counts(db, out);
+    out->second_card_unreconciled = unreconciled;
     return 0;
 }

@@ -173,8 +173,9 @@ Saves and states already live on the card itself.
   capped at `JW_CARDS_MAX_PARKED`, least recently seen first.
 - **Ownership is enforced wherever a row meets a card.** `jw_source_hidden` hides
   a mismatch, the scan gate won't complete the slot, and launch and delete refuse
-  it. If the card can't be told apart, lists and launches allow it, and a scan
-  behaves as it did before this table existed.
+  it. If the card's key can't be read, lists and launches allow it, and its scan is
+  skipped so nothing is pruned. A mounted card with no serial or by-uuid link shares
+  a key per filesystem type, and is treated like any other card.
 - **A second card's scan is staged.** Rows wait in a temp table until the card is
   proven unchanged after enumeration, so a mid-scan swap changes no row in `games`.
 - **Adoption compares paths, not contents.** An unknown key that holds 90% of a
@@ -182,8 +183,9 @@ Saves and states already live on the card itself.
   card. This is what keeps a reformat or a copy to a bigger card working, and it
   means cards with nearly the same paths share one set of rows, as do clones.
 - **Older builds ignore the table.** One that scans the slot leaves it out of date,
-  so `live_digest` records the slot's rows. A changed digest means those rows came
-  from another build, and if they're on the mounted card, they're kept and merged
+  so `live_digest` records the slot's rows. New builds clear it before writing staged
+  rows and set it again after, so a power cut can't look like another build. A changed
+  digest means those rows came from another build, and if they're on the mounted card, they're kept and merged
   with that card's parked rows rather than parked under the recorded owner. Parked
   rows appear in an older build's lists, and don't launch, until you update again.
 

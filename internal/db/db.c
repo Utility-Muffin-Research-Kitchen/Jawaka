@@ -12,7 +12,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
-#include <time.h>
 #include <unistd.h>
 
 #define JW_DB_SCHEMA_VERSION 6
@@ -24,9 +23,6 @@
 #define JW_VISIBLE_GAME(table) \
     "NOT EXISTS (SELECT 1 FROM hidden_roms h WHERE h.source_id=" table ".source_id " \
     "AND h.rom_relpath=" table ".rom_relpath AND h.member='') "
-
-/* A row on a card that isn't in the slot. Totals leave these out. */
-#define JW_NOT_PARKED(column) "substr(" column ",1,5)<>'card-' "
 
 /* Browsing also leaves out a card that isn't there. Those rows stay, so the same
    entries and their preferences return with the card; see jw__source_hidden. */
@@ -171,13 +167,38 @@ static const char *kSchemaSql =
     "    ON pakrat_installs(install_path);\n"
     "PRAGMA user_version = 6;\n";
 
+/* Gives each survivor its losers' favorites, recents, settings and playtime, then deletes
+   the losers. The map table holds (loser, winner). UPDATE OR IGNORE keeps a survivor's
+   own value when both had one; the leftovers go with the orphan cleanup. */
+#define JW_TRANSFER_TO_SURVIVORS(map) \
+    "UPDATE OR IGNORE favorites SET target_id = " \
+    "    (SELECT winner FROM " map " WHERE loser = favorites.target_id) " \
+    "  WHERE kind = 'game' AND target_id IN (SELECT loser FROM " map ");" \
+    "UPDATE OR IGNORE recents SET target_id = " \
+    "    (SELECT winner FROM " map " WHERE loser = recents.target_id) " \
+    "  WHERE kind = 'game' AND target_id IN (SELECT loser FROM " map ");" \
+    "UPDATE OR IGNORE game_settings SET game_id = " \
+    "    (SELECT winner FROM " map " WHERE loser = game_settings.game_id) " \
+    "  WHERE game_id IN (SELECT loser FROM " map ");" \
+    "UPDATE games SET " \
+    "    playtime_s = playtime_s + COALESCE(" \
+    "        (SELECT SUM(l.playtime_s) FROM games l JOIN " map " m ON l.id = m.loser " \
+    "          WHERE m.winner = games.id), 0), " \
+    "    last_played = NULLIF(MAX(COALESCE(last_played, 0), COALESCE(" \
+    "        (SELECT MAX(l.last_played) FROM games l JOIN " map " m ON l.id = m.loser " \
+    "          WHERE m.winner = games.id), 0)), 0) " \
+    "  WHERE id IN (SELECT winner FROM " map ");" \
+    "DELETE FROM games WHERE id IN (SELECT loser FROM " map ");"
+
 /* What the slot's rows looked like when a new build last touched them. Scans keep it
    current, so a change means an older build wrote them; see jw__cards_swap. */
 #define JW_CARDS_DIGEST_SQL \
     "SELECT COUNT(*)||':'||COALESCE(SUM(id),0) FROM games WHERE source_id='secondary_sd'"
 
 /* Which card owns the second slot's rows. is_live marks the owner, and the partial
-   index allows only one. See plans/Jawaka/second-card-identity.md. */
+   index allows only one. last_seen is a counter, not a time, so a clock that moved
+   backwards can't choose the wrong card to evict. See
+   plans/Jawaka/second-card-identity.md. */
 static const char *kCardsSchemaSql =
     "CREATE TABLE IF NOT EXISTS library_cards (\n"
     " id INTEGER PRIMARY KEY,\n"
@@ -1301,25 +1322,7 @@ int jw_db_dedup_system_aliases(sqlite3 *db, const char *system, const char *cano
     /* Transfer metadata to the survivor, then delete the losers. UPDATE OR IGNORE
        keeps the canonical row's own metadata when both rows had it; the leftover
        loser rows are removed by the final DELETE and the prune cascade. */
-    static const char *transfer_sql =
-        "UPDATE OR IGNORE favorites SET target_id = "
-        "    (SELECT winner FROM _dedup_map WHERE loser = favorites.target_id) "
-        "  WHERE kind = 'game' AND target_id IN (SELECT loser FROM _dedup_map);"
-        "UPDATE OR IGNORE recents SET target_id = "
-        "    (SELECT winner FROM _dedup_map WHERE loser = recents.target_id) "
-        "  WHERE kind = 'game' AND target_id IN (SELECT loser FROM _dedup_map);"
-        "UPDATE OR IGNORE game_settings SET game_id = "
-        "    (SELECT winner FROM _dedup_map WHERE loser = game_settings.game_id) "
-        "  WHERE game_id IN (SELECT loser FROM _dedup_map);"
-        "UPDATE games SET "
-        "    playtime_s = playtime_s + COALESCE("
-        "        (SELECT SUM(l.playtime_s) FROM games l JOIN _dedup_map m ON l.id = m.loser "
-        "          WHERE m.winner = games.id), 0), "
-        "    last_played = NULLIF(MAX(COALESCE(last_played, 0), COALESCE("
-        "        (SELECT MAX(l.last_played) FROM games l JOIN _dedup_map m ON l.id = m.loser "
-        "          WHERE m.winner = games.id), 0)), 0) "
-        "  WHERE id IN (SELECT winner FROM _dedup_map);"
-        "DELETE FROM games WHERE id IN (SELECT loser FROM _dedup_map);";
+    static const char *transfer_sql = JW_TRANSFER_TO_SURVIVORS("_dedup_map");
     sqlite3_stmt *stmt = NULL;
     char escaped_root[512];
     char pattern[512];
@@ -1485,7 +1488,9 @@ bool jw_db_source_parked(const char *source_id) {
 }
 
 jw_card_owner jw_db_card_owner_check(sqlite3 *db, const jw_storage_source *source) {
-    if (!db || !source || source->primary || source->card_key_state != JW_CARD_KEY_KNOWN) {
+    /* The registry only describes the second slot. */
+    if (!db || !source || strcmp(source->id, "secondary_sd") != 0 ||
+        source->card_key_state != JW_CARD_KEY_KNOWN) {
         return JW_CARD_OWNER_UNKNOWN;
     }
     sqlite3_stmt *stmt = NULL;
@@ -1661,7 +1666,7 @@ static int jw__cards_make_live(sqlite3 *db, sqlite3_int64 card_id, const char *k
 
 /* An older build scanned this card under the slot, so its rows there are newer than
    its parked ones. The live row wins each conflict, and takes the parked row's
-   favorite, recent, settings and playtime, as alias dedup does. */
+   preferences, as alias dedup does. */
 static int jw__cards_merge_parked(sqlite3 *db, sqlite3_int64 card_id) {
     char parked[JW_STORAGE_SOURCE_ID_MAX];
     jw__cards_parked_id(card_id, parked, sizeof(parked));
@@ -1675,26 +1680,7 @@ static int jw__cards_merge_parked(sqlite3 *db, sqlite3_int64 card_id) {
         " ON l.source_id='secondary_sd' AND l.rom_relpath=p.rom_relpath"
         " WHERE p.source_id=?1;",
         parked, NULL, NULL, NULL);
-    if (rc == 0) {
-        rc = jw__exec(db,
-            "UPDATE OR IGNORE favorites SET target_id="
-            " (SELECT winner FROM _card_merge_map WHERE loser=favorites.target_id)"
-            " WHERE kind='game' AND target_id IN (SELECT loser FROM _card_merge_map);"
-            "UPDATE OR IGNORE recents SET target_id="
-            " (SELECT winner FROM _card_merge_map WHERE loser=recents.target_id)"
-            " WHERE kind='game' AND target_id IN (SELECT loser FROM _card_merge_map);"
-            "UPDATE OR IGNORE game_settings SET game_id="
-            " (SELECT winner FROM _card_merge_map WHERE loser=game_settings.game_id)"
-            " WHERE game_id IN (SELECT loser FROM _card_merge_map);"
-            "UPDATE games SET playtime_s=playtime_s+COALESCE("
-            " (SELECT SUM(l.playtime_s) FROM games l JOIN _card_merge_map m ON l.id=m.loser"
-            "  WHERE m.winner=games.id),0),"
-            " last_played=NULLIF(MAX(COALESCE(last_played,0),COALESCE("
-            " (SELECT MAX(l.last_played) FROM games l JOIN _card_merge_map m ON l.id=m.loser"
-            "  WHERE m.winner=games.id),0)),0)"
-            " WHERE id IN (SELECT winner FROM _card_merge_map);"
-            "DELETE FROM games WHERE id IN (SELECT loser FROM _card_merge_map);");
-    }
+    if (rc == 0) rc = jw__exec(db, JW_TRANSFER_TO_SURVIVORS("_card_merge_map"));
     return jw__finish_rom_cleanup(db, rc == 0 ? 0 : jw__write_error(db));
 }
 
@@ -1728,9 +1714,18 @@ static int jw__cards_evict(sqlite3 *db) {
     }
 }
 
-/* The mounted card isn't the owner, and its rows aren't under the slot. */
-static int jw__cards_swap(sqlite3 *db, const jw_storage_source *source, sqlite3_int64 owner_id,
-                          const char *owner_digest, sqlite3_int64 now, jw_cards_outcome *out) {
+typedef struct {
+    jw_cards_outcome outcome;
+    bool recovered;           /* an older build wrote the rows under the slot */
+    bool keep_rows;           /* the mounted card takes the rows already under the slot */
+    sqlite3_int64 restore_id; /* registry row whose parked rows come back, or 0 */
+} jw__cards_decision;
+
+/* Works out what a different card means, with no writes. Sampling touches the card, which
+   can be slow or failing, so it stays outside the write lock. */
+static int jw__cards_decide(sqlite3 *db, const jw_storage_source *source,
+                            const char *owner_digest, jw__cards_decision *out) {
+    memset(out, 0, sizeof(*out));
     char digest[64] = "";
     if (jw__query_string(db, JW_CARDS_DIGEST_SQL ";", digest, sizeof(digest)) != 0) return -1;
 
@@ -1742,69 +1737,98 @@ static int jw__cards_swap(sqlite3 *db, const jw_storage_source *source, sqlite3_
     if (sqlite3_step(stmt) == SQLITE_ROW) known_id = sqlite3_column_int64(stmt, 0);
     sqlite3_finalize(stmt);
 
-    /* New builds keep the digest current, so a change means an older build scanned
-       the slot. If those rows are on this card, it's the card they belong to, and
-       parking them under the recorded owner would lose them at that owner's next
-       scan. The older build has already pruned the owner's own rows. */
+    /* New builds keep the digest current, so a change means an older build scanned the
+       slot. If those rows are on this card, it's the card they belong to, and parking
+       them under the recorded owner would lose them at that owner's next scan. The older
+       build has already pruned the owner's own rows. The adoption floor doesn't apply,
+       because the digest is already evidence. */
     if (owner_digest[0] && strcmp(owner_digest, digest) != 0 &&
         jw__cards_sample_matches(db, "secondary_sd", source, 1)) {
-        *out = JW_CARDS_RECOVERED;
-        if (known_id) {
-            if (jw__cards_merge_parked(db, known_id) != 0 ||
-                jw__cards_unpark(db, known_id, source) != 0 ||
-                jw__cards_set_int64(db, "DELETE FROM library_cards WHERE id=?1;", owner_id, 0) != 0) {
-                return -1;
-            }
-            return jw__cards_make_live(db, known_id, source->card_key, now);
-        }
-        return jw__cards_make_live(db, owner_id, source->card_key, now);
+        out->outcome = JW_CARDS_RECOVERED;
+        out->recovered = true;
+        out->keep_rows = known_id == 0;
+        out->restore_id = known_id;
+        return 0;
     }
-
     if (known_id) {
-        *out = JW_CARDS_SWAPPED;
-        if (jw__cards_park_owner(db, owner_id, now) != 0 ||
-            jw__cards_unpark(db, known_id, source) != 0) return -1;
-        return jw__cards_make_live(db, known_id, source->card_key, now);
+        out->outcome = JW_CARDS_SWAPPED;
+        out->restore_id = known_id;
+        return 0;
     }
 
     /* An unknown key: a reformat or a copy to a new card keeps its rows. */
     if (jw__cards_sample_matches(db, "secondary_sd", source, JW_CARDS_ADOPT_MIN_ROWS)) {
-        *out = JW_CARDS_ADOPTED;
-        return jw__cards_make_live(db, owner_id, source->card_key, now);
+        out->outcome = JW_CARDS_ADOPTED;
+        out->keep_rows = true;
+        return 0;
     }
     if (sqlite3_prepare_v2(db, "SELECT id FROM library_cards WHERE is_live=0"
                                " ORDER BY last_seen DESC,id DESC;", -1, &stmt, NULL) != SQLITE_OK) {
         return -1;
     }
-    sqlite3_int64 adopted_id = 0;
-    while (!adopted_id && sqlite3_step(stmt) == SQLITE_ROW) {
+    out->outcome = JW_CARDS_SWAPPED;
+    while (!out->restore_id && sqlite3_step(stmt) == SQLITE_ROW) {
         char parked[JW_STORAGE_SOURCE_ID_MAX];
         sqlite3_int64 id = sqlite3_column_int64(stmt, 0);
         jw__cards_parked_id(id, parked, sizeof(parked));
-        if (jw__cards_sample_matches(db, parked, source, JW_CARDS_ADOPT_MIN_ROWS)) adopted_id = id;
+        if (jw__cards_sample_matches(db, parked, source, JW_CARDS_ADOPT_MIN_ROWS)) {
+            out->outcome = JW_CARDS_ADOPTED;
+            out->restore_id = id;
+        }
     }
     sqlite3_finalize(stmt);
-    if (adopted_id) {
-        *out = JW_CARDS_ADOPTED;
-        if (jw__cards_park_owner(db, owner_id, now) != 0 ||
-            jw__cards_unpark(db, adopted_id, source) != 0) return -1;
-        return jw__cards_make_live(db, adopted_id, source->card_key, now);
+    return 0;
+}
+
+static int jw__cards_apply(sqlite3 *db, const jw_storage_source *source, sqlite3_int64 owner_id,
+                           const jw__cards_decision *decision) {
+    int seen = 0;
+    if (jw__query_int(db, "SELECT COALESCE(MAX(last_seen),0)+1 FROM library_cards;", &seen) != 0) {
+        return -1;
+    }
+    /* The previous owner's rows are gone, so its hidden keys would only hide this card's
+       copies. This card's own keys, if any, come back with its parked rows. */
+    if (decision->recovered &&
+        jw__cards_run(db, "DELETE FROM main.hidden_roms WHERE source_id='secondary_sd';",
+                      NULL, NULL, NULL, NULL) != 0) {
+        return -1;
+    }
+    if (decision->keep_rows) return jw__cards_make_live(db, owner_id, source->card_key, seen);
+
+    if (decision->recovered) {
+        if (jw__cards_merge_parked(db, decision->restore_id) != 0 ||
+            jw__cards_set_int64(db, "DELETE FROM library_cards WHERE id=?1;", owner_id, 0) != 0) {
+            return -1;
+        }
+    } else if (jw__cards_park_owner(db, owner_id, seen) != 0) {
+        return -1;
+    }
+    if (decision->restore_id) {
+        if (jw__cards_unpark(db, decision->restore_id, source) != 0) return -1;
+        return jw__cards_make_live(db, decision->restore_id, source->card_key, seen);
     }
 
-    *out = JW_CARDS_SWAPPED;
-    if (jw__cards_park_owner(db, owner_id, now) != 0 ||
-        sqlite3_prepare_v2(db, "INSERT INTO library_cards(card_key,is_live,last_seen)"
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "INSERT INTO library_cards(card_key,is_live,last_seen)"
                                " VALUES(?1,1,?2);", -1, &stmt, NULL) != SQLITE_OK) return -1;
     sqlite3_bind_text(stmt, 1, source->card_key, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 2, now);
+    sqlite3_bind_int64(stmt, 2, seen);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     return rc == SQLITE_DONE ? 0 : -1;
 }
 
+int jw_db_cards_digest_clear(sqlite3 *db) {
+    return jw__exec(db, "UPDATE library_cards SET live_digest=NULL WHERE is_live=1;");
+}
+
+int jw_db_cards_digest_refresh(sqlite3 *db) {
+    return jw__exec(db, "UPDATE library_cards SET live_digest=(" JW_CARDS_DIGEST_SQL
+                        ") WHERE is_live=1;");
+}
+
 int jw_db_cards_reconcile(sqlite3 *db, const jw_storage_source *source, jw_cards_outcome *out) {
-    jw_cards_outcome outcome = JW_CARDS_UNCHANGED;
-    if (out) *out = outcome;
+    if (out) *out = JW_CARDS_UNCHANGED;
     if (!db) return -1;
     /* A card with no Roms isn't taking the slot; the rows stay with their owner. */
     if (!source || source->primary || !source->available || source->roms_device_id == 0 ||
@@ -1812,7 +1836,6 @@ int jw_db_cards_reconcile(sqlite3 *db, const jw_storage_source *source, jw_cards
         return 0;
     }
 
-    sqlite3_int64 now = (sqlite3_int64)time(NULL);
     sqlite3_int64 owner_id = 0;
     char owner_key[64] = "";
     char owner_digest[64] = "";
@@ -1831,22 +1854,20 @@ int jw_db_cards_reconcile(sqlite3 *db, const jw_storage_source *source, jw_cards
     if (!owner_id) {
         if (sqlite3_prepare_v2(db,
                 "INSERT INTO library_cards(card_key,is_live,live_digest,last_seen)"
-                " VALUES(?1,1,(" JW_CARDS_DIGEST_SQL "),?2)"
+                " VALUES(?1,1,(" JW_CARDS_DIGEST_SQL "),"
+                " (SELECT COALESCE(MAX(last_seen),0)+1 FROM library_cards))"
                 " ON CONFLICT(card_key) DO UPDATE SET is_live=1,"
                 " live_digest=excluded.live_digest,last_seen=excluded.last_seen;",
                 -1, &stmt, NULL) != SQLITE_OK) return -1;
         sqlite3_bind_text(stmt, 1, source->card_key, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 2, now);
         int rc = sqlite3_step(stmt);
         sqlite3_finalize(stmt);
         if (rc != SQLITE_DONE) return -1;
         if (out) *out = JW_CARDS_CLAIMED;
         return 0;
     }
-    if (strcmp(owner_key, source->card_key) == 0) {
-        return jw__cards_set_int64(db, "UPDATE library_cards SET last_seen=?2 WHERE id=?1;",
-                                   owner_id, now);
-    }
+    /* Only eviction reads last_seen, and it's written when a card is parked. */
+    if (strcmp(owner_key, source->card_key) == 0) return 0;
 
     /* A relocation's snapshot names the rows it holds, so they can't move under it.
        Lists hide them and scans skip the slot until it ends. */
@@ -1862,18 +1883,18 @@ int jw_db_cards_reconcile(sqlite3 *db, const jw_storage_source *source, jw_cards
         return 0;
     }
 
+    jw__cards_decision decision;
+    if (jw__cards_decide(db, source, owner_digest, &decision) != 0) return -1;
+
     /* Pak Rat runs a scan inside its own BEGIN IMMEDIATE, and SQLite has no nested
        BEGIN. If that transaction rolls back, this does too, and the next scan repeats it. */
     bool nested = sqlite3_get_autocommit(db) == 0;
     if (jw__exec(db, nested ? "SAVEPOINT jawaka_cards;" : "BEGIN IMMEDIATE;") != 0) return -1;
-    int rc = jw__cards_swap(db, source, owner_id, owner_digest, now, &outcome);
-    if (rc == 0) {
-        rc = jw__exec(db, "UPDATE library_cards SET live_digest=(" JW_CARDS_DIGEST_SQL
-                          ") WHERE is_live=1;");
-    }
+    int rc = jw__cards_apply(db, source, owner_id, &decision);
+    if (rc == 0) rc = jw_db_cards_digest_refresh(db);
     if (rc == 0) rc = jw__cards_evict(db);
     if (rc == 0 && jw__exec(db, nested ? "RELEASE jawaka_cards;" : "COMMIT;") == 0) {
-        if (out) *out = outcome;
+        if (out) *out = decision.outcome;
         return 0;
     }
     sqlite3_exec(db, nested ? "ROLLBACK TO jawaka_cards; RELEASE jawaka_cards;" : "ROLLBACK;",
@@ -1942,6 +1963,9 @@ int jw_db_reconcile_removed_roms(sqlite3 *db, const jw_db_rom_key *removed,
         if (sqlite3_step(games) != SQLITE_DONE || sqlite3_step(hidden) != SQLITE_DONE)
             goto done;
     }
+    /* In this transaction, so a power cut before the next scan can't look like another
+       build changed the slot's rows. */
+    if (jw_db_cards_digest_refresh(db) != 0) goto done;
     ok = 1;
 done:;
     int rc = ok ? 0 : jw__write_error(db);
@@ -1994,21 +2018,21 @@ int jw_db_read_stats(const char *db_path, jw_library_stats *out) {
     }
 
     int rc = 0;
-    if (jw__query_int(db, "SELECT COUNT(*) FROM games WHERE " JW_NOT_PARKED("source_id") ";",
+    if (jw__query_int(db, "SELECT COUNT(*) FROM games WHERE " JW_DB_NOT_PARKED("source_id") ";",
                       &out->game_count) != 0)
         rc = -1;
     if (jw__query_int(db, "SELECT COUNT(*) FROM apps;", &out->app_count) != 0)
         rc = -1;
     if (jw__query_int(db, "SELECT COUNT(*) FROM favorites WHERE kind = 'game' AND target_id IN "
-            "(SELECT id FROM games WHERE " JW_NOT_PARKED("source_id") ");",
+            "(SELECT id FROM games WHERE " JW_DB_NOT_PARKED("source_id") ");",
                       &out->favorite_count) != 0)
         rc = -1;
-    if (jw__query_int(db, "SELECT COUNT(*) FROM games WHERE playtime_s > 0 AND " JW_NOT_PARKED("source_id") ";",
+    if (jw__query_int(db, "SELECT COUNT(*) FROM games WHERE playtime_s > 0 AND " JW_DB_NOT_PARKED("source_id") ";",
                       &out->games_played) != 0)
         rc = -1;
     if (jw__query_int(db,
         "SELECT COUNT(*) FROM games WHERE image_path IS NOT NULL AND image_path <> '' AND "
-        JW_NOT_PARKED("source_id") ";",
+        JW_DB_NOT_PARKED("source_id") ";",
         &out->art_covered) != 0)
         rc = -1;
 
@@ -2062,7 +2086,7 @@ int jw_db_read_stats(const char *db_path, jw_library_stats *out) {
        distinct-system count for the Library page. */
     if (sqlite3_prepare_v2(db,
             "SELECT system, COUNT(*), COALESCE(SUM(playtime_s), 0) FROM games "
-            "WHERE " JW_NOT_PARKED("source_id")
+            "WHERE " JW_DB_NOT_PARKED("source_id")
             "GROUP BY system ORDER BY COUNT(*) DESC, system LIMIT ?;",
             -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int(st, 1, JW_STATS_SYSTEM_MAX);
@@ -3588,12 +3612,12 @@ static int jw__count_visibility_rows(const char *db_path, const char *sql,
 int jw_db_count_hidden_games(const char *db_path, int *out_count) {
     return jw__count_visibility_rows(db_path,
         "SELECT COUNT(*) FROM hidden_roms WHERE member='' AND "
-        JW_NOT_PARKED("source_id") ";", out_count);
+        JW_DB_NOT_PARKED("source_id") ";", out_count);
 }
 
 int jw_db_count_hidden_roms(const char *db_path, int *out_count) {
     return jw__count_visibility_rows(db_path,
-        "SELECT COUNT(*) FROM hidden_roms WHERE " JW_NOT_PARKED("source_id") ";", out_count);
+        "SELECT COUNT(*) FROM hidden_roms WHERE " JW_DB_NOT_PARKED("source_id") ";", out_count);
 }
 
 static int jw__list_hidden_roms(const char *db_path, jw_game_entry *games,
@@ -3618,7 +3642,7 @@ static int jw__list_hidden_roms(const char *db_path, jw_game_entry *games,
         "ON g.source_id=h.source_id AND g.rom_relpath=h.rom_relpath "
         "LEFT JOIN game_settings gs ON gs.game_id=g.id AND gs.key='display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id=g.id AND ig.key='imported_display_name' "
-        "WHERE (?1 OR h.member='') AND " JW_NOT_PARKED("h.source_id")
+        "WHERE (?1 OR h.member='') AND " JW_DB_NOT_PARKED("h.source_id")
         "ORDER BY 3 COLLATE NOCASE,h.source_id,h.rom_relpath,h.member LIMIT ?2;";
     if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
         sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) goto done;

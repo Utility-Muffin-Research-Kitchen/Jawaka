@@ -12816,7 +12816,10 @@ static void jw__focus_setup_begin(jw_launcher_state *state) {
         for (int i = 0; i < n &&
              state->focus_setup_count < JW_FOCUS_SCREEN_MAX_TILES; i++) {
             jw_game_entry g;
-            if (jw_db_get_game_by_id(state->db_path, ids[i], &g) == 0)
+            bool listed = false;
+            /* A pick on a card that isn't here can't be seen in Pick to remove it. */
+            if (jw_db_get_game_by_id(state->db_path, ids[i], &g) == 0 &&
+                (jw_db_game_listed(state->db_path, ids[i], &listed) != 0 || listed))
                 state->focus_setup_ids[state->focus_setup_count++] = ids[i];
         }
     }

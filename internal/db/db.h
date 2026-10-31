@@ -7,6 +7,9 @@
 
 #include "internal/storage/sources.h"
 
+/* A row on a card that isn't in the slot. Totals and direct readers leave these out. */
+#define JW_DB_NOT_PARKED(column) "substr(" column ",1,5)<>'card-' "
+
 #define JW_GAME_SETTING_IMPORTED_DISPLAY_NAME "imported_display_name"
 #define JW_GAME_SETTING_IMPORTED_DISPLAY_NAME_PROVIDER "imported_display_name_provider"
 
@@ -138,6 +141,10 @@ int  jw_db_scan_stage_game(sqlite3 *db, const char *system, const char *name,
                            const char *rom_path, const char *image_root_kind,
                            const char *image_relpath, const char *image_path);
 int  jw_db_scan_drop_staged(sqlite3 *db);
+/* The staged rows are about to reach games. Clearing the digest first means a power
+   cut partway through can't look like another build wrote the rows. */
+int  jw_db_cards_digest_clear(sqlite3 *db);
+int  jw_db_cards_digest_refresh(sqlite3 *db);
 
 /* Second-card identity. secondary_sd always means the card in the second slot;
    library_cards records which card that is. A different card swaps rows rather

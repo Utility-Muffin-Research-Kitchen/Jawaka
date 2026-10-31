@@ -145,6 +145,12 @@ static int listed_for_nes(void) {
     return count;
 }
 
+/* True when the digest covers the slot's rows as they stand. */
+static bool digest_current(void) {
+    return scalar("SELECT live_digest=(SELECT COUNT(*)||':'||COALESCE(SUM(id),0) FROM games "
+                  "WHERE source_id='secondary_sd') FROM library_cards WHERE is_live=1") == 1;
+}
+
 static int game_id(const char *source, int number) {
     char sql[160];
     snprintf(sql, sizeof(sql),
@@ -280,8 +286,10 @@ static void test_library_without_a_registry_is_claimed(void) {
     assert(scalar("SELECT COUNT(*) FROM games g JOIN before_rows b ON g.id=b.id "
                   "AND g.source_id=b.source_id AND g.rom_path=b.rom_path") == 3);
     assert(scalar("PRAGMA user_version") == 6);
+    /* The same card again writes nothing: only eviction reads last_seen. */
+    int changes = sqlite3_total_changes(g_db);
     assert(jw_db_cards_reconcile_root(g_db, g_primary, &outcome) == 0);
-    assert(outcome == JW_CARDS_UNCHANGED);
+    assert(outcome == JW_CARDS_UNCHANGED && sqlite3_total_changes(g_db) == changes);
     remove_card("A");
     exec_ok("DROP TABLE before_rows;");
 }
@@ -408,8 +416,10 @@ static void test_unreadable_key_changes_nothing(void) {
     remove_card("A");
     add_games("A", 50, 1);
 
+    exec_ok("INSERT INTO apps(pak_dir,name) VALUES('Apps/mac/Ghost.pak','Ghost');");
     insert_card("A", "unreadable");
     scan();
+    assert(scalar("SELECT COUNT(*) FROM apps WHERE name='Ghost'") == 1);
     /* The slot wasn't scanned: no prune, and the new file gets no row. */
     assert(owner_is(KEY_A) && count_live() == 3 && count_parked() == 0);
     assert(game_id("secondary_sd", 0) == before && game_id("secondary_sd", 50) == 0);
@@ -499,6 +509,125 @@ static void test_card_changes_during_apply(void) {
     /* What was applied is the owner's; the card left, so nothing is pruned. */
     assert(game_id("secondary_sd", 0) != 0);
     assert(count_live() == 3 + 4);
+    /* Rows were added without a completed scan, and the digest still covers them. */
+    assert(digest_current());
+    remove_card("A");
+}
+
+/* Stops the staged apply at its Nth row, as a failing temp store would. */
+static int g_apply_reads;
+static int g_interrupt_at_read;
+static bool g_interrupt_armed;
+static int interrupt_apply_trace(unsigned type, void *data, void *stmt, void *sql) {
+    (void)type; (void)data; (void)sql;
+    if (strstr(sqlite3_sql((sqlite3_stmt *)stmt), "FROM _scan_staged_games WHERE rowid>") &&
+        ++g_apply_reads == g_interrupt_at_read) {
+        g_interrupt_armed = true;
+    }
+    return 0;
+}
+
+/* Fails only the running statement, unlike sqlite3_interrupt, so the scan can roll back. */
+static int interrupt_apply_progress(void *data) {
+    (void)data;
+    bool fail = g_interrupt_armed;
+    g_interrupt_armed = false;
+    return fail;
+}
+
+static void test_failed_apply_prunes_nothing_and_clears_the_digest(void) {
+    begin_case();
+    add_games("A", 0, 3);
+    add_games("B", 0, 1);
+    insert_first("A", KEY_A);
+    scan();
+    int kept = game_id("secondary_sd", 0);
+    assert(jw_db_record_play_by_id(g_db_path, kept, 40) == 0);
+    remove_card("A");
+    /* g001 vanishes, so a scan that wrongly completes would prune it. A staged batch of
+       more than 64 means part of the apply commits before the failure. */
+    char gone[400];
+    card_path("A", gone, sizeof(gone));
+    run("rm -f '%s/Roms/NES/g001.nes'%s", gone, "");
+    add_games("A", 100, 80);
+    insert_card("A", KEY_A);
+
+    g_apply_reads = 0;
+    g_interrupt_at_read = 70;
+    sqlite3_trace_v2(g_db, SQLITE_TRACE_STMT, interrupt_apply_trace, NULL);
+    sqlite3_progress_handler(g_db, 1, interrupt_apply_progress, NULL);
+    jw_scan_result result;
+    assert(jw_scan_library(g_db, g_primary, &result) != 0);
+    sqlite3_trace_v2(g_db, 0, NULL, NULL);
+    sqlite3_progress_handler(g_db, 0, NULL, NULL);
+    assert(g_apply_reads == 70);
+    assert(game_id("secondary_sd", 1) != 0);
+    assert(sqlite3_get_autocommit(g_db) != 0);
+
+    /* Like a power cut here: the committed part can't look like an older build's work. */
+    assert(count_live() > 3 && count_live() < 3 + 80);
+    assert(scalar("SELECT live_digest IS NULL FROM library_cards WHERE is_live=1") == 1);
+    remove_card("A");
+    insert_card("B", KEY_B);
+    jw_cards_outcome outcome = JW_CARDS_UNCHANGED;
+    assert(jw_db_cards_reconcile_root(g_db, g_primary, &outcome) == 0);
+    assert(outcome == JW_CARDS_SWAPPED);
+    assert(owner_is(KEY_B) && game_id("secondary_sd", 0) == 0);
+    jw_game_entry game;
+    assert(jw_db_get_game_by_id(g_db_path, kept, &game) == 0 && game.playtime_s == 40);
+    remove_card("B");
+
+    /* A later scan on the owner finishes the job. */
+    insert_card("A", KEY_A);
+    scan();
+    assert(game_id("secondary_sd", 1) == 0 && count_live() == 2 + 80);
+    assert(digest_current());
+    remove_card("A");
+}
+
+static void test_removing_a_rom_keeps_the_digest_current(void) {
+    begin_case();
+    add_games("A", 0, 3);
+    insert_first("A", KEY_A);
+    scan();
+    assert(digest_current());
+    jw_db_rom_key removed;
+    memset(&removed, 0, sizeof(removed));
+    snprintf(removed.source_id, sizeof(removed.source_id), "secondary_sd");
+    snprintf(removed.rom_relpath, sizeof(removed.rom_relpath), "NES/g000.nes");
+    assert(jw_db_reconcile_removed_roms(g_db, &removed, 1) == 0);
+    assert(count_live() == 2 && digest_current());
+    remove_card("A");
+}
+
+static void test_other_sources_ignore_the_slot_owner(void) {
+    begin_case();
+    add_games("A", 0, 2);
+    insert_first("A", KEY_A);
+    scan();
+    char third[400], roots[1500];
+    snprintf(third, sizeof(third), "%s/third", g_root);
+    run("mkdir -p '%s/Roms/NES'%s", third, "");
+    run("touch '%s/Roms/NES/third.nes'%s", third, "");
+    const char *saved = getenv("SDCARD_PATHS");
+    char saved_roots[1024];
+    snprintf(saved_roots, sizeof(saved_roots), "%s", saved);
+    snprintf(roots, sizeof(roots), "%s:%s", saved_roots, third);
+    setenv("SDCARD_PATHS", roots, 1);
+    setenv("JAWAKA_TEST_CARD_KEY_source3", KEY_C, 1);
+
+    jw_storage_source_list *sources = malloc(sizeof(*sources));
+    assert(sources && jw_storage_sources_resolve(g_primary, sources) == 0);
+    const jw_storage_source *source3 = jw_storage_sources_find_by_id(sources, "source3");
+    assert(source3 && jw_db_card_owner_check_at(g_db_path, source3) == JW_CARD_OWNER_UNKNOWN);
+    scan();
+    assert(scalar("SELECT COUNT(*) FROM games WHERE source_id='source3'") == 1);
+    assert(owner_is(KEY_A) && count_live() == 2 && listed_for_nes() == 3);
+
+    free(sources);
+    unsetenv("JAWAKA_TEST_CARD_KEY_source3");
+    setenv("SDCARD_PATHS", saved_roots, 1);
+    run("rm -rf '%s'%s", third, "");
     remove_card("A");
 }
 
@@ -545,14 +674,20 @@ static void test_open_relocation_defers(void) {
              game);
     exec_ok(sql);
 
+    /* An app the mounted card doesn't have, as a pak on the first card would be. */
+    exec_ok("INSERT INTO apps(pak_dir,name) VALUES('Apps/mac/Ghost.pak','Ghost');");
+
     swap_to("A", "B", KEY_B);
     /* Rows stay, hidden, and the mismatched slot isn't scanned or pruned. */
     assert(owner_is(KEY_A) && count_parked() == 0 && count_live() == 3);
     assert(listed_for_nes() == 0);
+    assert(scalar("SELECT COUNT(*) FROM apps WHERE name='Ghost'") == 1);
 
     exec_ok("DELETE FROM library_relocation_ops WHERE operation_id='op';");
     scan();
     assert(owner_is(KEY_B) && count_parked() == 3 && count_live() == 2);
+    /* Once the slot is scanned, apps prune as usual. */
+    assert(scalar("SELECT COUNT(*) FROM apps WHERE name='Ghost'") == 0);
     remove_card("B");
 }
 
@@ -572,8 +707,6 @@ static void test_oldest_card_is_evicted_past_the_cap(void) {
         } else {
             swap_to(previous, name, key);
         }
-        /* Ordering relies on last_seen, so make the seconds differ. */
-        exec_ok("UPDATE library_cards SET last_seen=last_seen-1000 WHERE is_live=0;");
         snprintf(previous, sizeof(previous), "%s", name);
     }
     assert(count_cards() == JW_CARDS_MAX_PARKED + 1);
@@ -585,7 +718,35 @@ static void test_oldest_card_is_evicted_past_the_cap(void) {
     assert(scalar(sql) == 0);
     assert(scalar("SELECT COUNT(*) FROM favorites WHERE kind='game'") == 0);
     assert(scalar("SELECT COUNT(*) FROM library_cards WHERE card_key='fat:00000001'") == 0);
+    /* A counter, so the order can't depend on the device's clock. */
+    assert(scalar("SELECT MAX(last_seen) FROM library_cards") < 100);
     remove_card(previous);
+}
+
+/* The cap forgets the card used longest ago, not the one added first. */
+static void test_a_returning_card_is_not_evicted(void) {
+    begin_case();
+    char name[16], key[32], previous[16] = "";
+    for (int i = 0; i <= JW_CARDS_MAX_PARKED; i++) {
+        snprintf(name, sizeof(name), "c%d", i);
+        snprintf(key, sizeof(key), "fat:0000%04x", i + 1);
+        add_games(name, i * 10, 1);
+        if (i == 0) {
+            insert_first(name, key);
+            scan();
+        } else {
+            swap_to(previous, name, key);
+        }
+        snprintf(previous, sizeof(previous), "%s", name);
+    }
+    /* The first card comes back, then a new card overflows the cap. */
+    swap_to(previous, "c0", "fat:00000001");
+    add_games("new", 500, 1);
+    swap_to("c0", "new", "fat:0000ffff");
+    assert(scalar("SELECT COUNT(*) FROM library_cards WHERE is_live=0") == JW_CARDS_MAX_PARKED);
+    assert(scalar("SELECT COUNT(*) FROM library_cards WHERE card_key='fat:00000001'") == 1);
+    assert(scalar("SELECT COUNT(*) FROM library_cards WHERE card_key='fat:00000002'") == 0);
+    remove_card("new");
 }
 
 static void test_failure_rolls_back(void) {
@@ -604,11 +765,12 @@ static void test_failure_rolls_back(void) {
     assert(owner_is(KEY_A) && count_cards() == 1 && count_live() == 3 && count_parked() == 0);
     assert(scalar("SELECT COUNT(*) FROM games WHERE rom_path LIKE '/.leaf-parked/%'") == 0);
     assert(sqlite3_get_autocommit(g_db) != 0);
-    /* The scan then retains the slot. */
-    scan();
+    /* The scan then retains the slot, and says so, so the daemon can try again. */
+    jw_scan_result result;
+    assert(jw_scan_library(g_db, g_primary, &result) == 0 && result.second_card_unreconciled);
     assert(count_live() == 3 && game_id("secondary_sd", 100) == 0);
     exec_ok("DROP TRIGGER fail_card;");
-    scan();
+    assert(jw_scan_library(g_db, g_primary, &result) == 0 && !result.second_card_unreconciled);
     assert(owner_is(KEY_B) && count_parked() == 3 && count_live() == 2);
     remove_card("B");
 }
@@ -662,9 +824,12 @@ static void test_older_build_wrote_a_parked_cards_rows(void) {
     assert(jw_db_record_play_by_id(g_db_path, old_b, 10) == 0);
     assert(jw_db_set_favorite(g_db_path, "game", old_b, 1) == 0);
     assert(jw_db_set_game_setting(g_db_path, old_b, "core_id", "fceumm") == 0);
+    /* B hides one of its games, with the same key shape as A's below. */
+    assert(jw_db_set_rom_hidden(g_db_path, "secondary_sd", "NES/g101.nes", "", 1) == 0);
     /* Back to A, so B is parked with one extra row only it has. */
     swap_to("B", "A", KEY_A);
     assert(owner_is(KEY_A));
+    assert(jw_db_set_rom_hidden(g_db_path, "secondary_sd", "NES/g100.nes", "", 1) == 0);
     char parked_extra[256];
     int b_card = scalar("SELECT id FROM library_cards WHERE card_key='" KEY_B "'");
     snprintf(parked_extra, sizeof(parked_extra),
@@ -693,6 +858,10 @@ static void test_older_build_wrote_a_parked_cards_rows(void) {
     assert(jw_db_get_game_setting(g_db_path, live_b, "core_id", core, sizeof(core)) == 0);
     assert(strcmp(core, "fceumm") == 0);
     assert(game_id("secondary_sd", 199) != 0);
+    /* B's hide came back. A's key, on a path B also has, is gone with A's rows. */
+    assert(scalar("SELECT COUNT(*) FROM hidden_roms WHERE source_id='secondary_sd' "
+                  "AND rom_relpath='NES/g101.nes'") == 1);
+    assert(scalar("SELECT COUNT(*) FROM hidden_roms WHERE rom_relpath='NES/g100.nes'") == 0);
     remove_card("B");
 }
 
@@ -702,6 +871,7 @@ static void test_older_build_wrote_a_new_cards_rows(void) {
     add_games("C", 300, 2);
     insert_first("A", KEY_A);
     scan();
+    assert(jw_db_set_rom_hidden(g_db_path, "secondary_sd", "NES/g300.nes", "", 1) == 0);
     older_build_scan(300, 2, 90);
     remove_card("A");
     insert_card("C", KEY_C);
@@ -709,6 +879,7 @@ static void test_older_build_wrote_a_new_cards_rows(void) {
     assert(jw_db_cards_reconcile_root(g_db, g_primary, &outcome) == 0);
     assert(outcome == JW_CARDS_RECOVERED);
     assert(owner_is(KEY_C) && count_cards() == 1 && count_parked() == 0 && count_live() == 2);
+    assert(scalar("SELECT COUNT(*) FROM hidden_roms") == 0);
     remove_card("C");
 }
 
@@ -819,7 +990,7 @@ int main(void) {
     assert(mkdtemp(temp));
     char resolved[PATH_MAX];
     assert(realpath(temp, resolved) && strlen(resolved) < sizeof(g_root));
-    snprintf(g_root, sizeof(g_root), "%s", resolved);
+    snprintf(g_root, sizeof(g_root), "%.255s", resolved);
     snprintf(g_primary, sizeof(g_primary), "%s/primary", g_root);
     snprintf(g_slot, sizeof(g_slot), "%s/slot", g_root);
     snprintf(g_db_path, sizeof(g_db_path), "%s/library.db", g_root);
@@ -843,9 +1014,13 @@ int main(void) {
     test_no_key_keeps_slot_behavior();
     test_card_changes_mid_scan();
     test_card_changes_during_apply();
+    test_failed_apply_prunes_nothing_and_clears_the_digest();
+    test_removing_a_rom_keeps_the_digest_current();
+    test_other_sources_ignore_the_slot_owner();
     test_only_a_keyed_second_card_is_staged();
     test_open_relocation_defers();
     test_oldest_card_is_evicted_past_the_cap();
+    test_a_returning_card_is_not_evicted();
     test_failure_rolls_back();
     test_reconcile_inside_a_callers_transaction();
     test_older_build_wrote_a_parked_cards_rows();

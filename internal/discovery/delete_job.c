@@ -51,6 +51,15 @@ static int jw__writable(jw_delete_view *view, const char *path, const char *sour
     return -1;
 }
 
+/* A stale entry would otherwise delete another card's file through this row. */
+static bool jw__wrong_card(const char *db_path, const jw_storage_source_list *sources,
+                           const char *source_id, jw_delete_view *view) {
+    const jw_storage_source *source = jw_storage_sources_find_by_id(sources, source_id);
+    if (!source || jw_db_card_owner_check_at(db_path, source) != JW_CARD_OWNER_MISMATCH) return false;
+    snprintf(view->error, sizeof(view->error), JW_UI("Your selected ROM card is not mounted."));
+    return true;
+}
+
 static int jw__build(const char *db_path, const char *sdcard_root, const char *source_id,
                      const char *rom_relpath, jw_delete_view *view) {
     jw_storage_source_list *sources = calloc(1, sizeof(*sources));
@@ -73,11 +82,7 @@ static int jw__build(const char *db_path, const char *sdcard_root, const char *s
         snprintf(view->error, sizeof(view->error), JW_UI("Could not read your game's library identity."));
         goto done;
     }
-    /* A stale entry would otherwise delete another card's file through this row. */
-    if (jw_db_card_owner_check_at(db_path, source) == JW_CARD_OWNER_MISMATCH) {
-        snprintf(view->error, sizeof(view->error), JW_UI("Your selected ROM card is not mounted."));
-        goto done;
-    }
+    if (jw__wrong_card(db_path, sources, source_id, view)) goto done;
     snprintf(view->name, sizeof(view->name), "%s", selected.name);
     catalog = jw_ra_catalog_load(sdcard_root, view->error, sizeof(view->error));
     if (!catalog) goto done;
@@ -85,7 +90,9 @@ static int jw__build(const char *db_path, const char *sdcard_root, const char *s
                               source_id, rom_relpath, &view->plan, view->error, sizeof(view->error));
     for (size_t i = 0; rc == 0 && i < view->plan.file_count; ++i) {
         const jw_delete_file *file = &view->plan.files[i];
-        if (!file->missing && jw__writable(view, file->path, file->source_id) != 0) rc = -1;
+        /* A playlist can reference a file on the other card. */
+        if (jw__wrong_card(db_path, sources, file->source_id, view)) rc = -1;
+        else if (!file->missing && jw__writable(view, file->path, file->source_id) != 0) rc = -1;
     }
 done:
     free(sources);
