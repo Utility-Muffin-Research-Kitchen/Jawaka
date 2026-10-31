@@ -1,5 +1,7 @@
 #include "internal/launcher/game_folders.h"
 
+#include "internal/core/title_order.h"
+
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -65,24 +67,6 @@ static bool jw__fold_equal(const char *a, const char *b, size_t len) {
         }
     }
     return true;
-}
-
-/* Name order: ASCII case folded, then bytes, so the order is total even if two
-   names only differ in case. */
-static int jw__name_order(const char *a, const char *b) {
-    const unsigned char *x = (const unsigned char *)a;
-    const unsigned char *y = (const unsigned char *)b;
-    for (size_t i = 0;; i++) {
-        unsigned char fx = jw__fold(x[i]);
-        unsigned char fy = jw__fold(y[i]);
-        if (fx != fy) {
-            return fx < fy ? -1 : 1;
-        }
-        if (!x[i]) {
-            break;
-        }
-    }
-    return strcmp(a, b);
 }
 
 /* The next non-empty '/'-separated segment at or after *cursor. Empty segments
@@ -491,7 +475,7 @@ static int jw__sibling_order(const void *a, const void *b) {
     if (x->parent != y->parent) {
         return x->parent < y->parent ? -1 : 1;
     }
-    int order = jw__name_order(x->name, y->name);
+    int order = jw_title_compare(x->name, strlen(x->name), y->name, strlen(y->name));
     if (order) {
         return order;
     }

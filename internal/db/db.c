@@ -1,4 +1,5 @@
 #include "internal/db/db.h"
+#include "internal/core/title_order.h"
 #include "internal/search/pinyin.h"
 #include "internal/db/relocation.h"
 #include "internal/focus/focus.h"
@@ -821,6 +822,12 @@ static void jw__source_hidden(sqlite3_context *ctx, int argc, sqlite3_value **ar
     sqlite3_result_int(ctx, 0);
 }
 
+static int jw__title_collation(void *userdata, int a_len, const void *a,
+                               int b_len, const void *b) {
+    (void)userdata;
+    return jw_title_compare(a, (size_t)a_len, b, (size_t)b_len);
+}
+
 int jw_db_open(const char *path, sqlite3 **out) {
     if (!path || !out) {
         return -1;
@@ -834,6 +841,15 @@ int jw_db_open(const char *path, sqlite3 **out) {
     if (!hidden ||
         sqlite3_create_function_v2(*out, "jw_source_hidden", 1, SQLITE_UTF8, hidden,
                                    jw__source_hidden, NULL, NULL, free) != SQLITE_OK) {
+        sqlite3_close(*out);
+        *out = NULL;
+        return -1;
+    }
+    /* Query text only, never the schema or an index: any connection that hasn't
+       registered it, Central Scrutinizer or an older release included, could not
+       use a table that names it. */
+    if (sqlite3_create_collation_v2(*out, "JW_TITLE", SQLITE_UTF8, NULL,
+                                    jw__title_collation, NULL) != SQLITE_OK) {
         sqlite3_close(*out);
         *out = NULL;
         return -1;
@@ -3351,7 +3367,8 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
         "WHERE g.system = ? AND " JW_LISTED_GAME("g")
-        "ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) LIMIT ?;";
+        "ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) COLLATE JW_TITLE, "
+        "         g.id LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -3687,7 +3704,7 @@ static int jw__list_hidden_roms(const char *db_path, jw_game_entry *games,
         "LEFT JOIN game_settings gs ON gs.game_id=g.id AND gs.key='display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id=g.id AND ig.key='imported_display_name' "
         "WHERE (?1 OR h.member='') AND " JW_DB_NOT_PARKED("h.source_id")
-        "ORDER BY 3 COLLATE NOCASE,h.source_id,h.rom_relpath,h.member LIMIT ?2;";
+        "ORDER BY 3 COLLATE JW_TITLE,h.source_id,h.rom_relpath,h.member LIMIT ?2;";
     if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
         sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) goto done;
     sqlite3_bind_int(stmt, 1, roms != NULL);
@@ -4056,7 +4073,7 @@ int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
         "WHERE " JW_LISTED_GAME("g")
-        "ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) COLLATE NOCASE ASC, "
+        "ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) COLLATE JW_TITLE ASC, "
         "         f.added_at DESC LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;

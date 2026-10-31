@@ -1,5 +1,7 @@
 #include "internal/launcher/game_folders.h"
 
+#include "internal/core/title_order.h"
+
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -111,22 +113,6 @@ static const char *render_rows(const jw_game_folder_tree *tree, int folder) {
     return out;
 }
 
-static int fold_order(const char *a, const char *b) {
-    for (;; a++, b++) {
-        int x = (unsigned char)*a;
-        int y = (unsigned char)*b;
-        if (x >= 'A' && x <= 'Z') {
-            x += 'a' - 'A';
-        }
-        if (y >= 'A' && y <= 'Z') {
-            y += 'a' - 'A';
-        }
-        if (x != y || !x) {
-            return x - y;
-        }
-    }
-}
-
 /* Contract checks that hold for every tree: each game is listed exactly once,
    in the level of_game names; each uncollapsed folder is one row of its
    parent; folder rows come first in name order; games keep input order;
@@ -197,7 +183,8 @@ static void check_invariants(const char *label, const jw_game_folder_tree *tree,
                 const char *name = jw_game_folder_name(tree, index);
                 if (last_name) {
                     expect_true(lbl("%s: folder %d rows sorted at %d", who, f, k),
-                                fold_order(last_name, name) < 0);
+                                jw_title_compare(last_name, strlen(last_name),
+                                                 name, strlen(name)) < 0);
                 }
                 last_name = name;
                 seen_folder[index]++;
@@ -699,6 +686,20 @@ static void test_row_order(void) {
                "#3 #6");
     expect_str("row order: Beta", render_rows(tree, jw_game_folder_lookup(tree, "beta")),
                "#5 #7");
+    jw_game_folder_tree_free(tree);
+
+    /* Numbers in folder names count as numbers, as they do in game titles. */
+    const char *numbered[] = {
+        "X/Disc 10/a.zip",
+        "X/Disc 2/a.zip",
+        "X/disc 1/a.zip",
+        "X/Disc 02b/a.zip",
+    };
+    fixture numbered_fx = { numbered, COUNT(numbered), NULL, 0, "" };
+    tree = build(&numbered_fx);
+    check_invariants("row order: numbered", tree, COUNT(numbered));
+    expect_str("row order: numbered root", render_rows(tree, 0),
+               "[disc 1] [Disc 2] [Disc 02b] [Disc 10]");
     jw_game_folder_tree_free(tree);
 }
 
