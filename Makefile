@@ -782,6 +782,13 @@ game-meta-test: | $(BUILD)/bin
 library-metadata-ipc-smoke:
 	scripts/library-metadata-ipc-smoke.sh
 
+.PHONY: title-order-test
+title-order-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/title-order-test \
+		internal/db/title_order_test.c internal/db/db.c internal/db/relocation.c \
+		internal/storage/sources.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/title-order-test
+
 .PHONY: card-identity-test
 card-identity-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/card-identity-test \

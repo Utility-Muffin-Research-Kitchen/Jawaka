@@ -27,9 +27,9 @@
      3. Promote one level. A collapsed folder's game is listed in its parent;
         the parent is never re-judged, so nothing cascades.
 
-   Rows of a level: its uncollapsed subfolders first, ordered by name without
-   ASCII case (bytes break ties), then every game listed in that level in input
-   order. The root is folder 0 and is never collapsed. */
+   Rows of a level: its uncollapsed subfolders first, in jw_title_compare order
+   by name, then every game listed in that level in input order. The root is
+   folder 0 and is never collapsed. */
 
 /* Whether the file <rel_subpath>/<filename> under its system folder is a
    folder-marker game. rel_subpath is "" for a game at the system root. */
