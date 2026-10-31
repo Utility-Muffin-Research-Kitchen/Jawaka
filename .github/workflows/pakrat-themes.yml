@@ -39,3 +39,6 @@ jobs:
 
       - name: Install, update and uninstall themes through the real installer
         run: make -C Jawaka pakrat-theme-smoke
+
+      - name: Refresh the library while another writer holds it
+        run: make -C Jawaka pakrat-rescan-busy-smoke
