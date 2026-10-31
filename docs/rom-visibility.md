@@ -156,11 +156,59 @@ Focus selections. Visibility keys are cleared for removed identities. The
 same orphan/Focus cleanup is used by scan pruning. Re-adding a deleted ROM
 doesn't recover that metadata.
 
+## Second SD cards
+
+`secondary_sd` always means the card in the second slot. `library_cards`, an
+additive table, records which card that is, by the volume serial in its boot
+sector (`card_key`). A different card doesn't prune the previous card's rows:
+reconcile renames them to a parked id, `card-<n>`, and restores the incoming
+card's own parked rows if it has any. Game ids don't change, so favorites,
+recents, per-game settings and Focus picks follow with no writes of their own.
+Saves and states already live on the card itself.
+
+- **Parked rows can't be reached.** Their `rom_path` is rewritten to a path that
+  can't exist, so direct readers of `games`, including Central Scrutinizer and
+  RAOfflineProxy, find nothing there. A new direct reader of `games` that groups
+  or counts rows must leave out `card-*` itself. The cards a slot remembers are
+  capped at `JW_CARDS_MAX_PARKED`, least recently seen first.
+- **Ownership is enforced wherever a row meets a card.** `jw_source_hidden` hides
+  a mismatch, the scan gate won't complete the slot, and launch and delete refuse
+  it, and relocation won't start. If the card's key can't be read, lists and launches
+  allow it, its scan is skipped so nothing is pruned, and delete refuses it.
+- **Some cards can't be told apart.** Cards with the same serial, such as clones, count
+  as one card. So do non-FAT cards with no by-uuid link, which share a key per filesystem
+  type. Between cards like these, a swap still prunes, as it did before this table
+  existed.
+- **Reconcile re-checks under the lock.** It decides outside the write lock, because
+  sampling touches the card, and repeats the decision if another connection changed the
+  registry or the slot's rows in the meantime.
+- **A second card's scan is staged.** Rows wait in a temp table until the card is
+  proven unchanged after enumeration, so a mid-scan swap changes no row in `games`.
+- **Adoption compares paths, not contents.** An unknown key that holds 90% of a
+  sample of at least `JW_CARDS_ADOPT_MIN_ROWS` rows from a known card becomes that
+  card. This is what keeps a reformat or a copy to a bigger card working, and it
+  means cards with nearly the same paths share one set of rows, as do clones.
+- **Older builds ignore the table.** One that scans the slot leaves it out of date,
+  so `live_digest` records the slot's rows. New builds clear it before writing staged
+  rows and set it again after, so a power cut can't look like another build. A changed
+  digest means those rows came from another build, and if they're on the mounted card, they're kept and merged
+  with that card's parked rows rather than parked under the recorded owner. Parked
+  rows appear in an older build's lists, and don't launch, until you update again. An
+  older build keeps one row for a path both cards have, so that game keeps the other
+  card's playtime and favorite after a downgrade. Hidden keys can carry over the same way,
+  and a 5-Game pick on a merged row drops out, as it does for alias dedup.
+
 ## Checks
 
 - `make content-test` covers descriptors, filesystem case behavior, path
   aliases, `#` in filenames, missing references and unsafe or malformed input.
   Run it on both case-sensitive and case-insensitive storage.
+- `make card-identity-test` covers card swaps, adoption, older-build recovery, eviction,
+  the scan gate, staging, and two connections reconciling at once. `make
+  rom-delete-ipc-smoke` covers the launch, delete and relocation refusals against a real
+  daemon. `make card-identity-older-release-check` runs the v0.13.0 scanner against a
+  library with parked rows; it needs Linux, git history and the `sqlite3` tool, so it
+  isn't in CI.
 - `make schema-v6-test visibility-test relocation-test` covers migration, the
   unchanged v6 version (including a development v7 library), read-only
   libraries from earlier releases, visibility queries, metadata retention,

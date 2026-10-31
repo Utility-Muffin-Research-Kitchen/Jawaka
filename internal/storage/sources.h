@@ -16,8 +16,8 @@
 
 /* What can be said about which card is in a slot. */
 typedef enum {
-    JW_CARD_KEY_NONE = 0,    /* can't be told apart: not mounted, a filesystem with no
-                                serial or link, or a platform with one source */
+    JW_CARD_KEY_NONE = 0,    /* can't be told apart: not mounted, or a platform with
+                                one source */
     JW_CARD_KEY_KNOWN,       /* card_key names this card */
     JW_CARD_KEY_UNREADABLE,  /* a FAT card whose boot sector can't be read right now */
 } jw_card_key_state;

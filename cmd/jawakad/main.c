@@ -89,6 +89,7 @@
 #define CLOCK_BOOTTIME CLOCK_MONOTONIC
 #endif
 
+#define JW_CARD_SWAP_MAX_RETRIES 3
 #define JW_SWITCHER_RESUME_RETRY_MS 100LL
 #define JW_SWITCHER_RESUME_MAX_ATTEMPTS 40
 /* LEAF-RA-1 probe: GET_INFO every 250 ms from one second after spawn, for up
@@ -659,6 +660,7 @@ typedef struct {
     long long storage_next_probe_ms;
     bool storage_db_read_only;       /* library DB was not writable at startup */
     bool storage_scan_deferred;      /* a scan waits for the DB to be writable */
+    int card_swap_retries;           /* rescans since a card swap last failed */
     bool storage_repair_rescan_done; /* post-repair rescan considered this run */
     bool storage_log_redirected;
     jw_db_file_sig mutation_recovery_db_sig;  /* library.db when no uninstall was pending */
@@ -4743,6 +4745,11 @@ static int jw__start_scan_job_with_titles(jw_daemon_state *state,
                         reason && reason[0] ? reason : "requested");
         }
         state->storage_scan_deferred = true;
+        /* The scan that would normally bump this has to wait, but a card change must
+           still reach the launcher: its lists re-read which cards are in the slots. Not
+           persisted, because the library can't be written. */
+        state->library_generation = state->library_generation < INT_MAX
+            ? state->library_generation + 1 : 1;
         return 1;
     }
 
@@ -4857,6 +4864,20 @@ static void jw__tick_scan_job(jw_daemon_state *state) {
         jw__bump_library_generation(state);
         if (jw_db_relocation_note_scan(state->db, state->library_generation) != 0) {
             jw_log_warn("could not publish relocation reconciliation scan");
+        }
+        /* Usually a busy library. The new card's games stay missing until this works,
+           and nothing else would start another scan. */
+        if (!result.second_card_unreconciled) {
+            state->card_swap_retries = 0;
+        } else if (state->card_swap_retries < JW_CARD_SWAP_MAX_RETRIES) {
+            state->card_swap_retries++;
+            jw_log_warn("scan-library: second card not reconciled; retry %d of %d",
+                        state->card_swap_retries, JW_CARD_SWAP_MAX_RETRIES);
+            pending = true;
+            snprintf(pending_reason, sizeof(pending_reason), "%s", "second card retry");
+        } else {
+            jw_log_error("scan-library: second card still not reconciled; giving up until "
+                         "the next scan");
         }
         state->library_scanned_since_boot = true;
         state->library_populated = result.game_count > 0 || result.app_count > 0;
@@ -6482,8 +6503,31 @@ static int jw__resolve_library_game(jw_daemon_state *state, int game_id,
                                out_path, out_path_size) != 0) {
         return -1;
     }
+    /* Every library launch passes here. A stale list entry or Focus tile must not
+       run another card's same-path ROM with this row's settings and playtime. If
+       the card can't be told apart, launch anyway: a game shown but refused is the
+       worse failure, and saves come from the card's own folders either way. */
+    if (!source->primary) {
+        jw_card_owner owner = jw_db_card_owner_check_at(state->db_path, source);
+        if (owner == JW_CARD_OWNER_MISMATCH) {
+            jw_log_warn("launch: refused game id=%d; card %s doesn't own source %s",
+                        game_id, source->card_key, source->id);
+            return -1;
+        }
+        if (owner == JW_CARD_OWNER_UNKNOWN) {
+            jw_log_info("launch: no card ownership to check for game id=%d on source %s",
+                        game_id, source->id);
+        }
+    }
     *out_source = source;
     return 0;
+}
+
+static bool jw__game_on_wrong_card(jw_daemon_state *state, const jw_game_entry *game) {
+    jw_storage_source_list sources;
+    if (jw__storage_sources(state, &sources) != 0) return false;
+    const jw_storage_source *source = jw_storage_sources_find_by_id(&sources, game->source_id);
+    return source && jw_db_card_owner_check_at(state->db_path, source) == JW_CARD_OWNER_MISMATCH;
 }
 
 static const char *jw__launch_system_key(const char *requested_system,
@@ -7120,7 +7164,8 @@ static bool jw__legacy_flat_ambiguous(jw_daemon_state *state,
     if (jw__storage_sources(state, &sources) != 0) return false;
 
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(state->db, "SELECT system, rom_path FROM games;",
+    if (sqlite3_prepare_v2(state->db, "SELECT system, rom_path FROM games "
+                           "WHERE " JW_DB_NOT_PARKED("source_id") ";",
                            -1, &stmt, NULL) != SQLITE_OK) {
         return false;
     }
@@ -7354,10 +7399,15 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
     jw_game_entry game;
     jw_storage_source_list sources;
     const jw_storage_source *source = NULL;
-    if (jw__lookup_launch_game(state, rom_path, &game) != 0 ||
+    bool found = jw__lookup_launch_game(state, rom_path, &game) == 0;
+    if (!found ||
         jw__resolve_library_game(state, game.id, &game, &sources, &source,
                                  rom_abs, sizeof(rom_abs)) != 0) {
-        if (out_error) *out_error = JW_UI("ROM path missing");
+        if (out_error) {
+            *out_error = found && jw__game_on_wrong_card(state, &game)
+                ? JW_UI("Your selected ROM card is not mounted.")
+                : JW_UI("ROM path missing");
+        }
         return -1;
     }
 
@@ -14449,6 +14499,8 @@ static int jw__handle_relocation_prepare(jw_daemon_state *state,
         const jw_storage_source *new_source =
             jw_storage_sources_find_by_id(&sources, items[i].new_identity.source_id);
         if (!old_source || !new_source || !old_source->available || !new_source->available ||
+            jw_db_card_owner_check_at(state->db_path, old_source) == JW_CARD_OWNER_MISMATCH ||
+            jw_db_card_owner_check_at(state->db_path, new_source) == JW_CARD_OWNER_MISMATCH ||
             jw__relocation_snapshot(old_source, items[i].old_source_snapshot,
                                     sizeof(items[i].old_source_snapshot)) != 0 ||
             jw__relocation_snapshot(new_source, items[i].new_source_snapshot,
@@ -18189,6 +18241,18 @@ int main(int argc, char *argv[]) {
         }
         jw_log_warn("storage: library database unreadable on a read-only card; "
                     "showing an empty library");
+    }
+    /* Before the first frame and boot resume, so both see the right card's rows.
+       Hotplug and rescans reconcile at the start of their scan instead. */
+    if (db_opened && !state.storage_db_read_only) {
+        long long started = jw__monotonic_ms();
+        jw_cards_outcome cards = JW_CARDS_UNCHANGED;
+        if (jw_db_cards_reconcile_root(state.db, state.sdcard_root, &cards) != 0) {
+            jw_log_warn("storage: second-card reconcile failed: %s", sqlite3_errmsg(state.db));
+        } else if (cards != JW_CARDS_UNCHANGED) {
+            jw_log_info("storage: second card %s in %lld ms", jw_db_cards_outcome_name(cards),
+                        jw__monotonic_ms() - started);
+        }
     }
     jw__load_library_generation(&state);
     jw__perf_load_global(&state);

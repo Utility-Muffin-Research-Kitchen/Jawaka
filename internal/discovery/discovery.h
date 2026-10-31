@@ -4,10 +4,13 @@
 #include <sqlite3.h>
 #include <stddef.h>
 
+#include <stdbool.h>
+
 typedef struct {
     int game_count;
     int app_count;
     int system_count;
+    bool second_card_unreconciled;  /* a card swap couldn't be applied; rescan */
 } jw_scan_result;
 
 int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out);

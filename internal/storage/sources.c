@@ -287,6 +287,12 @@ static void jw__read_card_key(jw_storage_source *source, unsigned major_id, unsi
         return;
     }
     (void)jw__uuid_fingerprint(major_id, minor_id, source->card_key, sizeof(source->card_key));
+    /* With no serial and no link, every such card shares one identity. It's still a
+       key, so a card like this parks a known card's rows instead of pruning them. */
+    if (!source->card_key[0]) {
+        (void)jw__format(source->card_key, sizeof(source->card_key), "fs:%s",
+                         filesystem && filesystem[0] ? filesystem : "unknown");
+    }
     source->card_key_state = source->card_key[0] ? JW_CARD_KEY_KNOWN : JW_CARD_KEY_NONE;
 }
 

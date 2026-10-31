@@ -1,8 +1,14 @@
 #ifndef JW_DB_H
 #define JW_DB_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <sqlite3.h>
+
+#include "internal/storage/sources.h"
+
+/* A row on a card that isn't in the slot. Totals and direct readers leave these out. */
+#define JW_DB_NOT_PARKED(column) "substr(" column ",1,5)<>'card-' "
 
 #define JW_GAME_SETTING_IMPORTED_DISPLAY_NAME "imported_display_name"
 #define JW_GAME_SETTING_IMPORTED_DISPLAY_NAME_PROVIDER "imported_display_name_provider"
@@ -127,6 +133,58 @@ int  jw_db_reset_library(sqlite3 *db);
 int  jw_db_scan_begin(sqlite3 *db);
 int  jw_db_scan_source_complete(sqlite3 *db, const char *source_id);
 int  jw_db_scan_apps_complete(sqlite3 *db);
+/* A second card's rows wait here until the card is proven to be the slot's owner
+   for the whole enumeration; see jw__scan_roms. Nothing in games changes before
+   that, so a card swapped mid-scan can't leave its rows under the old owner. */
+int  jw_db_scan_stage_game(sqlite3 *db, const char *system, const char *name,
+                           const char *source_id, const char *rom_relpath,
+                           const char *rom_path, const char *image_root_kind,
+                           const char *image_relpath, const char *image_path);
+int  jw_db_scan_drop_staged(sqlite3 *db);
+/* The staged rows are about to reach games. Clearing the digest first means a power
+   cut partway through can't look like another build wrote the rows. */
+int  jw_db_cards_digest_clear(sqlite3 *db);
+int  jw_db_cards_digest_refresh(sqlite3 *db);
+
+/* Second-card identity. secondary_sd always means the card in the second slot;
+   library_cards records which card that is. A different card swaps rows rather
+   than pruning them: the outgoing card's rows are renamed to a parked id, card-<n>,
+   with their game ids, and so their favorites, recents and settings, unchanged. */
+typedef enum {
+    JW_CARD_OWNER_UNKNOWN = 0,  /* no key, no recorded owner, or no registry: allow */
+    JW_CARD_OWNER_MATCH,
+    JW_CARD_OWNER_MISMATCH,
+} jw_card_owner;
+
+typedef enum {
+    JW_CARDS_UNCHANGED = 0,
+    JW_CARDS_CLAIMED,    /* first card seen takes the existing rows */
+    JW_CARDS_SWAPPED,    /* owner parked; this card's rows, if any, restored */
+    JW_CARDS_ADOPTED,    /* an unknown key holds a known card's files: same card */
+    JW_CARDS_RECOVERED,  /* an older build wrote this card's rows under the slot */
+    JW_CARDS_DEFERRED,   /* a relocation is open on the slot */
+} jw_cards_outcome;
+
+/* The most recently seen parked cards kept before the oldest is forgotten. */
+#define JW_CARDS_MAX_PARKED 8
+/* Fewer rows than this are weak evidence that two cards are the same card. */
+#define JW_CARDS_ADOPT_MIN_ROWS 16
+/* Another connection reconciled first this many times in a row: give up until the next scan. */
+#define JW_CARDS_RECONCILE_ATTEMPTS 3
+
+bool jw_db_source_parked(const char *source_id);
+jw_card_owner jw_db_card_owner_check(sqlite3 *db, const jw_storage_source *source);
+jw_card_owner jw_db_card_owner_check_at(const char *db_path, const jw_storage_source *source);
+/* Works on an idle connection or inside a caller's transaction. A card that isn't
+   mounted with a Roms folder, or whose key can't be read, changes nothing. */
+int  jw_db_cards_reconcile(sqlite3 *db, const jw_storage_source *source,
+                           jw_cards_outcome *out);
+int  jw_db_cards_reconcile_root(sqlite3 *db, const char *sdcard_root,
+                                jw_cards_outcome *out);
+const char *jw_db_cards_outcome_name(jw_cards_outcome outcome);
+/* False when a game's card isn't the one in its slot. Ignores Hide Game, because
+   Focus picks deliberately include hidden games. */
+int  jw_db_game_listed(const char *db_path, int game_id, bool *out_listed);
 /* Collapse duplicate library entries for one system: when the same title exists
    under both the canonical public folder and a legacy alias folder (both fold
    to one system), keep a single entry, preferring the copy whose rom_path is

@@ -50,6 +50,130 @@ static void check_long_actions_menu(jw_launcher_state *state, const jw_game_entr
     state->action_scope = JW_ACTION_NONE;
 }
 
+/* A card swap takes a pick off the locked screen and brings it back, with no launcher
+   restart. The stored picks, the mode and the lock don't change. */
+static void check_focus_follows_the_card(jw_launcher_state *state, const char *root, int primary_id) {
+    char slot[PATH_MAX], roms[PATH_MAX], sources[PATH_MAX * 2], ids[64];
+    const char *key = "JAWAKA_TEST_CARD_KEY_secondary_sd";
+    snprintf(slot, sizeof(slot), "%.4000s/slot", root);
+    snprintf(roms, sizeof(roms), "%.4000s/Roms", slot);
+    snprintf(sources, sizeof(sources), "%.4000s:%.4000s", root, slot);
+    assert(mkdir(slot, 0755) == 0 && mkdir(roms, 0755) == 0);
+    setenv("SDCARD_PATHS", sources, 1);
+    setenv(key, "fat:aaaa0001", 1);
+
+    sqlite3 *db = NULL;
+    assert(jw_db_open(state->db_path, &db) == 0);
+    assert(sqlite3_exec(db,
+        "INSERT INTO games(id,system,name,source_id,rom_relpath,rom_path) VALUES"
+        "(900,'GBA','Card pick','secondary_sd','GBA/Pick.gba','/slot/Roms/GBA/Pick.gba');"
+        "INSERT INTO library_cards(card_key,is_live,last_seen) VALUES('fat:aaaa0001',1,1);",
+        NULL, NULL, NULL) == SQLITE_OK);
+    snprintf(ids, sizeof(ids), "%d,900", primary_id);
+    assert(jw_db_set_setting(state->db_path, JW_FOCUS_KEY_IDS, ids) == 0);
+    assert(jw_db_set_setting(state->db_path, JW_FOCUS_KEY_ACTIVE, "1") == 0);
+
+    state->focus_active = true;
+    state->focus_lock = JW_FOCUS_LOCK_PIN;
+    state->focus_count = 0;
+    jw__focus_refresh(state);
+    assert(state->focus_count == 2 && state->focus_games[1].id == 900);
+    state->focus_cursor = 1;
+
+    /* A different card: the pick leaves on the next generation change, and the cursor
+       stays in range. */
+    setenv(key, "fat:bbbb0002", 1);
+    int generation = state->library_generation;
+    atomic_store(&jw__status_poller.generation, generation + 1);
+    jw__poll_library_generation("", state->db_path, state);
+    assert(state->focus_count == 1 && state->focus_games[0].id == primary_id);
+    atomic_store(&jw__status_poller.generation, generation);
+    state->library_generation = generation;
+    assert(state->focus_cursor == 0 && state->focus_active && state->focus_lock == JW_FOCUS_LOCK_PIN);
+    char stored[64] = "";
+    assert(jw_db_get_setting(state->db_path, JW_FOCUS_KEY_IDS, stored, sizeof(stored)) == 0);
+    assert(strcmp(stored, ids) == 0);
+
+    /* Setup only offers picks it could also let you remove. */
+    state->focus_active = false;
+    jw__focus_setup_begin(state);
+    assert(state->focus_setup_count == 1 && state->focus_setup_ids[0] == primary_id);
+    jw__pick_cancel(state);
+    state->focus_active = true;
+    /* Saving setup can't drop what it couldn't show, even if the card is back by then. */
+    state->focus_active = false;
+    jw__focus_setup_begin(state);
+    assert(state->focus_setup_absent_count == 1 && state->focus_setup_absent[0] == 900);
+    jw__pick_cancel(state);
+    setenv(key, "fat:aaaa0001", 1);
+    state->focus_setup_lock = JW_FOCUS_LOCK_NONE;
+    jw__focus_setup_commit(state);
+    assert(jw_db_get_setting(state->db_path, JW_FOCUS_KEY_IDS, stored, sizeof(stored)) == 0);
+    assert(strcmp(stored, ids) == 0);
+    assert(state->focus_active && state->focus_count == 2);
+
+    /* A pick you could see and removed stays removed, even if its card has left by then. */
+    jw__focus_setup_begin(state);
+    assert(state->focus_setup_count == 2 && state->focus_setup_absent_count == 0);
+    jw__pick_cancel(state);
+    state->focus_setup_count = 1;
+    setenv(key, "fat:bbbb0002", 1);
+    jw__focus_setup_commit(state);
+    char only_primary[32];
+    snprintf(only_primary, sizeof(only_primary), "%d", primary_id);
+    assert(jw_db_get_setting(state->db_path, JW_FOCUS_KEY_IDS, stored, sizeof(stored)) == 0);
+    assert(strcmp(stored, only_primary) == 0);
+    assert(jw_db_set_setting(state->db_path, JW_FOCUS_KEY_IDS, ids) == 0);
+    assert(jw_db_set_setting(state->db_path, JW_FOCUS_KEY_ACTIVE, "1") == 0);
+    jw_focus_lock_remove(state->sdcard_root);
+
+    /* With every place taken, your own picks win. */
+    state->focus_setup_absent_count = 1;
+    state->focus_setup_absent[0] = 900;
+    int full[JW_FOCUS_MAX_GAMES] = { 1, 2, 3, 4, 5 };
+    assert(jw__focus_keep_absent_picks(state, full, JW_FOCUS_MAX_GAMES) == JW_FOCUS_MAX_GAMES);
+    assert(full[4] == 5);
+    state->focus_active = true;
+    state->focus_lock = JW_FOCUS_LOCK_PIN;
+
+    /* Its rows parked, as once the scan has swapped the cards. */
+    assert(sqlite3_exec(db, "UPDATE games SET source_id='card-1' WHERE id=900;",
+                        NULL, NULL, NULL) == SQLITE_OK);
+    jw__focus_refresh(state);
+    assert(state->focus_count == 1);
+
+    /* Every pick gone keeps the locked screen. */
+    snprintf(stored, sizeof(stored), "900");
+    assert(jw_db_set_setting(state->db_path, JW_FOCUS_KEY_IDS, stored) == 0);
+    jw__focus_refresh(state);
+    assert(state->focus_count == 0 && state->focus_active && state->focus_cursor == 0);
+
+    /* Back with its card. */
+    assert(sqlite3_exec(db, "UPDATE games SET source_id='secondary_sd' WHERE id=900;",
+                        NULL, NULL, NULL) == SQLITE_OK);
+    setenv(key, "fat:aaaa0001", 1);
+    assert(jw_db_set_setting(state->db_path, JW_FOCUS_KEY_IDS, ids) == 0);
+    jw__focus_refresh(state);
+    assert(state->focus_count == 2);
+
+    /* A config that can't be read keeps the current tiles. */
+    assert(jw_db_set_setting(state->db_path, JW_FOCUS_KEY_ACTIVE, "0") == 0);
+    setenv(key, "fat:bbbb0002", 1);
+    jw__focus_refresh(state);
+    assert(state->focus_count == 2);
+
+    assert(sqlite3_exec(db, "DELETE FROM library_cards; DELETE FROM games WHERE id=900;",
+                        NULL, NULL, NULL) == SQLITE_OK);
+    jw_db_close(db);
+    unsetenv(key);
+    unsetenv("SDCARD_PATHS");
+    rmdir(roms);
+    rmdir(slot);
+    state->focus_active = false;
+    state->focus_lock = JW_FOCUS_LOCK_NONE;
+    state->focus_count = 0;
+}
+
 int main(void) {
     char root[] = "/tmp/jw-visibility-ui-XXXXXX";
     assert(mkdtemp(root));
@@ -137,6 +261,8 @@ int main(void) {
     jw__pick_clear(state);
     assert(state->focus_setup_count == 0);
     jw__pick_cancel(state);
+    check_focus_follows_the_card(state, root, bravo.id);
+    assert(jw_db_set_setting(state->db_path, JW_FOCUS_KEY_IDS, ids) == 0);
 
     /* Settings stays reachable after hiding the entire library. */
     jw_settings_ui_open(&state->settings, JW_SETTINGS_GAMES);

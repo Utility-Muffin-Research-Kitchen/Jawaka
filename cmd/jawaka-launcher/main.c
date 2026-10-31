@@ -497,6 +497,9 @@ typedef struct {
     jw_focus_setup_step focus_setup_step;
     int                 focus_setup_ids[JW_FOCUS_SCREEN_MAX_TILES]; /* picked, ordered */
     int                 focus_setup_count;
+    /* Stored picks setup couldn't show when it opened. They go back on commit. */
+    int                 focus_setup_absent[JW_FOCUS_MAX_GAMES];
+    int                 focus_setup_absent_count;
     jw_focus_lock       focus_setup_lock;
     jw_focus_style      focus_setup_style;
     int                 focus_setup_choice;   /* cursor within Lock/Style menus */
@@ -2368,6 +2371,8 @@ static void jw__status_poller_shutdown(void) {
 
 static jw_cover_loader *jw__covers(void);   /* defined with the cover loader */
 
+static void jw__focus_refresh(jw_launcher_state *state);
+
 static void jw__poll_library_generation(const char *socket_path,
                                         const char *db_path,
                                         jw_launcher_state *state) {
@@ -2402,6 +2407,7 @@ static void jw__poll_library_generation(const char *socket_path,
            scan that completed in the meantime — reload before adopting. */
         if (jw__reload_library_from_db(db_path, state) == 0) {
             state->library_generation = generation;
+            jw__focus_refresh(state);
             cat_request_frame();
         }
         return;
@@ -2412,6 +2418,7 @@ static void jw__poll_library_generation(const char *socket_path,
 
     if (jw__reload_library_from_db(db_path, state) == 0) {
         state->library_generation = generation;
+        jw__focus_refresh(state);
         /* Drop cached cover textures: a generation bump can mean art was
            *replaced* at an unchanged path (re-scrape), and the texture cache
            is path-keyed. The on-disk thumbnail is mtime-checked on reload, so
@@ -5176,6 +5183,37 @@ static void jw__draw_cover_fit(SDL_Texture *tex, int tex_w, int tex_h,
 
 /* ─── 5-Game Mode (focus mode) ───────────────────────────────────────────── */
 
+/* Tiles for the picks that can launch now. A pick whose card isn't in the slot only
+   leaves the screen: the stored ids stay, so it returns with its card. */
+static void jw__focus_load_games(jw_launcher_state *state, const int *ids, int n) {
+    int count = 0;
+    for (int i = 0; i < n && count < JW_FOCUS_SCREEN_MAX_TILES; i++) {
+        jw_game_entry g;
+        bool listed = false;
+        if (jw_db_get_game_by_id(state->db_path, ids[i], &g) != 0) {
+            jw_log_warn("focus: picked game id=%d no longer resolves; dropping", ids[i]);
+        } else if (jw_db_game_listed(state->db_path, ids[i], &listed) != 0 || listed) {
+            state->focus_games[count++] = g;
+        }
+    }
+    state->focus_count = count;
+}
+
+/* Prune used to remove a pick's id, so tiles never had to change while the screen
+   was up. Now a card swap can take one away and bring it back. The mode, the lock
+   and an open unlock screen aren't touched. */
+static void jw__focus_refresh(jw_launcher_state *state) {
+    if (!state->focus_active) return;
+    jw_focus_config cfg;
+    /* active reads as false when the config can't be read: keep the current tiles. */
+    if (jw_focus_config_load(state->db_path, &cfg) != 0 || !cfg.active) return;
+    jw__focus_load_games(state, cfg.ids, cfg.id_count);
+    if (state->focus_cursor >= state->focus_count) {
+        state->focus_cursor = state->focus_count > 0 ? state->focus_count - 1 : 0;
+    }
+    cat_request_frame();
+}
+
 /* Resolve the focus config the daemon passed via env into state->focus_games.
    Danglers (a picked game whose ROM was removed → no DB row) are dropped so a
    deleted game can't wedge the mode; if that empties the set we fall back to the
@@ -5223,16 +5261,8 @@ static void jw__focus_init(jw_launcher_state *state) {
     int n = 0;
     jw_focus_ids_parse(getenv("JAWAKA_FOCUS_IDS"), ids, &n);
 
-    int count = 0;
-    for (int i = 0; i < n && count < JW_FOCUS_SCREEN_MAX_TILES; i++) {
-        jw_game_entry g;
-        if (jw_db_get_game_by_id(state->db_path, ids[i], &g) == 0) {
-            state->focus_games[count++] = g;
-        } else {
-            jw_log_warn("focus: picked game id=%d no longer resolves; dropping", ids[i]);
-        }
-    }
-    state->focus_count = count;
+    jw__focus_load_games(state, ids, n);
+    int count = state->focus_count;
     /* We only reach here because the daemon spawned us into focus mode (the env
        gate at the top), so stay locked even if some — or all — picked games no
        longer resolve. Otherwise a library change that drops every id would
@@ -12674,6 +12704,18 @@ static void jw__focus_unlock_exit(jw_launcher_state *state) {
     cat_request_frame();
 }
 
+/* Setup couldn't show these picks, so they can't have been removed there. They stay
+   stored, in any free place, so they return with their card. Your own picks win when
+   every place is taken. */
+static int jw__focus_keep_absent_picks(const jw_launcher_state *state, int *ids, int count) {
+    for (int i = 0; i < state->focus_setup_absent_count && count < JW_FOCUS_MAX_GAMES; i++) {
+        bool already = false;
+        for (int k = 0; k < count; k++) already = already || ids[k] == state->focus_setup_absent[i];
+        if (!already) ids[count++] = state->focus_setup_absent[i];
+    }
+    return count;
+}
+
 /* Commit the setup wizard's result: persist the config + write the SD lock file,
    then enter focus mode in place (no reboot — the daemon re-resolves focus on
    each launcher spawn, so the persisted state carries forward). */
@@ -12683,6 +12725,7 @@ static void jw__focus_setup_commit(jw_launcher_state *state) {
     cfg.active = true;
     cfg.id_count = state->focus_setup_count;
     for (int i = 0; i < cfg.id_count; i++) cfg.ids[i] = state->focus_setup_ids[i];
+    cfg.id_count = jw__focus_keep_absent_picks(state, cfg.ids, cfg.id_count);
     cfg.lock = state->focus_setup_lock;
     cfg.style = state->focus_setup_style;
     /* Capture the current Wi-Fi radio state so it can be restored on exit, then
@@ -12725,12 +12768,7 @@ static void jw__focus_setup_commit(jw_launcher_state *state) {
     state->focus_bw = (cfg.style == JW_FOCUS_STYLE_BW);
     strncpy(state->focus_pin_hash, cfg.pin_hash, sizeof(state->focus_pin_hash) - 1);
     state->focus_pin_hash[sizeof(state->focus_pin_hash) - 1] = '\0';
-    state->focus_count = 0;
-    for (int i = 0; i < cfg.id_count; i++) {
-        jw_game_entry g;
-        if (jw_db_get_game_by_id(state->db_path, cfg.ids[i], &g) == 0)
-            state->focus_games[state->focus_count++] = g;
-    }
+    jw__focus_load_games(state, cfg.ids, cfg.id_count);
     state->focus_cursor = 0;
     state->focus_unlock_open = false;
     state->focus_setup_open = false;
@@ -12780,6 +12818,7 @@ static void jw__pick_show_systems(jw_launcher_state *state) {
 static void jw__focus_setup_begin(jw_launcher_state *state) {
     state->focus_setup_open = false;
     state->focus_setup_count = 0;
+    state->focus_setup_absent_count = 0;
     state->focus_setup_lock = JW_FOCUS_LOCK_NONE;
     state->focus_setup_style = JW_FOCUS_STYLE_THEME;
     state->focus_setup_choice = 0;
@@ -12794,8 +12833,15 @@ static void jw__focus_setup_begin(jw_launcher_state *state) {
         for (int i = 0; i < n &&
              state->focus_setup_count < JW_FOCUS_SCREEN_MAX_TILES; i++) {
             jw_game_entry g;
-            if (jw_db_get_game_by_id(state->db_path, ids[i], &g) == 0)
+            bool listed = false;
+            if (jw_db_get_game_by_id(state->db_path, ids[i], &g) != 0) continue;
+            /* A pick on a card that isn't here can't be seen in Pick to remove it, so it's
+               kept aside, and jw__focus_keep_absent_picks puts it back on commit. */
+            if (jw_db_game_listed(state->db_path, ids[i], &listed) != 0 || listed) {
                 state->focus_setup_ids[state->focus_setup_count++] = ids[i];
+            } else {
+                state->focus_setup_absent[state->focus_setup_absent_count++] = ids[i];
+            }
         }
     }
 
