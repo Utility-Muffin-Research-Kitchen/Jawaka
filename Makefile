@@ -772,6 +772,13 @@ visibility-test: | $(BUILD)/bin
 		internal/storage/sources.c $(LDLIBS_COMMON)
 	$(BUILD)/bin/visibility-test
 
+.PHONY: title-order-test
+title-order-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/title-order-test \
+		internal/db/title_order_test.c internal/db/db.c internal/db/relocation.c \
+		internal/storage/sources.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/title-order-test
+
 .PHONY: card-identity-test
 card-identity-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/card-identity-test \
