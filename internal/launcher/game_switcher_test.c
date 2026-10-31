@@ -93,6 +93,8 @@ int main(void) {
     jw_ingame_state state = { .show_hints = true, .db_path = db_path };
     state.session.active = true;
     snprintf(state.session.rom_path, sizeof(state.session.rom_path), "%s", "Roms/GB/Unknown.gb");
+    /* Without a requested frame, an idle cat_present() sleeps to the next minute. */
+    cat_request_frame();
     jw__render_ingame_switcher(&state, &sw);
     assert(test_footer_count == 1 && test_footer[0].button == CAT_BTN_B);
     assert(strcmp(test_footer[0].label, "Resume") == 0);

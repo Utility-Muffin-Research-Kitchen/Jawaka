@@ -157,6 +157,8 @@ int main(void) {
     cat_config config = {.start_hidden = true, .defer_input_init = true,
                          .disable_background = true, .font_path = font};
     assert(cat_init(&config) == CAT_OK);
+    /* Draw without presenting: an idle cat_present() sleeps to the next minute. */
+    g_defer_present = true;
     jw_launcher_state *state = calloc(1, sizeof(*state));
     assert(state);
     g_present_state = state;
