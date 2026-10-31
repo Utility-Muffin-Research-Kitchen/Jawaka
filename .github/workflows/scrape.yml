@@ -27,3 +27,8 @@ jobs:
         run: make -C Jawaka scrape-identity-test ss-client-test art-path-test
       - name: Scrape worker against a scanned library
         run: make -C Jawaka scrape-art-test
+      - name: A user's description against a rescrape
+        run: make -C Jawaka game-meta-test
+      # A real jawakad: what it tells a library editor, and a reload with no scan.
+      - name: Library metadata IPC
+        run: make -C Jawaka library-metadata-ipc-smoke

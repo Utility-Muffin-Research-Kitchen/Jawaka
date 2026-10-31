@@ -4976,6 +4976,11 @@ static int jw__reply_library_status(jw_daemon_state *state, jw_ipc_client *clien
         cJSON_AddStringToObject(root, "scan_error", error);
         cJSON_AddBoolToObject(root, "library_populated", state->library_populated);
     }
+    /* What a library editor may rely on this daemon for. Clients treat a missing
+       list as a release from before any of these. */
+    static const char *const kMetadataCaps[] = {"user_synopsis", "metadata_changed"};
+    cJSON_AddItemToObject(root, "metadata_caps",
+                          cJSON_CreateStringArray(kMetadataCaps, 2));
     return jw__reply_json(client, root);
 }
 
@@ -15227,6 +15232,14 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         int rc = jw__handle_scan(state, client, root);
         cJSON_Delete(root);
         return rc;
+    }
+
+    /* Another program edited titles or descriptions in the library. Nothing on
+       disk moved, so the launcher only needs to reload, not wait for a scan. */
+    if (strcmp(type->valuestring, "library-metadata-changed") == 0) {
+        cJSON_Delete(root);
+        jw__bump_library_generation(state);
+        return jw__reply_ok(client, "library-metadata-changed", NULL);
     }
 
     if (strcmp(type->valuestring, "scrape-validate") == 0) {
