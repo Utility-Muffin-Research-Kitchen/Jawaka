@@ -12,6 +12,9 @@
 
 #define JW_GAME_SETTING_IMPORTED_DISPLAY_NAME "imported_display_name"
 #define JW_GAME_SETTING_IMPORTED_DISPLAY_NAME_PROVIDER "imported_display_name_provider"
+/* A description the user wrote. Read ahead of the scraped ss.synopsis, and a
+   rescrape never touches it. */
+#define JW_GAME_SETTING_USER_SYNOPSIS "user_synopsis"
 
 typedef struct {
     int game_count;
@@ -354,7 +357,8 @@ typedef struct {
 int  jw_db_set_game_meta(const char *db_path, const char *rom_path,
                          const jw_game_meta *meta);
 
-/* Read one game's scraped facts. Missing keys come back as empty strings. */
+/* Read one game's scraped facts, with the user's description in place of the
+   scraped one when there is one. Missing keys come back as empty strings. */
 int  jw_db_get_game_meta(const char *db_path, int game_id, jw_game_meta *out);
 
 int  jw_db_set_game_setting(const char *db_path, int game_id,

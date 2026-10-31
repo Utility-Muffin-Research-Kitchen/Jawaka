@@ -1,4 +1,5 @@
 #include "internal/db/db.h"
+#include "internal/core/scraped_text.h"
 #include "internal/search/pinyin.h"
 #include "internal/db/relocation.h"
 #include "internal/focus/focus.h"
@@ -3421,17 +3422,24 @@ int jw_db_get_game_meta(const char *db_path, int game_id, jw_game_meta *out) {
     if (jw_db_open(db_path, &db) != 0) return -1;
 
     static const char *sql =
-        "SELECT key, value FROM game_settings WHERE game_id = ? AND key LIKE 'ss.%';";
+        "SELECT key, value FROM game_settings WHERE game_id = ?1 "
+        "AND (key LIKE 'ss.%' OR key = ?2);";
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
         jw_db_close(db);
         return -1;
     }
     sqlite3_bind_int(st, 1, game_id);
+    sqlite3_bind_text(st, 2, JW_GAME_SETTING_USER_SYNOPSIS, -1, SQLITE_STATIC);
+    char user_synopsis[sizeof(out->synopsis)] = "";
     while (sqlite3_step(st) == SQLITE_ROW) {
         const char *k = (const char *)sqlite3_column_text(st, 0);
         const char *v = (const char *)sqlite3_column_text(st, 1);
         if (!k || !v) continue;
+        if (strcmp(k, JW_GAME_SETTING_USER_SYNOPSIS) == 0) {
+            snprintf(user_synopsis, sizeof(user_synopsis), "%s", v);
+            continue;
+        }
         for (size_t i = 0; i < sizeof(kGameMetaFields) / sizeof(kGameMetaFields[0]); i++) {
             if (strcmp(k, kGameMetaFields[i].key) != 0) continue;
             char *dst = (char *)out + kGameMetaFields[i].off;
@@ -3441,6 +3449,12 @@ int jw_db_get_game_meta(const char *db_path, int game_id, jw_game_meta *out) {
     }
     sqlite3_finalize(st);
     jw_db_close(db);
+    /* The info box can't draw a line break, so this gets the same cleaning a
+       scraped description had before it was stored. */
+    jw_clean_scraped_text(user_synopsis);
+    if (user_synopsis[0]) {
+        memcpy(out->synopsis, user_synopsis, sizeof(out->synopsis));
+    }
     return 0;
 }
 

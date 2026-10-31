@@ -772,6 +772,16 @@ visibility-test: | $(BUILD)/bin
 		internal/storage/sources.c $(LDLIBS_COMMON)
 	$(BUILD)/bin/visibility-test
 
+.PHONY: game-meta-test library-metadata-ipc-smoke
+game-meta-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/game-meta-test \
+		internal/db/game_meta_test.c internal/db/db.c internal/db/relocation.c \
+		internal/storage/sources.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/game-meta-test
+
+library-metadata-ipc-smoke:
+	scripts/library-metadata-ipc-smoke.sh
+
 .PHONY: card-identity-test
 card-identity-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/card-identity-test \
