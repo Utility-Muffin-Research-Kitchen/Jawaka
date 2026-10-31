@@ -914,7 +914,7 @@ static bool jw__browse_leave_folder(jw_launcher_state *state) {
 }
 
 /* Where the game browser stands, by identity rather than row number, so the
-   place survives a reload or a launcher restart. Empty for flat lists. */
+   place survives a reload or a launcher restart. A flat list has only a game. */
 typedef struct {
     char folder[JW_BROWSE_PATH_MAX];       /* open folder, "" at the system root */
     char game_source[sizeof(((jw_game_entry *)0)->source_id)];
@@ -924,15 +924,16 @@ typedef struct {
 
 static void jw__browse_capture(const jw_launcher_state *state, jw_browse_place *out) {
     memset(out, 0, sizeof(*out));
-    if (!state->folder_tree) return;
-    snprintf(out->folder, sizeof(out->folder), "%s",
-             jw_game_folder_path(state->folder_tree, state->browse_folder));
     const jw_game_entry *game = jw__browse_selected_game(state);
-    int folder = jw__browse_folder_at(state, state->game_list.cursor);
     if (game) {
         snprintf(out->game_source, sizeof(out->game_source), "%s", game->source_id);
         snprintf(out->game_relpath, sizeof(out->game_relpath), "%s", game->rom_relpath);
-    } else if (folder >= 0) {
+    }
+    if (!state->folder_tree) return;
+    snprintf(out->folder, sizeof(out->folder), "%s",
+             jw_game_folder_path(state->folder_tree, state->browse_folder));
+    int folder = jw__browse_folder_at(state, state->game_list.cursor);
+    if (!game && folder >= 0) {
         snprintf(out->row_folder, sizeof(out->row_folder), "%s",
                  jw_game_folder_path(state->folder_tree, folder));
     }
@@ -941,8 +942,9 @@ static void jw__browse_capture(const jw_launcher_state *state, jw_browse_place *
 /* Put the browser back after jw__browse_build, against the tree as it is now:
    into the saved folder or, when hiding, deleting or collapsing took it away,
    its nearest surviving ancestor; then onto the saved game, else the row that
-   now stands for where you were, else the old row number. Flat lists keep the
-   old row number, exactly as before Show Folders. */
+   now stands for where you were, else the old row number. A title edit can move
+   rows, so a flat list follows its game too, and keeps the old row number once
+   that game is gone. */
 static void jw__browse_restore(jw_launcher_state *state, const jw_browse_place *place,
                                int cursor) {
     jw_game_folder_tree *tree = state->folder_tree;
@@ -957,6 +959,9 @@ static void jw__browse_restore(jw_launcher_state *state, const jw_browse_place *
             row = jw_game_folder_row_for_child(tree, state->browse_folder, place->folder);
         if (row < 0 && place->row_folder[0])
             row = jw_game_folder_row_for_child(tree, state->browse_folder, place->row_folder);
+        if (row >= 0) cursor = row;
+    } else if (place->game_relpath[0]) {
+        int row = jw__browse_find_game(state, place->game_source, place->game_relpath);
         if (row >= 0) cursor = row;
     }
     int rows = jw__browse_count(state);
