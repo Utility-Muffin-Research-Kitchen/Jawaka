@@ -497,6 +497,9 @@ typedef struct {
     jw_focus_setup_step focus_setup_step;
     int                 focus_setup_ids[JW_FOCUS_SCREEN_MAX_TILES]; /* picked, ordered */
     int                 focus_setup_count;
+    /* Stored picks setup couldn't show when it opened. They go back on commit. */
+    int                 focus_setup_absent[JW_FOCUS_MAX_GAMES];
+    int                 focus_setup_absent_count;
     jw_focus_lock       focus_setup_lock;
     jw_focus_style      focus_setup_style;
     int                 focus_setup_choice;   /* cursor within Lock/Style menus */
@@ -12701,22 +12704,14 @@ static void jw__focus_unlock_exit(jw_launcher_state *state) {
     cat_request_frame();
 }
 
-/* Setup can't show a pick whose card isn't here, so it can't be removed there either.
-   It stays stored, in any free place, so it returns with its card. */
-static int jw__focus_keep_absent_picks(const char *db_path, int *ids, int count) {
-    char csv[128] = "";
-    if (jw_db_get_setting(db_path, JW_FOCUS_KEY_IDS, csv, sizeof(csv)) != 0) return count;
-    int stored[JW_FOCUS_MAX_GAMES], n = 0;
-    jw_focus_ids_parse(csv, stored, &n);
-    for (int i = 0; i < n && count < JW_FOCUS_MAX_GAMES; i++) {
+/* Setup couldn't show these picks, so they can't have been removed there. They stay
+   stored, in any free place, so they return with their card. Your own picks win when
+   every place is taken. */
+static int jw__focus_keep_absent_picks(const jw_launcher_state *state, int *ids, int count) {
+    for (int i = 0; i < state->focus_setup_absent_count && count < JW_FOCUS_MAX_GAMES; i++) {
         bool already = false;
-        for (int k = 0; k < count; k++) already = already || ids[k] == stored[i];
-        jw_game_entry g;
-        bool listed = true;
-        if (!already && jw_db_get_game_by_id(db_path, stored[i], &g) == 0 &&
-            jw_db_game_listed(db_path, stored[i], &listed) == 0 && !listed) {
-            ids[count++] = stored[i];
-        }
+        for (int k = 0; k < count; k++) already = already || ids[k] == state->focus_setup_absent[i];
+        if (!already) ids[count++] = state->focus_setup_absent[i];
     }
     return count;
 }
@@ -12730,7 +12725,7 @@ static void jw__focus_setup_commit(jw_launcher_state *state) {
     cfg.active = true;
     cfg.id_count = state->focus_setup_count;
     for (int i = 0; i < cfg.id_count; i++) cfg.ids[i] = state->focus_setup_ids[i];
-    cfg.id_count = jw__focus_keep_absent_picks(state->db_path, cfg.ids, cfg.id_count);
+    cfg.id_count = jw__focus_keep_absent_picks(state, cfg.ids, cfg.id_count);
     cfg.lock = state->focus_setup_lock;
     cfg.style = state->focus_setup_style;
     /* Capture the current Wi-Fi radio state so it can be restored on exit, then
@@ -12823,6 +12818,7 @@ static void jw__pick_show_systems(jw_launcher_state *state) {
 static void jw__focus_setup_begin(jw_launcher_state *state) {
     state->focus_setup_open = false;
     state->focus_setup_count = 0;
+    state->focus_setup_absent_count = 0;
     state->focus_setup_lock = JW_FOCUS_LOCK_NONE;
     state->focus_setup_style = JW_FOCUS_STYLE_THEME;
     state->focus_setup_choice = 0;
@@ -12838,11 +12834,14 @@ static void jw__focus_setup_begin(jw_launcher_state *state) {
              state->focus_setup_count < JW_FOCUS_SCREEN_MAX_TILES; i++) {
             jw_game_entry g;
             bool listed = false;
+            if (jw_db_get_game_by_id(state->db_path, ids[i], &g) != 0) continue;
             /* A pick on a card that isn't here can't be seen in Pick to remove it, so it's
                kept aside, and jw__focus_keep_absent_picks puts it back on commit. */
-            if (jw_db_get_game_by_id(state->db_path, ids[i], &g) == 0 &&
-                (jw_db_game_listed(state->db_path, ids[i], &listed) != 0 || listed))
+            if (jw_db_game_listed(state->db_path, ids[i], &listed) != 0 || listed) {
                 state->focus_setup_ids[state->focus_setup_count++] = ids[i];
+            } else {
+                state->focus_setup_absent[state->focus_setup_absent_count++] = ids[i];
+            }
         }
     }
 

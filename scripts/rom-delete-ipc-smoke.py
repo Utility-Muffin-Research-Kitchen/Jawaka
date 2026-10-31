@@ -522,6 +522,14 @@ def test_card_ownership(fixture):
     assert deleted.read_text() == "Other card must survive\n"
     assert far.read_text() == "far disc\n"
     fixture.stop()
+    # A card that can't be identified may not be the one the row belongs to.
+    fixture.card_key = "unreadable"
+    fixture.start()
+    with Client(fixture.socket) as client:
+        reply = client.preview("GBA/Delete.gba", "secondary_sd")
+        rejected(reply)
+        assert "not mounted" in reply.get("error", ""), reply
+    fixture.stop()
     fixture.card_key = None
 
 

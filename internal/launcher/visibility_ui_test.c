@@ -100,16 +100,41 @@ static void check_focus_follows_the_card(jw_launcher_state *state, const char *r
     assert(state->focus_setup_count == 1 && state->focus_setup_ids[0] == primary_id);
     jw__pick_cancel(state);
     state->focus_active = true;
-    /* Saving setup can't drop what it couldn't show: the pick returns with its card. */
-    int saved[JW_FOCUS_MAX_GAMES] = { primary_id };
-    assert(jw__focus_keep_absent_picks(state->db_path, saved, 1) == 2 && saved[1] == 900);
-    /* A pick you can see and removed stays removed. */
-    int none[JW_FOCUS_MAX_GAMES] = { 0 };
-    assert(jw__focus_keep_absent_picks(state->db_path, none, 0) == 1 && none[0] == 900);
-    /* With every place taken, your new picks win. */
+    /* Saving setup can't drop what it couldn't show, even if the card is back by then. */
+    state->focus_active = false;
+    jw__focus_setup_begin(state);
+    assert(state->focus_setup_absent_count == 1 && state->focus_setup_absent[0] == 900);
+    jw__pick_cancel(state);
+    setenv(key, "fat:aaaa0001", 1);
+    state->focus_setup_lock = JW_FOCUS_LOCK_NONE;
+    jw__focus_setup_commit(state);
+    assert(jw_db_get_setting(state->db_path, JW_FOCUS_KEY_IDS, stored, sizeof(stored)) == 0);
+    assert(strcmp(stored, ids) == 0);
+    assert(state->focus_active && state->focus_count == 2);
+
+    /* A pick you could see and removed stays removed, even if its card has left by then. */
+    jw__focus_setup_begin(state);
+    assert(state->focus_setup_count == 2 && state->focus_setup_absent_count == 0);
+    jw__pick_cancel(state);
+    state->focus_setup_count = 1;
+    setenv(key, "fat:bbbb0002", 1);
+    jw__focus_setup_commit(state);
+    char only_primary[32];
+    snprintf(only_primary, sizeof(only_primary), "%d", primary_id);
+    assert(jw_db_get_setting(state->db_path, JW_FOCUS_KEY_IDS, stored, sizeof(stored)) == 0);
+    assert(strcmp(stored, only_primary) == 0);
+    assert(jw_db_set_setting(state->db_path, JW_FOCUS_KEY_IDS, ids) == 0);
+    assert(jw_db_set_setting(state->db_path, JW_FOCUS_KEY_ACTIVE, "1") == 0);
+    jw_focus_lock_remove(state->sdcard_root);
+
+    /* With every place taken, your own picks win. */
+    state->focus_setup_absent_count = 1;
+    state->focus_setup_absent[0] = 900;
     int full[JW_FOCUS_MAX_GAMES] = { 1, 2, 3, 4, 5 };
-    assert(jw__focus_keep_absent_picks(state->db_path, full, JW_FOCUS_MAX_GAMES) == JW_FOCUS_MAX_GAMES);
+    assert(jw__focus_keep_absent_picks(state, full, JW_FOCUS_MAX_GAMES) == JW_FOCUS_MAX_GAMES);
     assert(full[4] == 5);
+    state->focus_active = true;
+    state->focus_lock = JW_FOCUS_LOCK_PIN;
 
     /* Its rows parked, as once the scan has swapped the cards. */
     assert(sqlite3_exec(db, "UPDATE games SET source_id='card-1' WHERE id=900;",

@@ -174,7 +174,7 @@ Saves and states already live on the card itself.
 - **Ownership is enforced wherever a row meets a card.** `jw_source_hidden` hides
   a mismatch, the scan gate won't complete the slot, and launch and delete refuse
   it, and relocation won't start. If the card's key can't be read, lists and launches
-  allow it, and its scan is skipped so nothing is pruned.
+  allow it, its scan is skipped so nothing is pruned, and delete refuses it.
 - **Some cards can't be told apart.** Cards with the same serial, such as clones, count
   as one card. So do non-FAT cards with no by-uuid link, which share a key per filesystem
   type. Between cards like these, a swap still prunes, as it did before this table
@@ -195,7 +195,8 @@ Saves and states already live on the card itself.
   with that card's parked rows rather than parked under the recorded owner. Parked
   rows appear in an older build's lists, and don't launch, until you update again. An
   older build keeps one row for a path both cards have, so that game keeps the other
-  card's playtime and favorite after a downgrade. Hidden keys can carry over the same way.
+  card's playtime and favorite after a downgrade. Hidden keys can carry over the same way,
+  and a 5-Game pick on a merged row drops out, as it does for alias dedup.
 
 ## Checks
 

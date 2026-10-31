@@ -135,6 +135,11 @@ int jw_delete_plan_build(const jw_storage_source_list *sources, const jw_ra_syst
         char line[64];
         int n = snprintf(line, sizeof(line), "%llu %d\n", (unsigned long long)file->size, file->missing);
         hash = jw__hash(hash, file->source_id, strlen(file->source_id) + 1);
+        /* The same name and size on another card is a different file. */
+        for (int k = 0; k < sources->count; k++) {
+            const jw_storage_source *card = &sources->sources[k];
+            if (!strcmp(card->id, file->source_id)) hash = jw__hash(hash, card->card_key, strlen(card->card_key) + 1);
+        }
         hash = jw__hash(hash, file->rom_relpath, strlen(file->rom_relpath) + 1);
         hash = jw__hash(hash, line, (size_t)n);
     }

@@ -55,7 +55,11 @@ static int jw__writable(jw_delete_view *view, const char *path, const char *sour
 static bool jw__wrong_card(const char *db_path, const jw_storage_source_list *sources,
                            const char *source_id, jw_delete_view *view) {
     const jw_storage_source *source = jw_storage_sources_find_by_id(sources, source_id);
-    if (!source || jw_db_card_owner_check_at(db_path, source) != JW_CARD_OWNER_MISMATCH) return false;
+    if (!source) return false;
+    /* A list or a launch can go ahead on a card it can't identify. Removing a file can't,
+       because this may not be the card the row belongs to. */
+    bool unreadable = !source->primary && source->card_key_state == JW_CARD_KEY_UNREADABLE;
+    if (!unreadable && jw_db_card_owner_check_at(db_path, source) != JW_CARD_OWNER_MISMATCH) return false;
     snprintf(view->error, sizeof(view->error), JW_UI("Your selected ROM card is not mounted."));
     return true;
 }
@@ -156,11 +160,14 @@ static int jw__guard(void *context, const jw_delete_file *file, char *error, siz
         return -1;
     }
 #endif
-    /* The card could have changed since the plan was built, and the digest can't tell a
-       same-named, same-sized file on another card. */
+    /* The card could have changed since the plan was built. If that can't be ruled out,
+       don't remove the file. */
     jw_storage_source_list *sources = calloc(1, sizeof(*sources));
-    bool wrong_card = sources && jw_storage_sources_resolve(job->sdcard_root, sources) == 0 &&
-                      jw__wrong_card(job->db_path, sources, file->source_id, &job->view);
+    bool resolved = sources && jw_storage_sources_resolve(job->sdcard_root, sources) == 0;
+    if (!resolved) {
+        snprintf(job->view.error, sizeof(job->view.error), JW_UI("Could not resolve storage sources."));
+    }
+    bool wrong_card = !resolved || jw__wrong_card(job->db_path, sources, file->source_id, &job->view);
     free(sources);
     if (wrong_card ||
         jw__writable(&job->view, job->db_path, "primary") != 0 ||

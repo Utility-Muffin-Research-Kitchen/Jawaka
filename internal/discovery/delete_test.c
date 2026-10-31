@@ -91,6 +91,12 @@ static void test_single_and_digest(void) {
     assert(first.file_count == 1 && first.bytes == 9 && !first.writable_image);
     jw_delete_plan again = preview("GBA/Game.zip", &gba);
     assert(!strcmp(first.digest, again.digest));
+    /* A different card holding the same file isn't the same deletion. */
+    jw_delete_plan_free(&again);
+    strcpy(sources.sources[0].card_key, "fat:aaaa0001");
+    again = preview("GBA/Game.zip", &gba);
+    assert(strcmp(first.digest, again.digest));
+    sources.sources[0].card_key[0] = '\0';
     jw_delete_plan_free(&again);
     put("A/Roms/GBA/Game.zip", "a larger container");
     again = preview("GBA/Game.zip", &gba);
