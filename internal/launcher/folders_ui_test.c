@@ -170,6 +170,14 @@ int main(void) {
     check_rows_agree(state);
     render_all_layouts(state, "off");
 
+    /* Pinned, flat: first by rank, whichever folder the game sits in. */
+    jw_game_entry flat_zelda = game_at(state, "SFC/Zelda/Zelda (USA).zip");
+    assert(jw_db_set_game_setting(state->db_path, flat_zelda.id, JW_GAME_SETTING_SORT_RANK, "1") == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    assert(jw__browse_game(state, 0)->id == flat_zelda.id);
+    assert(jw_db_delete_game_setting(state->db_path, flat_zelda.id, JW_GAME_SETTING_SORT_RANK) == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+
     /* Reload, flat: a title edit moves rows, and the selection stays on its game. */
     jw_game_entry alpha = game_at(state, "SFC/Alpha.zip");
     jw_game_entry top_gear = game_at(state, "SFC/Top Gear/Top Gear (USA).zip");
@@ -408,6 +416,29 @@ int main(void) {
     jw__render_tabbed(state);
     shot("favorites-tab");
     state->current_tab = JW_TAB_GAMES;
+
+    /* A pinned folder and game lead the level, and survive going in and out. */
+    jw__close_game_browser(state);
+    assert(jw__open_system_games(state->db_path, "SFC", state) == 0);
+    jw_game_entry pinned_alpha = game_at(state, "SFC/Alpha.zip");
+    assert(jw_db_set_game_setting(state->db_path, pinned_alpha.id, JW_GAME_SETTING_SORT_RANK, "1") == 0);
+    assert(jw_db_set_system_setting(state->db_path, "SFC", JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX "hacks", "2") == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    assert(strcmp(jw__gg_name(state, 0), "Alpha") == 0);
+    assert(strcmp(jw__gg_name(state, 1), "Hacks/") == 0);
+    check_rows_agree(state);
+    render_all_layouts(state, "pinned");
+    select_row(state, 1);
+    press(state, CAT_BTN_A);
+    press(state, CAT_BTN_B);
+    assert(state->game_list.cursor == 1);
+    assert(jw_db_delete_game_setting(state->db_path, pinned_alpha.id, JW_GAME_SETTING_SORT_RANK) == 0);
+    assert(jw_db_delete_system_setting(state->db_path, "SFC", JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX "hacks") == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+    /* The selection stayed on Hacks through both reloads. */
+    assert(jw__browse_folder_at(state, state->game_list.cursor) >= 0);
+    assert(strcmp(jw__gg_name(state, state->game_list.cursor), "Hacks/") == 0);
+    jw__close_game_browser(state);
 
     /* Turning it off rebuilds an open list flat again. */
     assert(jw__open_system_games(state->db_path, "SFC", state) == 0);

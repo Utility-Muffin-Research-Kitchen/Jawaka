@@ -27,9 +27,11 @@
      3. Promote one level. A collapsed folder's game is listed in its parent;
         the parent is never re-judged, so nothing cascades.
 
-   Rows of a level: its uncollapsed subfolders first, in jw_title_compare order
-   by name, then every game listed in that level in input order. The root is
-   folder 0 and is never collapsed. */
+   Rows of a level: pinned rows first, folder or game, by rank, with a folder before
+   a game on a tie. Then its other uncollapsed subfolders in jw_title_compare order
+   by name, then the other games listed in that level in input order. The root is
+   folder 0 and is never collapsed, and a collapsed folder's rank means nothing: its
+   game's own rank counts in the parent. */
 
 /* Whether the file <rel_subpath>/<filename> under its system folder is a
    folder-marker game. rel_subpath is "" for a game at the system root. */
@@ -51,6 +53,10 @@ typedef struct {
     int index;   /* GAME: input game index. FOLDER: folder id. */
 } jw_game_folder_row;
 
+/* Ranks are positive when pinned, otherwise 0. */
+typedef int (*jw_game_folder_game_rank_fn)(void *userdata, int i);
+typedef int (*jw_game_folder_path_rank_fn)(void *userdata, const char *path);
+
 /* Build the tree for count games. is_marker may be NULL (no marker games).
    Returns NULL on allocation failure or bad arguments; count 0 is a valid,
    empty tree. Costs O(n log n) in the number of games. */
@@ -58,6 +64,13 @@ jw_game_folder_tree *jw_game_folder_tree_build(int count,
                                                jw_game_folder_relpath_fn relpath,
                                                jw_game_folder_marker_fn is_marker,
                                                void *userdata);
+/* The same, with pins. Either rank callback may be NULL (nothing of that kind pinned). */
+jw_game_folder_tree *jw_game_folder_tree_build_ranked(int count,
+                                                      jw_game_folder_relpath_fn relpath,
+                                                      jw_game_folder_marker_fn is_marker,
+                                                      jw_game_folder_game_rank_fn game_rank,
+                                                      jw_game_folder_path_rank_fn folder_rank,
+                                                      void *userdata);
 void jw_game_folder_tree_free(jw_game_folder_tree *tree);
 
 /* Folder ids run 0..folder_count-1, collapsed folders included; 0 is the root. */
@@ -73,6 +86,9 @@ int  jw_game_folder_game_count(const jw_game_folder_tree *tree, int folder);
 int  jw_game_folder_collapsed_game(const jw_game_folder_tree *tree, int folder);
 /* The folder whose rows list input game i, after markers and promotion. */
 int  jw_game_folder_of_game(const jw_game_folder_tree *tree, int game);
+
+/* A row's rank, 0 when not pinned. */
+int  jw_game_folder_row_rank(const jw_game_folder_tree *tree, jw_game_folder_row row);
 
 /* The folder at path, compared without ASCII case, collapsed or not; "" is the
    root. -1 when no folder has that path. */

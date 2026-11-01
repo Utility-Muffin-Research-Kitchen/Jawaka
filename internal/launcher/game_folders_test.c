@@ -703,6 +703,140 @@ static void test_row_order(void) {
     jw_game_folder_tree_free(tree);
 }
 
+/* Pins, by input index for games and by exact path for folders. */
+typedef struct {
+    fixture fx;
+    const int *game_ranks;
+    const char *const *folder_paths;
+    const int *folder_ranks;
+    int folder_count;
+} pinned_fixture;
+
+static int pinned_game_rank(void *userdata, int i) {
+    const pinned_fixture *p = userdata;
+    return p->game_ranks ? p->game_ranks[i] : 0;
+}
+
+static int pinned_folder_rank(void *userdata, const char *path) {
+    const pinned_fixture *p = userdata;
+    for (int i = 0; i < p->folder_count; i++) {
+        if (strcmp(p->folder_paths[i], path) == 0) {
+            return p->folder_ranks[i];
+        }
+    }
+    return 0;
+}
+
+static jw_game_folder_tree *build_pinned(pinned_fixture *p) {
+    /* fixture_relpath reads paths through the first member. */
+    return jw_game_folder_tree_build_ranked(p->fx.count, fixture_relpath, NULL,
+                                            pinned_game_rank, pinned_folder_rank, p);
+}
+
+/* What going up from a folder and reload restoring rely on, under any order. */
+static void check_pinned_rows(const char *label, const jw_game_folder_tree *tree, int count) {
+    for (int f = 0; f < jw_game_folder_count(tree); f++) {
+        int total = jw_game_folder_rows(tree, f, NULL, 0);
+        if (total <= 0) {
+            continue;
+        }
+        jw_game_folder_row *rows = calloc((size_t)total, sizeof(*rows));
+        jw_game_folder_rows(tree, f, rows, total);
+        for (int k = 0; k < total; k++) {
+            if (rows[k].kind == JW_GAME_FOLDER_ROW_FOLDER) {
+                expect_int(lbl("%s: folder %d row %d found going up", label, f, k),
+                           jw_game_folder_row_for_child(tree, f, jw_game_folder_path(tree, rows[k].index)), k);
+            } else {
+                expect_int(lbl("%s: game %d listed where it says", label, rows[k].index),
+                           jw_game_folder_of_game(tree, rows[k].index), f);
+            }
+        }
+        free(rows);
+    }
+    expect_int(lbl("%s: root counts every game", label), jw_game_folder_game_count(tree, 0), count);
+}
+
+static void test_pins(void) {
+    const char *paths[] = {
+        "X/root1.zip",            /* #0 */
+        "X/alpha/a1.zip",         /* #1 */
+        "X/alpha/a2.zip",         /* #2 */
+        "X/Beta/b1.zip",          /* #3 */
+        "X/Beta/b2.zip",          /* #4 */
+        "X/gamma/g1.zip",         /* #5 */
+        "X/gamma/g2.zip",         /* #6 */
+        "X/Zelda/Zelda (USA).zip",/* #7, collapses into the root */
+        "X/root2.zip",            /* #8 */
+        "X/root3.zip",            /* #9 */
+    };
+    pinned_fixture p = { .fx = { paths, COUNT(paths), NULL, 0, "" } };
+
+    /* No pins: exactly the unpinned order. */
+    jw_game_folder_tree *tree = build_pinned(&p);
+    check_invariants("pins: none", tree, COUNT(paths));
+    expect_str("pins: none", render_rows(tree, 0), "[alpha] [Beta] [gamma] #0 #7 #8 #9");
+    jw_game_folder_tree_free(tree);
+
+    /* A game above a folder, by rank; the rest keep their order. */
+    int game_ranks[COUNT(paths)] = {0};
+    game_ranks[8] = 1;
+    const char *folder_paths[] = {"gamma", "Zelda"};
+    int folder_ranks[] = {2, 1};
+    p.game_ranks = game_ranks;
+    p.folder_paths = folder_paths;
+    p.folder_ranks = folder_ranks;
+    p.folder_count = 1;
+    tree = build_pinned(&p);
+    check_pinned_rows("pins: mixed", tree, COUNT(paths));
+    expect_str("pins: mixed", render_rows(tree, 0), "#8 [gamma] [alpha] [Beta] #0 #7 #9");
+    int row = jw_game_folder_row_for_child(tree, 0, "gamma");
+    expect_int("pins: going up lands on the moved folder", row, 1);
+    jw_game_folder_tree_free(tree);
+
+    /* Inside a folder too, and only there. */
+    memset(game_ranks, 0, sizeof(game_ranks));
+    game_ranks[6] = 1;
+    p.folder_count = 0;
+    tree = build_pinned(&p);
+    check_pinned_rows("pins: nested", tree, COUNT(paths));
+    expect_str("pins: nested level", render_rows(tree, jw_game_folder_lookup(tree, "gamma")), "#6 #5");
+    expect_str("pins: nested leaves the root", render_rows(tree, 0), "[alpha] [Beta] [gamma] #0 #7 #8 #9");
+    jw_game_folder_tree_free(tree);
+
+    /* A tie, which a pin on an absent card can cause: folder first, then the old order. */
+    memset(game_ranks, 0, sizeof(game_ranks));
+    game_ranks[9] = 1;
+    game_ranks[8] = 1;
+    p.folder_count = 1;
+    folder_ranks[0] = 1;
+    tree = build_pinned(&p);
+    check_pinned_rows("pins: tie", tree, COUNT(paths));
+    expect_str("pins: tie", render_rows(tree, 0), "[gamma] #8 #9 [alpha] [Beta] #0 #7");
+    jw_game_folder_tree_free(tree);
+
+    /* A collapsed folder's own rank means nothing; its game's rank counts in the parent. */
+    memset(game_ranks, 0, sizeof(game_ranks));
+    folder_paths[0] = "Zelda";
+    p.folder_count = 1;
+    tree = build_pinned(&p);
+    expect_str("pins: collapsed folder rank ignored", render_rows(tree, 0), "[alpha] [Beta] [gamma] #0 #7 #8 #9");
+    jw_game_folder_tree_free(tree);
+    game_ranks[7] = 1;
+    p.folder_count = 0;
+    tree = build_pinned(&p);
+    check_pinned_rows("pins: promoted game", tree, COUNT(paths));
+    expect_str("pins: promoted game", render_rows(tree, 0), "#7 [alpha] [Beta] [gamma] #0 #8 #9");
+    jw_game_folder_tree_free(tree);
+
+    /* A rank on a folder that no longer exists changes nothing. */
+    memset(game_ranks, 0, sizeof(game_ranks));
+    folder_paths[0] = "gone";
+    p.folder_count = 1;
+    tree = build_pinned(&p);
+    expect_str("pins: orphan rank", render_rows(tree, 0), "[alpha] [Beta] [gamma] #0 #7 #8 #9");
+    jw_game_folder_tree_free(tree);
+}
+
 /* --- 6-9. Queries on one nested tree --------------------------------- */
 
 static void test_queries(void) {
@@ -1052,6 +1186,7 @@ int main(void) {
     test_merge();
     test_order_independence();
     test_row_order();
+    test_pins();
     test_queries();
     test_reload_resolve();
     test_edges();

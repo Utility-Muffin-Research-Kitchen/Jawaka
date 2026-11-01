@@ -338,6 +338,8 @@ typedef struct {
        Read rows only through jw__browse_count and jw__browse_game. */
     jw_game_folder_tree *folder_tree;
     jw_game_folder_row  *browse_rows;
+    jw_folder_rank      *browse_ranks;       /* only while the tree is being built */
+    int                browse_rank_count;
     int                browse_row_count;
     int                browse_folder;        /* folder id of the open level */
     bool               browse_folders_on;    /* Show Folders when the list was built */
@@ -781,6 +783,16 @@ static bool jw__browse_is_marker(void *userdata, const char *rel_subpath,
     return jw_art_is_folder_marker(system, rel_subpath, filename);
 }
 
+static int jw__browse_game_rank(void *userdata, int i) {
+    const jw_launcher_state *state = userdata;
+    return state->games[i].sort_rank;
+}
+
+static int jw__browse_folder_rank(void *userdata, const char *path) {
+    const jw_launcher_state *state = userdata;
+    return jw_db_folder_rank(state->browse_ranks, state->browse_rank_count, path);
+}
+
 /* Show one folder's rows, cursor on row 0. A level change keeps the same games
    allocation, so the cover sweep and the Coverflow carousel start over. */
 static bool jw__browse_set_level(jw_launcher_state *state, int folder) {
@@ -809,9 +821,16 @@ static void jw__browse_build(jw_launcher_state *state) {
     jw__browse_clear(state);
     state->browse_folders_on = state->settings.show_folders;
     if (!jw__browse_wants_folders(state)) return;
-    state->folder_tree = jw_game_folder_tree_build(state->game_count,
-                                                   jw__browse_relpath_at,
-                                                   jw__browse_is_marker, state);
+    jw_db_list_folder_ranks(state->db_path, state->game_system,
+                            &state->browse_ranks, &state->browse_rank_count);
+    state->folder_tree = jw_game_folder_tree_build_ranked(state->game_count,
+                                                          jw__browse_relpath_at,
+                                                          jw__browse_is_marker,
+                                                          jw__browse_game_rank,
+                                                          jw__browse_folder_rank, state);
+    jw_db_free_folder_ranks(state->browse_ranks, state->browse_rank_count);
+    state->browse_ranks = NULL;
+    state->browse_rank_count = 0;
     if (state->folder_tree && !jw__browse_set_level(state, 0)) {
         jw__browse_clear(state);
     }

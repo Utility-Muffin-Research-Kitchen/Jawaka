@@ -111,6 +111,37 @@ static void test_lists(void) {
     assert(jw_db_list_games_for_system(path, "SFC", games, COUNT(games), &count) == 0);
     expect_names("system list", games, count, listed, COUNT(listed));
 
+    /* Pinned games come first by rank, and only this list reads the ranks. */
+    assert(jw_db_set_game_setting(path, games[5].id, JW_GAME_SETTING_SORT_RANK, "2") == 0);
+    assert(jw_db_set_game_setting(path, games[3].id, JW_GAME_SETTING_SORT_RANK, "1") == 0);
+    jw_game_entry pinned[16];
+    int pinned_count = 0;
+    static const char *const pinned_order[] = {
+        "Mega Man 3", "zelda", "aardvark", "Alpha", "Mega Man 2", "Mega Man 10",
+    };
+    assert(jw_db_list_games_for_system(path, "SFC", pinned, COUNT(pinned), &pinned_count) == 0);
+    expect_names("pinned system list", pinned, pinned_count, pinned_order, COUNT(pinned_order));
+    assert(pinned[0].sort_rank == 1 && pinned[1].sort_rank == 2 && pinned[2].sort_rank == 0);
+
+    /* Junk in the setting isn't a pin. */
+    assert(jw_db_set_game_setting(path, games[5].id, JW_GAME_SETTING_SORT_RANK, "soon") == 0);
+    assert(jw_db_set_game_setting(path, games[3].id, JW_GAME_SETTING_SORT_RANK, "-4") == 0);
+    assert(jw_db_list_games_for_system(path, "SFC", pinned, COUNT(pinned), &pinned_count) == 0);
+    expect_names("junk ranks", pinned, pinned_count, listed, COUNT(listed));
+
+    /* Folder ranks: exact keys only, ignoring ASCII case in the path. */
+    assert(jw_db_set_system_setting(path, "SFC", JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX "hacks/translated", "3") == 0);
+    assert(jw_db_set_system_setting(path, "SFC", JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX "junk", "x") == 0);
+    assert(jw_db_set_system_setting(path, "GBA", JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX "other", "1") == 0);
+    jw_folder_rank *ranks = NULL;
+    int rank_count = 0;
+    jw_db_list_folder_ranks(path, "SFC", &ranks, &rank_count);
+    assert(rank_count == 1);
+    assert(jw_db_folder_rank(ranks, rank_count, "Hacks/Translated") == 3);
+    assert(jw_db_folder_rank(ranks, rank_count, "Hacks") == 0);
+    assert(jw_db_folder_rank(ranks, rank_count, "Hacks/Translated/More") == 0);
+    jw_db_free_folder_ranks(ranks, rank_count);
+
     /* Favorites use the same order, and so does the Hidden Games list. */
     for (int i = 0; i < count; i++) {
         assert(jw_db_set_favorite(path, "game", games[i].id, 1) == 0);

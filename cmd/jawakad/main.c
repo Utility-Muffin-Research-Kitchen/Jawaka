@@ -2,7 +2,9 @@
 #include "cJSON.h"
 #include "internal/core/log.h"
 #include "internal/db/db.h"
+#include "internal/launcher/game_folders.h"
 #include "internal/db/relocation.h"
+#include "internal/discovery/art_path.h"
 #include "internal/discovery/discovery.h"
 #include "internal/storage/health.h"
 #include "internal/focus/focus.h"
@@ -4978,9 +4980,137 @@ static int jw__reply_library_status(jw_daemon_state *state, jw_ipc_client *clien
     }
     /* What a library editor may rely on this daemon for. Clients treat a missing
        list as a release from before any of these. */
-    static const char *const kMetadataCaps[] = {"user_synopsis", "metadata_changed"};
+    static const char *const kMetadataCaps[] = {
+        "user_synopsis", "metadata_changed", "sort_rank", "folder_rows",
+    };
     cJSON_AddItemToObject(root, "metadata_caps",
-                          cJSON_CreateStringArray(kMetadataCaps, 2));
+                          cJSON_CreateStringArray(kMetadataCaps, 4));
+    return jw__reply_json(client, root);
+}
+
+typedef struct {
+    const jw_game_entry *games;
+    const jw_ra_system *system;
+    const jw_folder_rank *ranks;
+    int rank_count;
+} jw__folder_rows_input;
+
+static const char *jw__folder_rows_relpath(void *userdata, int i) {
+    return ((const jw__folder_rows_input *)userdata)->games[i].rom_relpath;
+}
+
+static bool jw__folder_rows_marker(void *userdata, const char *rel_subpath,
+                                   const char *filename) {
+    return jw_art_is_folder_marker(((const jw__folder_rows_input *)userdata)->system,
+                                   rel_subpath, filename);
+}
+
+static int jw__folder_rows_game_rank(void *userdata, int i) {
+    return ((const jw__folder_rows_input *)userdata)->games[i].sort_rank;
+}
+
+static int jw__folder_rows_folder_rank(void *userdata, const char *path) {
+    const jw__folder_rows_input *input = userdata;
+    return jw_db_folder_rank(input->ranks, input->rank_count, path);
+}
+
+static void jw__folder_rows_add_game(cJSON *rows, const jw_game_entry *game) {
+    cJSON *row = cJSON_CreateObject();
+    if (!row) return;
+    cJSON_AddStringToObject(row, "kind", "game");
+    cJSON_AddStringToObject(row, "source", game->source_id);
+    cJSON_AddStringToObject(row, "path", game->rom_relpath);
+    cJSON_AddStringToObject(row, "name", game->name);
+    cJSON_AddNumberToObject(row, "rank", game->sort_rank);
+    cJSON_AddItemToArray(rows, row);
+}
+
+/* One level of a system's list, in the order the launcher draws it: the real folder
+   model on the real inputs, so an editor can't arrange a hierarchy the handheld
+   wouldn't show. With Show Folders off that's the flat list. */
+static int jw__reply_folder_rows(jw_daemon_state *state, jw_ipc_client *client, cJSON *request) {
+    const cJSON *system = cJSON_GetObjectItemCaseSensitive(request, "system");
+    const cJSON *folder = cJSON_GetObjectItemCaseSensitive(request, "folder");
+    if (!cJSON_IsString(system) || !system->valuestring[0]) {
+        return jw__reply_error(client, "missing system");
+    }
+
+    int count = 0;
+    if (jw_db_count_games_for_system(state->db_path, system->valuestring, &count) != 0) {
+        return jw__reply_error(client, "could not read library");
+    }
+    jw_game_entry *games = count > 0 ? calloc((size_t)count, sizeof(*games)) : NULL;
+    if (count > 0 && !games) {
+        return jw__reply_error(client, "out of memory");
+    }
+    int loaded = 0;
+    if (count > 0 && jw_db_list_games_for_system(state->db_path, system->valuestring, games,
+                                                 count, &loaded) != 0) {
+        free(games);
+        return jw__reply_error(client, "could not read library");
+    }
+
+    char setting[8] = "";
+    (void)jw_db_get_setting(state->db_path, JW_SHOW_FOLDERS_SETTING_KEY, setting, sizeof(setting));
+    bool show_folders = strcmp(setting, "1") == 0;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "library-folder-rows");
+    cJSON_AddBoolToObject(root, "show_folders", show_folders);
+    cJSON *rows = cJSON_AddArrayToObject(root, "rows");
+
+    if (!show_folders) {
+        cJSON_AddStringToObject(root, "folder", "");
+        for (int i = 0; i < loaded; i++) jw__folder_rows_add_game(rows, &games[i]);
+    } else {
+        char error[256] = "";
+        const jw_ra_catalog *catalog = jw_ra_catalog_get(state->sdcard_root, error, sizeof(error));
+        jw__folder_rows_input input = {
+            .games = games,
+            .system = catalog ? jw_ra_catalog_find_system(catalog, system->valuestring) : NULL,
+        };
+        jw_folder_rank *ranks = NULL;
+        jw_db_list_folder_ranks(state->db_path, system->valuestring, &ranks, &input.rank_count);
+        input.ranks = ranks;
+        jw_game_folder_tree *tree = jw_game_folder_tree_build_ranked(
+            loaded, jw__folder_rows_relpath, jw__folder_rows_marker,
+            jw__folder_rows_game_rank, jw__folder_rows_folder_rank, &input);
+        jw_db_free_folder_ranks(ranks, input.rank_count);
+        if (!tree) {
+            free(games);
+            cJSON_Delete(root);
+            return jw__reply_error(client, "could not build folders");
+        }
+        /* Where the folder went when a change collapsed or removed it. */
+        int level = jw_game_folder_resolve(tree, cJSON_IsString(folder) ? folder->valuestring : "");
+        cJSON_AddStringToObject(root, "folder", jw_game_folder_path(tree, level));
+        if (level > 0) {
+            cJSON_AddStringToObject(root, "parent",
+                                    jw_game_folder_path(tree, jw_game_folder_parent(tree, level)));
+        }
+        int total = jw_game_folder_rows(tree, level, NULL, 0);
+        jw_game_folder_row *level_rows = total > 0 ? malloc((size_t)total * sizeof(*level_rows)) : NULL;
+        if (level_rows) {
+            jw_game_folder_rows(tree, level, level_rows, total);
+            for (int k = 0; k < total; k++) {
+                if (level_rows[k].kind == JW_GAME_FOLDER_ROW_GAME) {
+                    jw__folder_rows_add_game(rows, &games[level_rows[k].index]);
+                    continue;
+                }
+                cJSON *row = cJSON_CreateObject();
+                if (!row) continue;
+                cJSON_AddStringToObject(row, "kind", "folder");
+                cJSON_AddStringToObject(row, "path", jw_game_folder_path(tree, level_rows[k].index));
+                cJSON_AddStringToObject(row, "name", jw_game_folder_name(tree, level_rows[k].index));
+                cJSON_AddNumberToObject(row, "games", jw_game_folder_game_count(tree, level_rows[k].index));
+                cJSON_AddNumberToObject(row, "rank", jw_game_folder_row_rank(tree, level_rows[k]));
+                cJSON_AddItemToArray(rows, row);
+            }
+        }
+        free(level_rows);
+        jw_game_folder_tree_free(tree);
+    }
+    free(games);
     return jw__reply_json(client, root);
 }
 
@@ -15230,6 +15360,12 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
 
     if (strcmp(type->valuestring, "scan-library") == 0) {
         int rc = jw__handle_scan(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "library-folder-rows") == 0) {
+        int rc = jw__reply_folder_rows(state, client, root);
         cJSON_Delete(root);
         return rc;
     }

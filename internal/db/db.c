@@ -3363,12 +3363,15 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
         "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
         "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''), "
         "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id), "
-        "COALESCE(g.last_played,0), g.playtime_s "
+        "COALESCE(g.last_played,0), g.playtime_s, "
+        "MAX(CAST(COALESCE(sr.value, '0') AS INTEGER), 0) AS rank "
         "FROM games g "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
+        "LEFT JOIN game_settings sr ON sr.game_id = g.id AND sr.key = '" JW_GAME_SETTING_SORT_RANK "' "
         "WHERE g.system = ? AND " JW_LISTED_GAME("g")
-        "ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) COLLATE JW_TITLE, "
+        "ORDER BY rank = 0, rank, "
+        "         COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) COLLATE JW_TITLE, "
         "         g.id LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
@@ -3382,11 +3385,66 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
 
     while (sqlite3_step(stmt) == SQLITE_ROW && *out_count < max_count) {
         jw__fill_game_entry(stmt, &out[*out_count]);
+        out[*out_count].sort_rank = sqlite3_column_int(stmt, 12);
         (*out_count)++;
     }
 
     sqlite3_finalize(stmt);
     jw_db_close(db);
+    return 0;
+}
+
+void jw_db_list_folder_ranks(const char *db_path, const char *system,
+                             jw_folder_rank **out, int *out_count) {
+    *out = NULL;
+    *out_count = 0;
+    sqlite3 *db = NULL;
+    if (!db_path || !system || jw_db_open(db_path, &db) != 0) return;
+
+    static const char *sql =
+        "SELECT substr(key, ?2), CAST(value AS INTEGER) FROM system_settings "
+        "WHERE system = ?1 AND substr(key, 1, ?3) = '" JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX "' "
+        "AND CAST(value AS INTEGER) > 0;";
+    int prefix = (int)strlen(JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, system, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 2, prefix + 1);
+        sqlite3_bind_int(stmt, 3, prefix);
+        int count = 0;
+        jw_folder_rank *ranks = NULL;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *path = (const char *)sqlite3_column_text(stmt, 0);
+            jw_folder_rank *grown = realloc(ranks, ((size_t)count + 1) * sizeof(*ranks));
+            if (!grown) break;
+            ranks = grown;
+            ranks[count].path = strdup(path ? path : "");
+            ranks[count].rank = sqlite3_column_int(stmt, 1);
+            if (!ranks[count].path) break;
+            count++;
+        }
+        *out = ranks;
+        *out_count = count;
+    }
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+}
+
+void jw_db_free_folder_ranks(jw_folder_rank *ranks, int count) {
+    for (int i = 0; i < count; i++) free(ranks[i].path);
+    free(ranks);
+}
+
+int jw_db_folder_rank(const jw_folder_rank *ranks, int count, const char *path) {
+    for (int i = 0; path && i < count; i++) {
+        const char *a = ranks[i].path;
+        const char *b = path;
+        while (*a && tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
+            a++;
+            b++;
+        }
+        if (!*a && !*b) return ranks[i].rank;
+    }
     return 0;
 }
 

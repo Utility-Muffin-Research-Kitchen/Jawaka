@@ -3436,6 +3436,14 @@ msgstr "此平台不支持开机动画"
 msgid "brightness failed"
 msgstr "亮度调整失败"
 
+#: cmd/jawakad/main.c
+msgid "could not build folders"
+msgstr ""
+
+#: cmd/jawakad/main.c
+msgid "could not read library"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "count|Systems"
 msgstr "平台数"
