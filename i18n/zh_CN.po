@@ -2271,6 +2271,10 @@ msgid "Revert"
 msgstr "还原"
 
 #: internal/settings/settings.c
+msgid "Round Cover Art"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Rounded"
 msgstr "圆角"
 

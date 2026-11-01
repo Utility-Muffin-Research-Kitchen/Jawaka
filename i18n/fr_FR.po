@@ -4156,6 +4156,10 @@ msgid "Reverting in %d seconds"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Round Cover Art"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Rounded"
 msgstr "Arrondi"
 
