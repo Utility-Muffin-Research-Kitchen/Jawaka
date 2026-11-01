@@ -3394,6 +3394,36 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
     return 0;
 }
 
+int jw_db_set_game_pinned(const char *db_path, int game_id, int pinned) {
+    if (!db_path || game_id <= 0) return -1;
+    static const char *pin_sql =
+        "INSERT INTO game_settings (game_id, key, value, updated_at) "
+        "SELECT ?1, '" JW_GAME_SETTING_SORT_RANK "', 1 + MAX("
+        "  (SELECT COALESCE(MAX(CAST(s.value AS INTEGER)), 0) FROM game_settings s "
+        "   JOIN games o ON o.id = s.game_id WHERE s.key = '" JW_GAME_SETTING_SORT_RANK "' "
+        "   AND o.system = g.system),"
+        "  (SELECT COALESCE(MAX(CAST(f.value AS INTEGER)), 0) FROM system_settings f "
+        "   WHERE f.system = g.system AND substr(f.key, 1, ?2) = '" JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX "')), "
+        "  strftime('%s','now') FROM games g WHERE g.id = ?1 "
+        "ON CONFLICT(game_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;";
+    static const char *unpin_sql =
+        "DELETE FROM game_settings WHERE game_id = ?1 AND key = '" JW_GAME_SETTING_SORT_RANK "';";
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+    sqlite3_stmt *stmt = NULL;
+    int rc = -1;
+    if (sqlite3_prepare_v2(db, pinned ? pin_sql : unpin_sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, game_id);
+        if (pinned) sqlite3_bind_int(stmt, 2, (int)strlen(JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX));
+        rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : jw__write_error(db);
+    } else {
+        rc = jw__write_error(db);
+    }
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
 void jw_db_list_folder_ranks(const char *db_path, const char *system,
                              jw_folder_rank **out, int *out_count) {
     *out = NULL;

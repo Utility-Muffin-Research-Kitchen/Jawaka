@@ -1543,6 +1543,10 @@ msgstr "코어: %.160s"
 msgid "Could not build package mutation request"
 msgstr "패키지 변경 요청을 만들 수 없습니다"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Could not change this game's pin"
+msgstr ""
+
 #: internal/discovery/delete_job.c
 msgid "Could not check artwork work before deletion."
 msgstr "삭제 전에 아트워크 작업을 확인할 수 없습니다."
@@ -2672,6 +2676,10 @@ msgid "Library"
 msgstr "라이브러리"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Library refresh failed."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Library scan failed"
 msgstr "라이브러리 스캔 실패"
 
@@ -3406,6 +3414,14 @@ msgstr "설치된 Leaf %s을(를) 다시 선택할까요?"
 #: internal/settings/settings.c
 msgid "Pick older Leaf %s?"
 msgstr "이전 버전 Leaf %s을(를) 선택할까요?"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pin to Top"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pinned to the top of this list."
+msgstr ""
 
 #: internal/update/update.c
 msgid "Platform artifact metadata is incomplete"
@@ -5382,6 +5398,14 @@ msgstr "페어링 해제 실패"
 #: internal/settings/settings.c
 msgid "Unpaired %s"
 msgstr "%s 페어링 해제됨"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Unpin"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Unpinned."
+msgstr ""
 
 #: internal/update/update.c
 msgid "Unsafe stock update trigger: %s"

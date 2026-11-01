@@ -967,6 +967,10 @@ msgstr "控制器设置失败。请重启 Leaf 后重试。"
 msgid "Core"
 msgstr "核心"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Could not change this game's pin"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Could not save"
 msgstr "无法保存"
@@ -1552,6 +1556,10 @@ msgid "Library"
 msgstr "游戏库"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Library refresh failed."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Library scan failed"
 msgstr "游戏库扫描失败"
 
@@ -1960,6 +1968,14 @@ msgstr "选取更新"
 #: cmd/jawaka-launcher/main.c
 msgid "Pick another Saturn BIOS from the options menu."
 msgstr "请在选项菜单中另选一个 Saturn BIOS。"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pin to Top"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pinned to the top of this list."
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Play"
@@ -3185,6 +3201,14 @@ msgstr "卸载失败"
 #: cmd/jawaka-launcher/main.c
 msgid "Unpair"
 msgstr "取消配对"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Unpin"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Unpinned."
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Unsupported"

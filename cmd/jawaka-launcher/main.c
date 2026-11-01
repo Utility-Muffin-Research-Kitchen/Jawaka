@@ -145,6 +145,7 @@ typedef enum {
 typedef enum {
     JW_ACTION_ROW_SEARCH = 0,
     JW_ACTION_ROW_DISPLAY_NAME,
+    JW_ACTION_ROW_PIN,           /* game, in its own system's list */
     JW_ACTION_ROW_CORE,
     JW_ACTION_ROW_BIOS,          /* Saturn standalone only; opens a picker */
     JW_ACTION_ROW_PERFORMANCE,
@@ -432,6 +433,7 @@ typedef struct {
        closed, so there is one liveness test rather than two. */
     jw_bios_picker    *bios_picker;
     char               action_system_display_override[64];
+    bool               action_pinned;           /* target game has a rank */
     bool               action_scrape_pending;   /* target has queued scrape work */
     /* System menu (MENU button): an in-launcher overlay, not a separate process,
        so open/close is instant (no respawn, no SDL/Wayland/DB re-init). The
@@ -7161,6 +7163,9 @@ static void jw__action_row_strings(const jw_launcher_state *state,
                          : T("Reset System Overrides"));
             snprintf(value, value_size, "%s", T("Clear"));
             break;
+        case JW_ACTION_ROW_PIN:
+            snprintf(title, title_size, "%s", state->action_pinned ? T("Unpin") : T("Pin to Top"));
+            break;
         case JW_ACTION_ROW_HIDE:
             snprintf(title, title_size, "%s", T("Hide Game"));
             break;
@@ -9648,6 +9653,14 @@ static void jw__action_add_row(jw_launcher_state *state, jw_action_row_kind row)
     state->action_rows[state->action_row_count++] = row;
 }
 
+/* Ranks only order a system's own list, so Favorites, Recents and the 5-Game picker
+   have nothing to pin to. */
+static bool jw__action_can_pin(const jw_launcher_state *state) {
+    return state->games_open && !state->games_are_favorites && !state->focus_pick_active &&
+           state->game_system[0] && strcmp(state->game_system, "Recently Played") != 0 &&
+           strcmp(state->action_game.system, state->game_system) == 0;
+}
+
 static void jw__action_refresh_rows(jw_launcher_state *state) {
     if (!state) {
         return;
@@ -9671,6 +9684,9 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
         jw__action_add_row(state, JW_ACTION_ROW_RESET);
     } else if (state->action_scope == JW_ACTION_GAME) {
         jw__action_add_row(state, JW_ACTION_ROW_DISPLAY_NAME);
+        if (jw__action_can_pin(state)) {
+            jw__action_add_row(state, JW_ACTION_ROW_PIN);
+        }
         if (state->action_core_count > 1 ||
             jw__action_find_core(
                 state, state->action_core_game_override) >= 0 ||
@@ -9909,6 +9925,10 @@ static void jw__open_game_actions(const char *db_path, jw_launcher_state *state,
     state->actions_open = true;
     state->action_scope = JW_ACTION_GAME;
     state->action_game = *game;
+    char rank[16] = "";
+    state->action_pinned =
+        jw_db_get_game_setting(db_path, game->id, JW_GAME_SETTING_SORT_RANK, rank, sizeof(rank)) == 0 &&
+        atoi(rank) > 0;
     snprintf(state->action_system, sizeof(state->action_system), "%s", game->system);
     jw_system_display_name(db_path, state->system_catalog, game->system,
                            state->action_system_display,
@@ -11673,6 +11693,29 @@ static void jw__hide_action_game(const char *socket_path, const char *db_path,
         : T("Game hidden. Library refresh failed."));
 }
 
+/* The reload moves the game, and the selection goes with it. */
+static void jw__toggle_action_pin(const char *socket_path, const char *db_path,
+                                  jw_launcher_state *state, bool *running) {
+    if (state->action_scope != JW_ACTION_GAME || state->action_game.id <= 0)
+        return;
+    bool pin = !state->action_pinned;
+    int rc = jw_db_set_game_pinned(db_path, state->action_game.id, pin);
+    if (rc == JW_DB_RC_READONLY) {
+        if (jw_storage_ui_show_library_read_only(socket_path)) *running = false;
+        return;
+    }
+    if (rc != 0) {
+        snprintf(state->status, sizeof(state->status), "%s", T("Could not change this game's pin"));
+        return;
+    }
+    state->actions_open = false;
+    state->action_scope = JW_ACTION_NONE;
+    rc = jw__reload_library_from_db(db_path, state);
+    snprintf(state->status, sizeof(state->status), "%s",
+             rc != 0 ? T("Library refresh failed.")
+                     : pin ? T("Pinned to the top of this list.") : T("Unpinned."));
+}
+
 static bool jw__screenscraper_account_configured(const char *db_path) {
     char username[64] = "";
     return db_path && db_path[0] &&
@@ -11772,6 +11815,9 @@ static void jw__select_action_row(const char *socket_path, const char *db_path,
             break;
         case JW_ACTION_ROW_DISPLAY_NAME:
             jw__edit_action_display_name(db_path, state);
+            break;
+        case JW_ACTION_ROW_PIN:
+            jw__toggle_action_pin(socket_path, db_path, state, running);
             break;
         case JW_ACTION_ROW_CORE:
             jw__cycle_action_core(db_path, state, +1);
