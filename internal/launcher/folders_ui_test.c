@@ -54,6 +54,28 @@ static void hide(jw_launcher_state *state, const jw_game_entry *game) {
     assert(running && !state->actions_open);
 }
 
+static int action_row(const jw_launcher_state *state, jw_action_row_kind kind) {
+    for (int i = 0; i < state->action_row_count; i++) {
+        if (state->action_rows[i] == kind) return i;
+    }
+    return -1;
+}
+
+/* Game Options, then the pin row, as X and A would do it. */
+static void toggle_pin(jw_launcher_state *state, const jw_game_entry *game, bool now_pinned) {
+    bool running = true;
+    jw__open_game_actions(state->db_path, state, game);
+    assert(state->action_pinned == now_pinned);
+    int row = action_row(state, JW_ACTION_ROW_PIN);
+    assert(row >= 0);
+    char title[128], value[128];
+    jw__action_row_strings(state, JW_ACTION_ROW_PIN, title, sizeof(title), value, sizeof(value));
+    assert(strcmp(title, now_pinned ? "Unpin" : "Pin to Top") == 0);
+    cat_list_state_jump(&state->action_list, row, state->action_row_count);
+    jw__select_action_row("", state->db_path, state, &running);
+    assert(running && !state->actions_open);
+}
+
 /* The row whose drawn label is `label` ("Name/" for a folder), or -1. */
 static int row_labeled(jw_launcher_state *state, const char *label) {
     for (int row = 0; row < jw__browse_count(state); row++) {
@@ -178,6 +200,40 @@ int main(void) {
     assert(jw_db_delete_game_setting(state->db_path, flat_zelda.id, JW_GAME_SETTING_SORT_RANK) == 0);
     assert(jw__reload_library_from_db(state->db_path, state) == 0);
 
+    /* Game Options pins a game: it goes to the top, the selection goes with it, and the
+       row turns into Unpin. A second pin goes after the first. */
+    jw_game_entry opt_zelda = game_at(state, "SFC/Zelda/Zelda (USA).zip");
+    jw_game_entry opt_alpha = game_at(state, "SFC/Alpha.zip");
+    select_row(state, jw__browse_find_game(state, opt_zelda.source_id, opt_zelda.rom_relpath));
+    toggle_pin(state, &opt_zelda, false);
+    assert(state->game_list.cursor == 0 && jw__browse_selected_game(state)->id == opt_zelda.id);
+    assert(strcmp(state->status, "Pinned to the top of this list.") == 0);
+    select_row(state, jw__browse_find_game(state, opt_alpha.source_id, opt_alpha.rom_relpath));
+    toggle_pin(state, &opt_alpha, false);
+    assert(state->game_list.cursor == 1 && jw__browse_selected_game(state)->id == opt_alpha.id);
+    assert(jw__browse_game(state, 0)->id == opt_zelda.id);
+    check_rows_agree(state);
+    render_all_layouts(state, "pinned-from-options");
+
+    /* Unpinning puts it back in title order, still selected. */
+    toggle_pin(state, &opt_alpha, true);
+    assert(jw__browse_game(state, 0)->id == opt_zelda.id);
+    assert(jw__browse_selected_game(state)->id == opt_alpha.id && state->game_list.cursor == 1);
+    assert(strcmp(state->status, "Unpinned.") == 0);
+    toggle_pin(state, &opt_zelda, true);
+    char opt_rank[16] = "";
+    assert(jw_db_get_game_setting(state->db_path, opt_zelda.id, JW_GAME_SETTING_SORT_RANK,
+                                  opt_rank, sizeof(opt_rank)) != 0 || !opt_rank[0]);
+
+    /* A pin goes after a folder's rank too, which a game can't see from its own level. */
+    assert(jw_db_set_system_setting(state->db_path, "SFC", JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX "hacks", "7") == 0);
+    assert(jw_db_set_game_pinned(state->db_path, opt_alpha.id, 1) == 0);
+    assert(jw_db_get_game_setting(state->db_path, opt_alpha.id, JW_GAME_SETTING_SORT_RANK,
+                                  opt_rank, sizeof(opt_rank)) == 0 && strcmp(opt_rank, "8") == 0);
+    assert(jw_db_set_game_pinned(state->db_path, opt_alpha.id, 0) == 0);
+    assert(jw_db_delete_system_setting(state->db_path, "SFC", JW_SYSTEM_SETTING_FOLDER_RANK_PREFIX "hacks") == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
+
     /* Reload, flat: a title edit moves rows, and the selection stays on its game. */
     jw_game_entry alpha = game_at(state, "SFC/Alpha.zip");
     jw_game_entry top_gear = game_at(state, "SFC/Top Gear/Top Gear (USA).zip");
@@ -224,6 +280,11 @@ int main(void) {
     assert(jw__open_favorites(state->db_path, state) == 0);
     select_row(state, 1);
     assert(jw__browse_selected_game(state)->id == top_gear.id);
+    /* Ranks don't order Favorites, so Game Options offers no pin there. */
+    jw__open_game_actions(state->db_path, state, jw__browse_selected_game(state));
+    assert(action_row(state, JW_ACTION_ROW_PIN) < 0);
+    state->actions_open = false;
+    state->action_scope = JW_ACTION_NONE;
     assert(jw_db_set_favorite(state->db_path, "game", alpha.id, 0) == 0);
     assert(jw__reload_library_from_db(state->db_path, state) == 0);
     assert(state->game_list.cursor == 0 && jw__browse_selected_game(state)->id == top_gear.id);
@@ -404,6 +465,21 @@ int main(void) {
     assert(found);
     jw__pick_cancel(state);
     assert(!state->focus_pick_active);
+
+    /* Pinning from inside a folder leads that level and leaves the root alone. */
+    jw_game_entry kaizo = game_at(state, "SFC/Hacks/Kaizo World.zip");
+    assert(jw__open_system_games(state->db_path, "SFC", state) == 0);
+    int root_rows = jw__browse_count(state);
+    select_row(state, row_labeled(state, "Hacks/"));
+    press(state, CAT_BTN_A);
+    select_row(state, jw__browse_find_game(state, kaizo.source_id, kaizo.rom_relpath));
+    toggle_pin(state, &kaizo, false);
+    assert(state->browse_folder > 0 && jw__browse_selected_game(state)->id == kaizo.id);
+    assert(state->game_list.cursor == 0);
+    press(state, CAT_BTN_B);
+    assert(jw__browse_count(state) == root_rows && row_labeled(state, "Hacks/") >= 0);
+    assert(jw_db_set_game_pinned(state->db_path, kaizo.id, 0) == 0);
+    assert(jw__reload_library_from_db(state->db_path, state) == 0);
 
     /* The Favorites tab draws its own plain list through the shared row drawer. */
     assert(jw__open_system_games(state->db_path, "SFC", state) == 0);

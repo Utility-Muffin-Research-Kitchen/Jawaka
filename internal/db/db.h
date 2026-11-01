@@ -375,6 +375,10 @@ int  jw_db_set_game_setting(const char *db_path, int game_id,
                             const char *key, const char *value);
 int  jw_db_delete_game_setting(const char *db_path, int game_id,
                                const char *key);
+/* Pins a game after every pin in its system, whichever level or card those are on, or
+   unpins it. Returns JW_DB_RC_READONLY/BUSY/IOERR, or -1 for other errors. */
+int  jw_db_set_game_pinned(const char *db_path, int game_id, int pinned);
+
 /* A system's folder ranks. Absent or unreadable ranks leave count 0, which just means
    nothing is pinned. Free with jw_db_free_folder_ranks. */
 typedef struct {

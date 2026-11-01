@@ -1561,6 +1561,10 @@ msgstr ""
 msgid "Could not build package mutation request"
 msgstr "Не удалось подготовить запрос на изменение пакета"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Could not change this game's pin"
+msgstr ""
+
 #: internal/discovery/delete_job.c
 msgid "Could not check artwork work before deletion."
 msgstr ""
@@ -2691,6 +2695,10 @@ msgid "Library"
 msgstr "Библиотека"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Library refresh failed."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Library scan failed"
 msgstr "Ошибка сканирования библиотеки"
 
@@ -3425,6 +3433,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Pick older Leaf %s?"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pin to Top"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pinned to the top of this list."
 msgstr ""
 
 #: internal/update/update.c
@@ -5403,6 +5419,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Unpaired %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Unpin"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Unpinned."
 msgstr ""
 
 #: internal/update/update.c

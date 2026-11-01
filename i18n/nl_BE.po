@@ -1536,6 +1536,10 @@ msgstr "Core: %.160s"
 msgid "Could not build package mutation request"
 msgstr "Kon de pakketwijziging niet voorbereiden"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Could not change this game's pin"
+msgstr ""
+
 #: internal/discovery/delete_job.c
 msgid "Could not check artwork work before deletion."
 msgstr "Kon de coverarttaken niet controleren vóór het verwijderen."
@@ -2665,6 +2669,10 @@ msgid "Library"
 msgstr "Bibliotheek"
 
 #: cmd/jawaka-launcher/main.c
+msgid "Library refresh failed."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Library scan failed"
 msgstr "Bibliotheek scannen mislukt"
 
@@ -3399,6 +3407,14 @@ msgstr "De geïnstalleerde Leaf %s opnieuw kiezen?"
 #: internal/settings/settings.c
 msgid "Pick older Leaf %s?"
 msgstr "De oudere Leaf %s kiezen?"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pin to Top"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pinned to the top of this list."
+msgstr ""
 
 #: internal/update/update.c
 msgid "Platform artifact metadata is incomplete"
@@ -5375,6 +5391,14 @@ msgstr "Ontkoppelen mislukt"
 #: internal/settings/settings.c
 msgid "Unpaired %s"
 msgstr "%s ontkoppeld"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Unpin"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Unpinned."
+msgstr ""
 
 #: internal/update/update.c
 msgid "Unsafe stock update trigger: %s"
