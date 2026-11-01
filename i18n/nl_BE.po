@@ -5986,7 +5986,7 @@ msgstr "kaart afwezig; niet geïnventariseerd"
 
 #: cmd/jawakad/main.c
 msgid "could not build folders"
-msgstr ""
+msgstr "kon de mappen niet opbouwen"
 
 #: cmd/jawakad/main.c
 msgid "could not compute missing counts"
@@ -6002,7 +6002,7 @@ msgstr "kon de systemen niet oplijsten"
 
 #: cmd/jawakad/main.c
 msgid "could not read library"
-msgstr ""
+msgstr "kon de bibliotheek niet lezen"
 
 #: cmd/jawakad/main.c
 msgid "could not record acknowledgement"
