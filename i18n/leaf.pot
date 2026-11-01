@@ -5864,7 +5864,7 @@ msgstr ""
 msgid "Your saves and save states may not be kept while this SD card is waiting for repair."
 msgstr ""
 
-#: internal/discovery/delete_job.c
+#: cmd/jawakad/main.c
 msgid "Your selected ROM card is not mounted."
 msgstr ""
 
@@ -5985,6 +5985,10 @@ msgid "card absent; not inventoried"
 msgstr ""
 
 #: cmd/jawakad/main.c
+msgid "could not build folders"
+msgstr ""
+
+#: cmd/jawakad/main.c
 msgid "could not compute missing counts"
 msgstr ""
 
@@ -5994,6 +5998,10 @@ msgstr ""
 
 #: internal/scrape/scrape_worker.c
 msgid "could not list systems"
+msgstr ""
+
+#: cmd/jawakad/main.c
+msgid "could not read library"
 msgstr ""
 
 #: cmd/jawakad/main.c

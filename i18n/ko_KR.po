@@ -5992,6 +5992,10 @@ msgid "card absent; not inventoried"
 msgstr "카드가 없어 목록에 포함되지 않음"
 
 #: cmd/jawakad/main.c
+msgid "could not build folders"
+msgstr ""
+
+#: cmd/jawakad/main.c
 msgid "could not compute missing counts"
 msgstr "누락 개수를 계산할 수 없습니다."
 
@@ -6002,6 +6006,10 @@ msgstr "이 시스템의 게임 목록을 불러올 수 없습니다."
 #: internal/scrape/scrape_worker.c
 msgid "could not list systems"
 msgstr "시스템 목록을 불러올 수 없습니다."
+
+#: cmd/jawakad/main.c
+msgid "could not read library"
+msgstr ""
 
 #: cmd/jawakad/main.c
 msgid "could not record acknowledgement"

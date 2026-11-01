@@ -6123,6 +6123,10 @@ msgid "card absent; not inventoried"
 msgstr ""
 
 #: cmd/jawakad/main.c
+msgid "could not build folders"
+msgstr ""
+
+#: cmd/jawakad/main.c
 msgid "could not compute missing counts"
 msgstr ""
 
@@ -6132,6 +6136,10 @@ msgstr ""
 
 #: internal/scrape/scrape_worker.c
 msgid "could not list systems"
+msgstr ""
+
+#: cmd/jawakad/main.c
+msgid "could not read library"
 msgstr ""
 
 #: cmd/jawakad/main.c

@@ -5985,6 +5985,10 @@ msgid "card absent; not inventoried"
 msgstr "kaart afwezig; niet geïnventariseerd"
 
 #: cmd/jawakad/main.c
+msgid "could not build folders"
+msgstr ""
+
+#: cmd/jawakad/main.c
 msgid "could not compute missing counts"
 msgstr "kon het aantal ontbrekende niet berekenen"
 
@@ -5995,6 +5999,10 @@ msgstr "kon de games van dit systeem niet oplijsten"
 #: internal/scrape/scrape_worker.c
 msgid "could not list systems"
 msgstr "kon de systemen niet oplijsten"
+
+#: cmd/jawakad/main.c
+msgid "could not read library"
+msgstr ""
 
 #: cmd/jawakad/main.c
 msgid "could not record acknowledgement"
