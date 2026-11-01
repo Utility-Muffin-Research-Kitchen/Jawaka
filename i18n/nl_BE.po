@@ -4018,7 +4018,7 @@ msgstr "Terugzetten over %d seconden"
 
 #: internal/settings/settings.c
 msgid "Round Cover Art"
-msgstr ""
+msgstr "Afgeronde coverart"
 
 #: internal/settings/settings.c
 msgid "Rounded"
