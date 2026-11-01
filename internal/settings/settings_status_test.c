@@ -240,6 +240,42 @@ static int check_timezone_lookup(void) {
     return 0;
 }
 
+/* Round Cover Art starts off, flips from the button path, and survives a reload
+   from the database. */
+static int check_round_cover_art(void) {
+    char db[] = "/tmp/settings-status-cover.XXXXXX";
+    int fd = mkstemp(db);
+    if (fd < 0) return fail("could not create a settings db");
+    close(fd);
+    unlink(db);   /* jw_db_set_setting creates it; an empty file is not a db */
+
+    static jw_settings_ui ui, reloaded;
+    char status[128] = "";
+    jw_settings_ui_init(&ui, db, "Jawaka-Tabs", "");
+    if (jw_settings_round_cover_art(&ui))
+        return fail("cover art was rounded by default");
+
+    ui.open = true;
+    ui.screen = JW_SETTINGS_APPEARANCE;
+    ui.appearance_list.cursor = JW_APPEAR_ROUND_COVER_ART;
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (!jw_settings_round_cover_art(&ui))
+        return fail("A did not turn Round Cover Art on");
+    jw_settings_ui_init(&reloaded, db, "Jawaka-Tabs", "");
+    if (!jw_settings_round_cover_art(&reloaded))
+        return fail("Round Cover Art did not survive a reload");
+
+    jw_settings_ui_handle_button(&ui, CAT_BTN_LEFT, status, sizeof(status), NULL);
+    if (jw_settings_round_cover_art(&ui))
+        return fail("Left did not turn Round Cover Art off");
+    jw_settings_ui_init(&reloaded, db, "Jawaka-Tabs", "");
+    if (jw_settings_round_cover_art(&reloaded))
+        return fail("turning Round Cover Art off did not survive a reload");
+
+    unlink(db);
+    return 0;
+}
+
 /* The real button path: open the picker from the System row, move, select,
    and confirm what reaches the database. */
 static int check_timezone_selection(void) {
@@ -1206,6 +1242,7 @@ int main(int argc, char **argv) {
 
     if (check_timezone_catalog() || check_timezone_lookup() ||
         check_timezone_selection()) return 1;
+    if (check_round_cover_art()) return 1;
     if (check_activity() || check_theme_selection() || check_layout_viewport(argv[1])) return 1;
     puts("PASS settings-status-test");
     return 0;

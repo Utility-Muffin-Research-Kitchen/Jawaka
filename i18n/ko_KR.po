@@ -4024,6 +4024,10 @@ msgid "Reverting in %d seconds"
 msgstr "%d초 후 되돌립니다"
 
 #: internal/settings/settings.c
+msgid "Round Cover Art"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Rounded"
 msgstr "둥글게"
 

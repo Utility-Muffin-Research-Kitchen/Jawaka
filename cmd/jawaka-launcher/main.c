@@ -700,7 +700,7 @@ static void jw__render_favorites(const jw_launcher_state *state,
 static void jw__render_game_list_pane(const jw_launcher_state *state,
                                       const jw_game_entry *entries, int count,
                                       int content_y, int content_h, int margin,
-                                      const char *empty_msg);
+                                      const char *empty_msg, bool hide_star);
 
 /* Defined with the cover pre-warmer; called here because rebuilding a list in
    place can hand back the same allocation and leave its window key unchanged. */
@@ -2911,8 +2911,13 @@ static void jw__switch_tab(jw_launcher_state *state, int direction, const char *
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
 typedef struct { const jw_app_entry   *apps;    } jw__apps_ctx;
 typedef struct { const jw_launcher_state *st; } jw__pakrat_ctx;
-/* games is a plain list (the home tabs); NULL means the game browser's rows. */
-typedef struct { const jw_game_entry  *games; const jw_launcher_state *st; } jw__roms_ctx;
+/* games is a plain list (the home tabs); NULL means the game browser's rows.
+   hide_star is for the Favorites tab, where every row would carry one. */
+typedef struct {
+    const jw_game_entry *games;
+    const jw_launcher_state *st;
+    bool hide_star;
+} jw__roms_ctx;
 typedef struct { const jw_search_result *results; } jw__search_ctx;
 
 /* Browse rows keep their labels fixed while Catastrophe moves a focus layer
@@ -3334,7 +3339,7 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
             name_x += advance;
             name_max -= advance;
         }
-    } else if (game->favorite) {
+    } else if (game->favorite && !ctx->hide_star) {
         /* Drawn star (not a font glyph — the body font lacks U+2605). Use the
            bright selection-pill color on a normal row (the accent/chrome tone is
            too dark to read on the row bg), and highlighted_text on a selected
@@ -3411,7 +3416,8 @@ static void jw__render_recents(const jw_launcher_state *state,
                                 int content_y, int content_h, int margin) {
     jw__render_game_list_pane(state, state->recents, state->recents_count,
                               content_y, content_h, margin,
-                              T("No recent games yet — play something and it'll show up here"));
+                              T("No recent games yet — play something and it'll show up here"),
+                              false);
 }
 
 static void jw__render_games(const jw_launcher_state *state,
@@ -5175,10 +5181,12 @@ static void jw__draw_image_fit(SDL_Texture *tex, int tex_w, int tex_h,
     cat_draw_image(tex, draw_x, draw_y, draw_w, draw_h);
 }
 
-/* Like jw__draw_image_fit, but clips the image to the same rounded-corner shape
-   as the list pills (theme pill radius + pill_corner_mask), so cover art matches
-   the current List Style setting. Used ONLY for real box art — never icons. */
-static void jw__draw_cover_fit(SDL_Texture *tex, int tex_w, int tex_h,
+/* Like jw__draw_image_fit, but with Round Cover Art on it clips the image to the
+   same rounded-corner shape as the list pills (theme pill radius +
+   pill_corner_mask), so cover art matches the current List Style setting. Used
+   ONLY for real box art — never icons. */
+static void jw__draw_cover_fit(const jw_launcher_state *state,
+                               SDL_Texture *tex, int tex_w, int tex_h,
                                int x, int y, int w, int h) {
     if (!tex || tex_w <= 0 || tex_h <= 0 || w <= 0 || h <= 0) {
         return;
@@ -5192,6 +5200,11 @@ static void jw__draw_cover_fit(SDL_Texture *tex, int tex_w, int tex_h,
     }
     int draw_x = x + (w - draw_w) / 2;
     int draw_y = y + (h - draw_h) / 2;
+
+    if (!jw_settings_round_cover_art(&state->settings)) {
+        cat_draw_image(tex, draw_x, draw_y, draw_w, draw_h);
+        return;
+    }
 
     /* Round in proportion to the cover (scaled by the List Style ratio, so a sharp
        style stays square) and keep the style's corner mask. Tied to the image size
@@ -6351,7 +6364,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
             list.x + CAT_S(8), list.y + CAT_S(8),
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
-        jw__roms_ctx ctx = { NULL, state };
+        jw__roms_ctx ctx = { NULL, state, false };
         jw__draw_browse_list(list.x, list.y, list.w, list.h,
             rows, &state->game_list, item_h,
             jw__draw_rom_item, &ctx);
@@ -6379,10 +6392,10 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         if (!tex && !pending)            /* genuine no-cover; while pending leave empty */
             tex = jw__load_system_icon(state, game->system, &iw, &ih);
         if (tex) {
-            /* Round real box art to match the list style; leave the icon
-               fallback square. */
+            /* Real box art can round to match the list style; the icon
+               fallback stays square. */
             if (is_cover)
-                jw__draw_cover_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
+                jw__draw_cover_fit(state, tex, iw, ih, image.x + art_pad, image.y + art_pad,
                                    image.w - art_pad * 2, image.h - art_pad * 2);
             else
                 jw__draw_image_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
@@ -6437,11 +6450,12 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
 }
 
 /* Shared tabbed-tab content for game lists (Favorites, Recents): the list with
-   star markers on the left and box art for the selected game on the right. */
+   star markers (unless hide_star) on the left and box art for the selected game
+   on the right. */
 static void jw__render_game_list_pane(const jw_launcher_state *state,
                                       const jw_game_entry *entries, int count,
                                       int content_y, int content_h, int margin,
-                                      const char *empty_msg) {
+                                      const char *empty_msg, bool hide_star) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
     (void)content_h;
@@ -6458,7 +6472,7 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
         return;
     }
 
-    jw__roms_ctx ctx = { entries, state };
+    jw__roms_ctx ctx = { entries, state, hide_star };
     jw__draw_browse_list(list.x, list.y, list.w, list.h,
         count, &state->list, item_h, jw__draw_rom_item, &ctx);
 
@@ -6484,9 +6498,9 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
     if (!tex && !pending)            /* genuine no-cover; while pending leave empty */
         tex = jw__load_system_icon(state, game->system, &iw, &ih);
     if (tex) {
-        /* Round real box art to match the list style; icon fallback stays square. */
+        /* Real box art can round to match the list style; icon fallback stays square. */
         if (is_cover)
-            jw__draw_cover_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
+            jw__draw_cover_fit(state, tex, iw, ih, image.x + art_pad, image.y + art_pad,
                                image.w - art_pad * 2, image.h - art_pad * 2);
         else
             jw__draw_image_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
@@ -6498,7 +6512,8 @@ static void jw__render_favorites(const jw_launcher_state *state,
                                  int content_y, int content_h, int margin) {
     jw__render_game_list_pane(state, state->favorites, state->favorites_count,
                               content_y, content_h, margin,
-                              T("No favorites yet — open a game and press Y to add one"));
+                              T("No favorites yet — open a game and press Y to add one"),
+                              true);
 }
 
 static void jw__render_app_browser(const jw_launcher_state *state) {
@@ -6653,9 +6668,9 @@ static void jw__render_search(const jw_launcher_state *state) {
                 tex = jw__load_cached_image(img_abs, &iw, &ih);
         }
         if (tex) {
-            /* Round real box art to match the list style; icons stay square. */
+            /* Real box art can round to match the list style; icons stay square. */
             if (is_cover)
-                jw__draw_cover_fit(tex, iw, ih, art_x, art_y, art_w, art_h);
+                jw__draw_cover_fit(state, tex, iw, ih, art_x, art_y, art_w, art_h);
             else
                 jw__draw_image_fit(tex, iw, ih, art_x, art_y, art_w, art_h);
         }
@@ -7486,8 +7501,9 @@ static void jw__render_actions(const jw_launcher_state *state) {
             cat_request_frame();
     }
 
-    /* Box model below the header: the rows fill the content box on the
-       canonical grid - same pitch and filled geometry as every tab. */
+    /* Box model below the header: as many rows as fit at their natural height,
+       the Settings pages' pitch. No pane snaps to this box, so filling it would
+       only spread the rows apart. */
     int header_h = jw__actions_header_h();
     int hint_pad = (fh > 0) ? margin : 0;
     cat_box page = { 0, header_h, sw, sh - header_h - fh - hint_pad,
@@ -7496,9 +7512,10 @@ static void jw__render_actions(const jw_launcher_state *state) {
     /* No status toast in this view: a selection's feedback is the row value
        itself changing, and the name already lives in the sub-header. */
     int item_h = TTF_FontHeight(body) + CAT_S(12);
-    int vis = 7;
+    int vis = 0;
     SDL_Rect lr = cat_box_fit_rows(&page, item_h, state->action_row_count,
-                                   &vis, &item_h);
+                                   &vis, NULL);
+    lr.h = vis * item_h;
     ((cat_list_state *)&state->action_list)->visible_rows = vis;
     cat_list_state_jump((cat_list_state *)&state->action_list,
                        state->action_list.cursor, state->action_row_count);

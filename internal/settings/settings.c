@@ -172,6 +172,7 @@ typedef enum {
     JW_SETTING_RA_USER,
     JW_SETTING_RA_PASS,
     JW_SETTING_TAB_GLIDE,
+    JW_SETTING_ROUND_COVER_ART,
     JW_SETTING_REFRESH_RATE_HZ,
     JW_SETTING_COLOR_TEMP_K,
     JW_SETTING_BFI_ENABLED,
@@ -233,6 +234,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_RA_USER] = "retroachievements_user",
     [JW_SETTING_RA_PASS] = "retroachievements_pass",
     [JW_SETTING_TAB_GLIDE] = "tab_glide",
+    [JW_SETTING_ROUND_COVER_ART] = "round_cover_art",
     [JW_SETTING_REFRESH_RATE_HZ] = "refresh_rate_hz",
     [JW_SETTING_COLOR_TEMP_K] = "color_temp_k",
     [JW_SETTING_BFI_ENABLED] = "bfi_enabled",
@@ -1660,6 +1662,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->timezone[0]       = '\0';  /* "" = follow system tz until the user picks */
     ui->font_size_index   = 1;
     ui->tab_glide         = 1;     /* Glide by default — matches Leaf's soft feel; Snap is opt-out */
+    ui->round_cover_art   = 0;     /* Square by default: rounding cuts into the art */
     ui->update_channel_index = JW_UPDATE_CHANNEL_STABLE_IDX;  /* Stable unless loaded below */
     ui->show_hints        = true;
     ui->clock_style_index = 1;
@@ -1761,6 +1764,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             }
             if (jw__setting_has(values, found, JW_SETTING_TAB_GLIDE))
                 ui->tab_glide = (strcmp(values[JW_SETTING_TAB_GLIDE], "0") != 0) ? 1 : 0;
+            if (jw__setting_has(values, found, JW_SETTING_ROUND_COVER_ART))
+                ui->round_cover_art = (strcmp(values[JW_SETTING_ROUND_COVER_ART], "0") != 0) ? 1 : 0;
             {
                 char chan[16] = "";
                 if (jw_db_get_setting(db_path, "update_channel", chan, sizeof(chan)) == 0)
@@ -2057,6 +2062,10 @@ bool jw_settings_show_hints(const jw_settings_ui *ui) {
 
 bool jw_settings_tab_glide(const jw_settings_ui *ui) {
     return ui && ui->tab_glide != 0;
+}
+
+bool jw_settings_round_cover_art(const jw_settings_ui *ui) {
+    return ui && ui->round_cover_art != 0;
 }
 
 void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *out) {
@@ -2742,6 +2751,8 @@ static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w,
                         "Font Size", kFontSizeLabels[ui->font_size_index], true);
     jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_LIST_STYLE,
                         "List Style", kPillShapeLabels[ui->pill_shape_index], true);
+    jw__render_toggle_row(&ui->appearance_list, x, ly, w, JW_APPEAR_ROUND_COVER_ART,
+                          "Round Cover Art", ui->round_cover_art ? "On" : "Off");
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_STATUSBAR, "Status Bar");
 }
 
@@ -4437,8 +4448,8 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
     }
 
     /* The scraped art (decoded once on open), centered in the space below the
-       text, aspect-fit and rounded to the current List Style (same recipe as
-       jw__draw_cover_fit). */
+       text, aspect-fit and, with Round Cover Art on, rounded to the current List
+       Style (same recipe as jw__draw_cover_fit). */
     SDL_Texture *art = ui->scrape_detail_art;
     int tw = ui->scrape_detail_art_w, th = ui->scrape_detail_art_h;
     if (art && tw > 0 && th > 0) {
@@ -4451,7 +4462,8 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
             int dx = c.x + (c.w - dw) / 2;
             int dy = top + (avail_h - dh) / 2;
             int smaller = dw < dh ? dw : dh;
-            int radius  = (int)(theme->pill_radius_ratio * smaller * 0.26f + 0.5f);
+            int radius  = ui->round_cover_art
+                          ? (int)(theme->pill_radius_ratio * smaller * 0.26f + 0.5f) : 0;
             unsigned corners = (unsigned)theme->pill_corner_mask;
             if (corners == 0) corners = CAT_CORNER_ALL;
             cat_draw_image_rounded_ex(art, dx, dy, dw, dh, radius, corners);
@@ -7521,6 +7533,9 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     cat_get_theme()->pill_radius_ratio = kJawakaPillRadiusValues[next];
                     cat_get_theme()->pill_corner_mask  = kJawakaPillCornerMasks[next];
                     jw__persist_int(ui, "pill_shape_index", next);
+                } else if (row == JW_APPEAR_ROUND_COVER_ART) {
+                    ui->round_cover_art = !ui->round_cover_art;
+                    jw__persist_int(ui, "round_cover_art", ui->round_cover_art);
                 }
                 break;
             }

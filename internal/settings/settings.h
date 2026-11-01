@@ -97,8 +97,9 @@ typedef enum {
 #define JW_APPEAR_FONT       3
 #define JW_APPEAR_FONT_SIZE  4
 #define JW_APPEAR_LIST_STYLE 5
-#define JW_APPEAR_STATUSBAR  6   /* -> the status-bar visibility page */
-#define JW_APPEAR_ROW_COUNT  7
+#define JW_APPEAR_ROUND_COVER_ART 6   /* box art follows List Style's corners */
+#define JW_APPEAR_STATUSBAR  7   /* -> the status-bar visibility page */
+#define JW_APPEAR_ROW_COUNT  8
 
 /* Colors page — ordered by visual impact (most visible first). */
 #define JW_COLOR_ACCENT      0
@@ -355,6 +356,7 @@ typedef struct {
     int                font_family_index;
     int                font_size_index;
     int                tab_glide;            /* 0 = Snap (instant), 1 = Glide (slide) */
+    int                round_cover_art;      /* 0 = square box art, 1 = List Style's corners */
     int                layout_mode;          /* 0 = Tabs, 1 = Coverflow, 2 = Grid (home layout) */
     int                system_icon_pack_index; /* jw_system_icon_pack */
     /* User themes (Phase 2 of plans/grid-view-and-user-themes.md). The catalog
@@ -532,6 +534,8 @@ jw_settings_screen jw_settings_ui_screen(const jw_settings_ui *ui);
 bool jw_settings_show_hints(const jw_settings_ui *ui);
 /* True when tab switches should slide (Glide); false for an instant cut (Snap). */
 bool jw_settings_tab_glide(const jw_settings_ui *ui);
+/* True when box art takes the List Style's corners; false leaves it square. */
+bool jw_settings_round_cover_art(const jw_settings_ui *ui);
 
 /* True while the Display & Sound page is showing, so its sliders can track the
    hardware volume/brightness keys (jawakad's input proxy consumes those events —
