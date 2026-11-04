@@ -8,6 +8,8 @@
 # order, which printf cannot change; that wording and "%d game" and
 # "Show Folders" (Jawaka#263) were drafted by Claude and confirmed by the
 # translator in Jawaka#254.
+# Updated by the translator on 2026-11-04 with the pin strings (Jawaka#275),
+# Round Cover Art (Jawaka#278) and new Wi-Fi signal labels.
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
@@ -1545,7 +1547,7 @@ msgstr "패키지 변경 요청을 만들 수 없습니다"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Could not change this game's pin"
-msgstr ""
+msgstr "이 게임을 목록 맨 위에 고정하지 못했습니다."
 
 #: internal/discovery/delete_job.c
 msgid "Could not check artwork work before deletion."
@@ -2677,7 +2679,7 @@ msgstr "라이브러리"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Library refresh failed."
-msgstr ""
+msgstr "라이브러리를 새로고침하지 못했습니다."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Library scan failed"
@@ -3417,11 +3419,11 @@ msgstr "이전 버전 Leaf %s을(를) 선택할까요?"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pin to Top"
-msgstr ""
+msgstr "맨 위에 고정"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pinned to the top of this list."
-msgstr ""
+msgstr "이 목록의 맨 위에 고정했습니다."
 
 #: internal/update/update.c
 msgid "Platform artifact metadata is incomplete"
@@ -4041,7 +4043,7 @@ msgstr "%d초 후 되돌립니다"
 
 #: internal/settings/settings.c
 msgid "Round Cover Art"
-msgstr ""
+msgstr "커버 이미지 둥근 모서리"
 
 #: internal/settings/settings.c
 msgid "Rounded"
@@ -4805,7 +4807,7 @@ msgstr "늘이기"
 
 #: internal/settings/settings.c
 msgid "Strong"
-msgstr "강하게"
+msgstr "매우 양호"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Style"
@@ -5401,11 +5403,11 @@ msgstr "%s 페어링 해제됨"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Unpin"
-msgstr ""
+msgstr "고정 해제"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Unpinned."
-msgstr ""
+msgstr "고정을 해제했습니다."
 
 #: internal/update/update.c
 msgid "Unsafe stock update trigger: %s"
@@ -5709,7 +5711,7 @@ msgstr "채널을 바꾸기 전에 릴리스 확인이 끝날 때까지 기다�
 
 #: internal/settings/settings.c
 msgid "Weak"
-msgstr "약하게"
+msgstr "약함"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Wheel"
