@@ -512,6 +512,9 @@ msgstr ""
 "模拟掌机 LCD 面板细密的 RGB\n"
 "像素网格。"
 
+# Time zone names stay untranslated by request: every entry from
+# internal/settings/timezones.c carries an empty msgstr and falls back
+# to the English place name.
 #: internal/settings/timezones.c
 msgid "Adelaide"
 msgstr ""
@@ -767,7 +770,7 @@ msgstr "游戏封面"
 
 #: internal/settings/timezones.c
 msgid "Brazil (East)"
-msgstr "巴西（东部）"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Breath"
@@ -865,7 +868,7 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Central Europe"
-msgstr "中欧"
+msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Chatham Islands"
@@ -881,7 +884,7 @@ msgstr "检查 SD 卡"
 
 #: internal/settings/timezones.c
 msgid "China"
-msgstr "中国"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Choose"
@@ -969,7 +972,7 @@ msgstr "核心"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Could not change this game's pin"
-msgstr ""
+msgstr "无法更改此游戏的置顶状态"
 
 #: internal/settings/settings.c
 msgid "Could not save"
@@ -1109,7 +1112,7 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Eastern Europe"
-msgstr "东欧"
+msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Edit the current shader in RetroArch."
@@ -1370,7 +1373,7 @@ msgstr "图标"
 
 #: internal/settings/timezones.c
 msgid "India"
-msgstr "印度"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Info"
@@ -1420,7 +1423,7 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Japan / Korea"
-msgstr "日本 / 韩国"
+msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Keep"
@@ -1557,7 +1560,7 @@ msgstr "游戏库"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Library refresh failed."
-msgstr ""
+msgstr "游戏库刷新失败。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Library scan failed"
@@ -1754,10 +1757,6 @@ msgstr "不使用 BIOS 文件"
 #: internal/launcher/bios.c
 msgid "No BIOS file selected"
 msgstr "未选择 BIOS 文件"
-
-#: cmd/jawaka-launcher/main.c
-msgid "No Pak Rat apps found"
-msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "No apps found"
@@ -1971,11 +1970,11 @@ msgstr "请在选项菜单中另选一个 Saturn BIOS。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pin to Top"
-msgstr ""
+msgstr "置顶"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pinned to the top of this list."
-msgstr ""
+msgstr "已置顶到此列表顶部。"
 
 #: internal/settings/settings.c
 msgid "Play"
@@ -2288,7 +2287,7 @@ msgstr "还原"
 
 #: internal/settings/settings.c
 msgid "Round Cover Art"
-msgstr ""
+msgstr "圆角封面"
 
 #: internal/settings/settings.c
 msgid "Rounded"
@@ -2780,7 +2779,7 @@ msgstr "游戏切换"
 
 #: internal/settings/timezones.c
 msgid "Sydney"
-msgstr "悉尼"
+msgstr ""
 
 # In-game OSD banners (Syncthing, settings, SD card, PICO-8).
 # Reviewed; fuzzy markers cleared.
@@ -3103,39 +3102,39 @@ msgstr "界面震动"
 
 #: internal/settings/timezones.c
 msgid "UK / Ireland"
-msgstr "英国 / 爱尔兰"
+msgstr ""
 
 #: internal/settings/timezones.c
 msgid "US Alaska"
-msgstr "美国阿拉斯加"
+msgstr ""
 
 #: internal/settings/timezones.c
 msgid "US Arizona"
-msgstr "美国亚利桑那"
+msgstr ""
 
 #: internal/settings/timezones.c
 msgid "US Central"
-msgstr "美国中部"
+msgstr ""
 
 #: internal/settings/timezones.c
 msgid "US Eastern"
-msgstr "美国东部"
+msgstr ""
 
 #: internal/settings/timezones.c
 msgid "US Hawaii"
-msgstr "美国夏威夷"
+msgstr ""
 
 #: internal/settings/timezones.c
 msgid "US Mountain"
-msgstr "美国山地"
+msgstr ""
 
 #: internal/settings/timezones.c
 msgid "US Pacific"
-msgstr "美国太平洋"
+msgstr ""
 
 #: internal/settings/timezones.c
 msgid "UTC"
-msgstr "UTC"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Unavailable"
@@ -3204,11 +3203,11 @@ msgstr "取消配对"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Unpin"
-msgstr ""
+msgstr "取消置顶"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Unpinned."
-msgstr ""
+msgstr "已取消置顶。"
 
 #: internal/settings/settings.c
 msgid "Unsupported"
@@ -3466,11 +3465,11 @@ msgstr "亮度调整失败"
 
 #: cmd/jawakad/main.c
 msgid "could not build folders"
-msgstr ""
+msgstr "无法创建文件夹"
 
 #: cmd/jawakad/main.c
 msgid "could not read library"
-msgstr ""
+msgstr "无法读取游戏库"
 
 #: internal/settings/settings.c
 msgid "count|Systems"
