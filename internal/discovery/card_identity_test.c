@@ -151,6 +151,30 @@ static bool digest_current(void) {
                   "WHERE source_id='secondary_sd') FROM library_cards WHERE is_live=1") == 1;
 }
 
+static int app_rows(const char *name) {
+    char sql[160];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM apps WHERE name='%s'", name);
+    return scalar(sql);
+}
+
+/* A row for a pak on the card in the slot, keyed the way a scan of that card
+   writes it: by absolute path. */
+static void add_slot_app_row(const char *name) {
+    char sql[700];
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO apps(pak_dir,name) VALUES('%s/Apps/mac/%s.pak','%s');",
+             g_slot, name, name);
+    exec_ok(sql);
+}
+
+/* A row for a pak that was on the first card and is gone now. */
+static void add_removed_primary_app_row(const char *name) {
+    char sql[300];
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO apps(pak_dir,name) VALUES('Apps/mac/%s.pak','%s');", name, name);
+    exec_ok(sql);
+}
+
 static int game_id(const char *source, int number) {
     char sql[160];
     snprintf(sql, sizeof(sql),
@@ -416,11 +440,14 @@ static void test_unreadable_key_changes_nothing(void) {
     remove_card("A");
     add_games("A", 50, 1);
 
-    exec_ok("INSERT INTO apps(pak_dir,name) VALUES('Apps/mac/Ghost.pak','Ghost');");
+    add_slot_app_row("Ghost");
+    add_removed_primary_app_row("Gone");
     insert_card("A", "unreadable");
     scan();
-    assert(scalar("SELECT COUNT(*) FROM apps WHERE name='Ghost'") == 1);
-    /* The slot wasn't scanned: no prune, and the new file gets no row. */
+    /* The slot wasn't scanned: its apps stay. The first card was, so its removed
+       pak leaves. */
+    assert(app_rows("Ghost") == 1 && app_rows("Gone") == 0);
+    /* No prune of the slot's games, and the new file gets no row. */
     assert(owner_is(KEY_A) && count_live() == 3 && count_parked() == 0);
     assert(game_id("secondary_sd", 0) == before && game_id("secondary_sd", 50) == 0);
     /* Nothing hidden either: a game shown but refused is the worse failure. */
@@ -428,6 +455,28 @@ static void test_unreadable_key_changes_nothing(void) {
     jw_game_entry game;
     assert(jw_db_get_game_by_id(g_db_path, before, &game) == 0);
     remove_card("A");
+}
+
+/* MLP1 always lists the second slot, so a handheld with one card scans with the
+   slot empty. A non-MLP1 build calls a missing directory unmounted. */
+static void test_empty_slot_still_prunes_removed_apps(void) {
+    begin_case();
+    char pak[600];
+    snprintf(pak, sizeof(pak), "%s/Apps/shared/Kept.pak", g_primary);
+    run("mkdir -p '%s' && printf '{\"name\":\"Kept\",\"platform\":\"shared\"}' > '%s/pak.json'",
+        pak, pak);
+    add_removed_primary_app_row("Gone");
+    add_slot_app_row("Away");
+    assert(rmdir(g_slot) == 0);
+
+    scan();
+    assert(app_rows("Kept") == 1);
+    assert(app_rows("Gone") == 0);
+    /* The slot's own paks wait for its card. */
+    assert(app_rows("Away") == 1);
+
+    run("rm -rf '%s/Apps'%s", g_primary, "");
+    assert(mkdir(g_slot, 0755) == 0);
 }
 
 static void test_no_key_keeps_slot_behavior(void) {
@@ -692,20 +741,20 @@ static void test_open_relocation_defers(void) {
              game);
     exec_ok(sql);
 
-    /* An app the mounted card doesn't have, as a pak on the first card would be. */
-    exec_ok("INSERT INTO apps(pak_dir,name) VALUES('Apps/mac/Ghost.pak','Ghost');");
+    /* An app the mounted card doesn't have, as a pak on card A would be. */
+    add_slot_app_row("Ghost");
 
     swap_to("A", "B", KEY_B);
     /* Rows stay, hidden, and the mismatched slot isn't scanned or pruned. */
     assert(owner_is(KEY_A) && count_parked() == 0 && count_live() == 3);
     assert(listed_for_nes() == 0);
-    assert(scalar("SELECT COUNT(*) FROM apps WHERE name='Ghost'") == 1);
+    assert(app_rows("Ghost") == 1);
 
     exec_ok("DELETE FROM library_relocation_ops WHERE operation_id='op';");
     scan();
     assert(owner_is(KEY_B) && count_parked() == 3 && count_live() == 2);
     /* Once the slot is scanned, apps prune as usual. */
-    assert(scalar("SELECT COUNT(*) FROM apps WHERE name='Ghost'") == 0);
+    assert(app_rows("Ghost") == 0);
     remove_card("B");
 }
 
@@ -1085,6 +1134,7 @@ int main(void) {
     test_empty_and_missing_roms();
     test_no_roms_folder_on_a_new_card_keeps_the_owner();
     test_unreadable_key_changes_nothing();
+    test_empty_slot_still_prunes_removed_apps();
     test_no_key_keeps_slot_behavior();
     test_card_changes_mid_scan();
     test_card_changes_during_apply();

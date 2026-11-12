@@ -1892,15 +1892,30 @@ static int jw__scan_apps(jw_scan_tx *tx, const char *sdcard_root,
     }
     const char *platform = jw__scan_platform();
     for (int i = 0; i < sources->count; i++) {
-        /* Rows from the ROM gate's rejected card stay, so its apps should too. */
-        if (!sources->sources[i].available || jw__source_gated(tx->db, &sources->sources[i])) {
-            fprintf(stderr,
-                    "App discovery: retaining rows because source %s is unavailable\n",
-                    sources->sources[i].id);
+        const jw_storage_source *source = &sources->sources[i];
+        if (source->available && !jw__source_gated(tx->db, source)) {
+            if (jw__scan_apps_source(tx, source, platform, out) != 0) {
+                free(sources);
+                return -1;
+            }
+            continue;
+        }
+        /* Rows from the ROM gate's rejected card stay, so its apps should too. Only
+           its own: MLP1 always lists the second slot, so an empty slot must not keep
+           a pak removed from the first card listed. */
+        fprintf(stderr,
+                "App discovery: retaining rows because source %s is unavailable\n",
+                source->id);
+        char root[PATH_MAX];
+        if (jw_storage_db_path_for_source(source, "Apps", source->apps_path,
+                                          root, sizeof(root)) != 0) {
+            /* No root to keep, so keep every row and prune none. */
             free(sources);
             return 0;
         }
-        if (jw__scan_apps_source(tx, &sources->sources[i], platform, out) != 0) {
+        if (jw__scan_tx_begin(tx) != 0 ||
+            jw_db_scan_apps_retain_root(tx->db, root) != 0 ||
+            jw__scan_tx_note_write(tx) != 0) {
             free(sources);
             return -1;
         }

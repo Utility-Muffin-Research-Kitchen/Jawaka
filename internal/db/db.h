@@ -142,10 +142,14 @@ int  jw_db_reset_library(sqlite3 *db);
    stable game upserts preserve id and record (source_id,rom_relpath).
    Mark only successfully enumerated sources complete before scan_prune; rows
    belonging to unavailable/failed/unmarked sources are retained. App pruning
-   is enabled only after the complete configured source set was enumerated. */
+   is enabled only once app enumeration finished (scan_apps_complete). A source
+   it skipped names its Apps folder, in pak_dir form, with scan_apps_retain_root
+   ("Apps" for the primary, the absolute path otherwise); rows under a retained
+   root stay, and every other unseen app row is pruned. */
 int  jw_db_scan_begin(sqlite3 *db);
 int  jw_db_scan_source_complete(sqlite3 *db, const char *source_id);
 int  jw_db_scan_apps_complete(sqlite3 *db);
+int  jw_db_scan_apps_retain_root(sqlite3 *db, const char *pak_dir_root);
 /* A second card's rows wait here until the card is proven to be the slot's owner
    for the whole enumeration; see jw__scan_roms. Nothing in games changes before
    that, so a card swapped mid-scan can't leave its rows under the old owner. */
