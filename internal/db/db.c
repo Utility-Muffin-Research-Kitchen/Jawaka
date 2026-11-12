@@ -1275,6 +1275,7 @@ int jw_db_scan_begin(sqlite3 *db) {
         "CREATE TEMP TABLE IF NOT EXISTS _seen_apps (pak_dir TEXT PRIMARY KEY);"
         "CREATE TEMP TABLE IF NOT EXISTS _scan_apps_complete ("
         " ok INTEGER PRIMARY KEY CHECK(ok=1));"
+        "CREATE TEMP TABLE IF NOT EXISTS _retained_app_roots (root TEXT PRIMARY KEY);"
         "CREATE TEMP TABLE IF NOT EXISTS _scan_staged_games ("
         " system TEXT,name TEXT,source_id TEXT,rom_relpath TEXT,rom_path TEXT,"
         " image_root_kind TEXT,image_relpath TEXT,image_path TEXT);"
@@ -1282,7 +1283,8 @@ int jw_db_scan_begin(sqlite3 *db) {
         "DELETE FROM _seen_games;"
         "DELETE FROM _scanned_game_sources;"
         "DELETE FROM _seen_apps;"
-        "DELETE FROM _scan_apps_complete;");
+        "DELETE FROM _scan_apps_complete;"
+        "DELETE FROM _retained_app_roots;");
 }
 
 int jw_db_scan_source_complete(sqlite3 *db, const char *source_id) {
@@ -1296,6 +1298,14 @@ int jw_db_scan_source_complete(sqlite3 *db, const char *source_id) {
 int jw_db_scan_apps_complete(sqlite3 *db) {
     return db
         ? jw__exec(db, "INSERT OR IGNORE INTO _scan_apps_complete(ok) VALUES(1);")
+        : -1;
+}
+
+int jw_db_scan_apps_retain_root(sqlite3 *db, const char *pak_dir_root) {
+    return (db && pak_dir_root && pak_dir_root[0])
+        ? jw__mark_seen(db,
+            "INSERT OR IGNORE INTO _retained_app_roots(root) VALUES(?);",
+            pak_dir_root)
         : -1;
 }
 
@@ -1493,8 +1503,12 @@ int jw_db_scan_prune(sqlite3 *db) {
         "AND NOT EXISTS (SELECT 1 FROM _seen_games seen "
         " WHERE seen.source_id=games.source_id "
         " AND seen.rom_relpath=games.rom_relpath);"
+        /* An unscanned card keeps the paks under its own Apps folder. Every other
+           pak the scan didn't see is gone. */
         "DELETE FROM apps WHERE EXISTS(SELECT 1 FROM _scan_apps_complete) "
-        "AND pak_dir NOT IN (SELECT pak_dir FROM _seen_apps);"
+        "AND pak_dir NOT IN (SELECT pak_dir FROM _seen_apps) "
+        "AND NOT EXISTS (SELECT 1 FROM _retained_app_roots kept "
+        " WHERE substr(apps.pak_dir,1,length(kept.root)+1)=kept.root||'/');"
         "UPDATE library_cards SET live_digest=(" JW_CARDS_DIGEST_SQL ") WHERE is_live=1 "
         "AND EXISTS(SELECT 1 FROM _scanned_game_sources WHERE source_id='secondary_sd');");
     return jw__finish_rom_cleanup(db, rc == 0 ? 0 : jw__write_error(db));
