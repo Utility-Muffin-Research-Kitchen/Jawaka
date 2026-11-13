@@ -1,21 +1,23 @@
 # Spanish (Mexico) -- contributed by Eric394 through the Leaf Discord;
-# first file 2026-09-16, completed 2026-09-18. Two strings were shortened
-# on import to fit the UI: "Systems" (a 5-Game footer hint that was being
-# dropped for lack of room) and "Defaults" (a Settings row value).
+# first file 2026-09-16, completed 2026-09-18, brought up to date with every
+# string 2026-11-12. Two strings were shortened on import to fit the UI:
+# "Systems" (a 5-Game footer hint that was being dropped for lack of room)
+# and "Defaults" (a Settings row value). Three strings whose English had
+# changed since they were translated were brought back in line on import.
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
 #: cmd/jawaka-launcher/main.c
 msgid "\n%s: %s (%s)"
-msgstr ""
+msgstr "\n%s: %s (%s)"
 
 #: internal/settings/settings.c
 msgid "  saved"
-msgstr ""
+msgstr "  guardado"
 
 #: internal/settings/settings.c
 msgid " (charging)"
-msgstr ""
+msgstr " (cargando)"
 
 #: internal/settings/storage_ui.c
 msgid " Some damaged files were changed."
@@ -23,47 +25,47 @@ msgstr " Se cambiaron algunos archivos dañados."
 
 #: internal/settings/settings.c
 msgid " | %d thread"
-msgstr ""
+msgstr " | %d hilo"
 
 #: internal/settings/settings.c
 msgid " | %d/%d threads"
-msgstr ""
+msgstr " | %d/%d hilos"
 
 #: internal/settings/settings.c
 msgid " | ETA %s"
-msgstr ""
+msgstr " | Tiempo est. %s"
 
 #: internal/settings/settings.c
 msgid " | showing first %d"
-msgstr ""
+msgstr " | mostrando los primeros %d"
 
 #: internal/settings/settings.c
 msgid " · auto"
-msgstr ""
+msgstr " · auto"
 
 #: cmd/jawaka-launcher/main.c
 msgid " — no app to open"
-msgstr ""
+msgstr " — no hay app para abrir"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%.120s changed; refresh failed"
-msgstr ""
+msgstr "%.120s cambió; falló la actualización"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%.120s has no compatible install action"
-msgstr ""
+msgstr "%.120s no tiene una acción de instalación compatible"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%.120s is not installed by Pak Rat"
-msgstr ""
+msgstr "%.120s no está instalado por Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%.120s is release-managed"
-msgstr ""
+msgstr "%.120s es administrado por versión"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%.180s is already installed manually.\n\nReplace it with the Pak Rat version so it can be updated? User data is preserved."
-msgstr ""
+msgstr "%.180s ya está instalado manualmente.\n\n¿Reemplazar con la versión de Pak Rat para que pueda actualizarse? Se conservan los datos de usuario."
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d %s games"
@@ -75,15 +77,15 @@ msgstr "%d Hz"
 
 #: internal/settings/settings.c
 msgid "%d K"
-msgstr ""
+msgstr "%d K"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d Pak Rat app"
-msgstr ""
+msgstr "%d app de Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d Pak Rat apps"
-msgstr ""
+msgstr "%d apps de Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d apps"
@@ -91,35 +93,35 @@ msgstr "%d apps"
 
 #: internal/settings/settings.c
 msgid "%d artwork job already queued"
-msgstr ""
+msgstr "%d trabajo de arte ya en fila"
 
 #: internal/settings/settings.c
 msgid "%d artwork jobs already queued"
-msgstr ""
+msgstr "%d trabajos de arte ya en fila"
 
 #: internal/store/pakrat_state.c
 msgid "%d core"
-msgstr ""
+msgstr "%d núcleo"
 
 #: internal/store/pakrat_state.c
 msgid "%d core for %d existing system"
-msgstr ""
+msgstr "%d núcleo para %d sistema existente"
 
 #: internal/store/pakrat_state.c
 msgid "%d core for %d existing systems"
-msgstr ""
+msgstr "%d núcleo para %d sistemas existentes"
 
 #: internal/store/pakrat_state.c
 msgid "%d cores"
-msgstr ""
+msgstr "%d núcleos"
 
 #: internal/store/pakrat_state.c
 msgid "%d cores for %d existing system"
-msgstr ""
+msgstr "%d núcleos para %d sistema existente"
 
 #: internal/store/pakrat_state.c
 msgid "%d cores for %d existing systems"
-msgstr ""
+msgstr "%d núcleos para %d sistemas existentes"
 
 #: internal/settings/settings.c
 msgid "%d done"
@@ -143,7 +145,7 @@ msgstr "%d juegos"
 
 #: internal/settings/settings.c
 msgid "%d games across %d systems"
-msgstr ""
+msgstr "%d juegos en %d sistemas"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d games, %d systems, %d apps"
@@ -151,11 +153,11 @@ msgstr "%d juegos, %d sistemas, %d apps"
 
 #: internal/settings/settings.c
 msgid "%d missing"
-msgstr ""
+msgstr "%d faltantes"
 
 #: internal/settings/settings.c
 msgid "%d missing across %d systems"
-msgstr ""
+msgstr "%d faltantes en %d sistemas"
 
 #: cmd/jawaka-menu/main.c
 msgid "%d of %d"
@@ -163,19 +165,19 @@ msgstr "%d de %d"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d recent"
-msgstr ""
+msgstr "%d reciente"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d results"
-msgstr ""
+msgstr "%d resultados"
 
 #: internal/store/pakrat_state.c
 msgid "%d system extension"
-msgstr ""
+msgstr "%d extensión de sistema"
 
 #: internal/store/pakrat_state.c
 msgid "%d system extensions"
-msgstr ""
+msgstr "%d extensiones de sistema"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%d theme"
@@ -187,7 +189,7 @@ msgstr "%d temas"
 
 #: internal/settings/settings.c
 msgid "%d total"
-msgstr ""
+msgstr "%d en total"
 
 #: internal/settings/settings.c
 msgid "%d/%d done"
@@ -215,43 +217,43 @@ msgstr "hace %ld min"
 
 #: internal/settings/settings.c
 msgid "%lld days ago"
-msgstr ""
+msgstr "hace %lld días"
 
 #: internal/settings/settings.c
 msgid "%lld month ago"
-msgstr ""
+msgstr "hace %lld mes"
 
 #: internal/settings/settings.c
 msgid "%lld months ago"
-msgstr ""
+msgstr "hace %lld meses"
 
 #: internal/settings/settings.c
 msgid "%lld week ago"
-msgstr ""
+msgstr "hace %lld semana"
 
 #: internal/settings/settings.c
 msgid "%lld weeks ago"
-msgstr ""
+msgstr "hace %lld semanas"
 
 #: internal/settings/settings.c
 msgid "%lld year ago"
-msgstr ""
+msgstr "hace %lld año"
 
 #: internal/settings/settings.c
 msgid "%lld years ago"
-msgstr ""
+msgstr "hace %lld años"
 
 #: internal/settings/settings.c
 msgid "%s (current)"
-msgstr ""
+msgstr "%s (actual)"
 
 #: internal/store/pakrat_state.c
 msgid "%s and %d core"
-msgstr ""
+msgstr "%s y %d núcleo"
 
 #: internal/store/pakrat_state.c
 msgid "%s and %d cores"
-msgstr ""
+msgstr "%s y %d núcleos"
 
 #: cmd/jawaka-launcher/main.c
 msgid ""
@@ -319,7 +321,7 @@ msgstr "%s ya es tu tema actual"
 
 #: internal/store/pakrat.c
 msgid "%s is installed on Secondary. Uninstall it there first, then install the service pak on Primary."
-msgstr ""
+msgstr "%s está instalado en Secundaria. Desinstálalo ahí primero, luego instala el paquete de servicio en Primaria."
 
 #: cmd/jawaka-launcher/main.c
 msgid ""
@@ -333,7 +335,7 @@ msgstr ""
 
 #: internal/store/pakrat.c
 msgid "%s is no longer available in Pak Rat"
-msgstr ""
+msgstr "%s ya no está disponible en Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid ""
@@ -351,7 +353,7 @@ msgstr "%s no fue instalado por Pak Rat"
 
 #: internal/settings/settings.c
 msgid "%s isn't saved"
-msgstr ""
+msgstr "%s no está guardado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%s launcher exited (status %s)"
@@ -381,11 +383,11 @@ msgstr "%s · alternativa"
 
 #: internal/settings/settings.c
 msgid "%s%d/%d done, %d failed, %d busy%s%s%s%s"
-msgstr ""
+msgstr "%s%d/%d listo, %d fallido, %d ocupado%s%s%s%s"
 
 #: cmd/jawaka-menu/main.c
 msgid "%s, %d C"
-msgstr ""
+msgstr "%s, %d °C"
 
 #: internal/settings/settings.c
 msgid "%s: %d icons not %dx%d (contain-fit)"
@@ -405,19 +407,19 @@ msgstr "%s: %d íconos de más de %dpx omitidos, %d con tamaño incorrecto"
 
 #: internal/settings/settings.c
 msgid "%s: Not in your library"
-msgstr ""
+msgstr "%s: No está en tu biblioteca"
 
 #: cmd/jawaka-launcher/main.c
 msgid "%zu files, %s, on your %s."
-msgstr ""
+msgstr "%zu archivos, %s, en tu %s."
 
 #: cmd/jawaka-launcher/main.c
 msgid ", %d cancelled"
-msgstr ""
+msgstr ", %d cancelados"
 
 #: cmd/jawaka-launcher/main.c
 msgid ", %d failed"
-msgstr ""
+msgstr ", %d fallidos"
 
 #: cmd/jawaka-launcher/main.c
 msgid ", %d not found"
@@ -425,7 +427,7 @@ msgstr ", %d no encontrado"
 
 #: internal/settings/settings.c
 msgid ", quota %d/%d"
-msgstr ""
+msgstr ", cuota %d/%d"
 
 #: internal/settings/settings.c
 msgid "-"
@@ -433,7 +435,7 @@ msgstr "-"
 
 #: cmd/jawaka-launcher/main.c
 msgid "1 file, %s, on your %s."
-msgstr ""
+msgstr "1 archivo, %s, en tu %s."
 
 #: internal/settings/settings.c
 msgid "1 min"
@@ -469,7 +471,7 @@ msgstr "10 min"
 
 #: internal/settings/settings.c
 msgid "10 sec"
-msgstr ""
+msgstr "10 seg"
 
 #: internal/settings/settings.c
 msgid "100/120 Hz only"
@@ -481,7 +483,7 @@ msgstr "12 Horas"
 
 #: internal/settings/settings.c
 msgid "12 sec"
-msgstr ""
+msgstr "12 seg"
 
 #: internal/retroarch/shader_strings.c
 msgid "120Hz BFI measured 59.249 FPS and further reduces brightness."
@@ -544,7 +546,7 @@ msgstr "4:3"
 
 #: cmd/jawaka-launcher/main.c
 msgid "5 games max — deselect one first"
-msgstr ""
+msgstr "Máximo 5 juegos — deselecciona uno primero"
 
 #: internal/settings/settings.c
 msgid "5 min"
@@ -561,7 +563,7 @@ msgstr "528 MHz"
 
 #: internal/settings/settings.c
 msgid "6 sec"
-msgstr ""
+msgstr "6 seg"
 
 #: cmd/jawaka-menu/main.c
 msgid "600 MHz"
@@ -577,7 +579,7 @@ msgstr "780 MHz"
 
 #: internal/settings/settings.c
 msgid "8 sec"
-msgstr ""
+msgstr "8 seg"
 
 #: cmd/jawaka-menu/main.c
 msgid "800 MHz"
@@ -589,7 +591,7 @@ msgstr "816 MHz"
 
 #: cmd/jawaka-launcher/main.c
 msgid "A background service"
-msgstr ""
+msgstr "Un servicio en segundo plano"
 
 #: cmd/jawaka-menu/main.c
 msgid "A broader preset may apply after you reload the game."
@@ -599,11 +601,11 @@ msgstr ""
 
 #: internal/discovery/delete_job.c
 msgid "A file is being moved. Try again when it finishes."
-msgstr ""
+msgstr "Se está moviendo un archivo. Intenta de nuevo cuando termine."
 
 #: cmd/jawakad/main.c
 msgid "A game is being deleted. Try again when it finishes."
-msgstr ""
+msgstr "Se está eliminando un juego. Intenta de nuevo cuando termine."
 
 #: internal/retroarch/shader_strings.c
 msgid "A lighter handheld LCD grid with softer cell edges."
@@ -656,19 +658,19 @@ msgstr "Desactivación de ADB cancelada"
 
 #: internal/settings/settings.c
 msgid "ADB disable failed"
-msgstr ""
+msgstr "Error al desactivar ADB"
 
 #: internal/settings/settings.c
 msgid "ADB disabled"
-msgstr ""
+msgstr "ADB desactivado"
 
 #: internal/platform/device_mlp1.c
 msgid "ADB disabled, marker removal failed"
-msgstr ""
+msgstr "ADB desactivado, falló la eliminación del marcador"
 
 #: internal/platform/device_mlp1.c
 msgid "ADB disabled; USB restart failed"
-msgstr ""
+msgstr "ADB desactivado; falló el reinicio de USB"
 
 #: internal/settings/settings.c
 msgid "ADB enable canceled"
@@ -676,35 +678,35 @@ msgstr "Activación de ADB cancelada"
 
 #: internal/settings/settings.c
 msgid "ADB enable failed"
-msgstr ""
+msgstr "Error al activar ADB"
 
 #: internal/settings/settings.c
 msgid "ADB enabled"
-msgstr ""
+msgstr "ADB activado"
 
 #: internal/platform/device_mlp1.c
 msgid "ADB enabled, restore marker failed"
-msgstr ""
+msgstr "ADB activado, falló el marcador de restauración"
 
 #: internal/platform/device_mlp1.c
 msgid "ADB enabled; USB restart failed"
-msgstr ""
+msgstr "ADB activado; falló el reinicio de USB"
 
 #: internal/ipc/ipc_client.c
 msgid "ADB failed"
-msgstr ""
+msgstr "Error de ADB"
 
 #: internal/ipc/ipc_client.c
 msgid "ADB failed: daemon unavailable"
-msgstr ""
+msgstr "Error de ADB: demonio no disponible"
 
 #: internal/platform/device_mlp1.c
 msgid "ADB pin failed"
-msgstr ""
+msgstr "Error de PIN de ADB"
 
 #: internal/platform/device_mlp1.c
 msgid "ADB support unavailable"
-msgstr ""
+msgstr "Soporte para ADB no disponible"
 
 #: internal/settings/settings.c
 msgid "ADB unavailable on this platform"
@@ -748,7 +750,7 @@ msgstr "Agregando favoritos de Splore"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Adds %s%s"
-msgstr ""
+msgstr "Añade %s%s"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
@@ -791,7 +793,7 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Adds systems and emulators rather than an app to open."
-msgstr ""
+msgstr "Añade sistemas y emuladores en lugar de una app para abrir."
 
 #: internal/retroarch/shader_strings.c
 msgid "Adds the fine RGB pixel grid of a handheld LCD panel."
@@ -812,7 +814,7 @@ msgstr "Menú avanzado de RetroArch"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Affected Files"
-msgstr ""
+msgstr "Archivos afectados"
 
 #: internal/settings/timezones.c
 msgid "Afghanistan"
@@ -842,11 +844,11 @@ msgstr "Todos los derechos reservados, redistribución permitida"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Already missing"
-msgstr ""
+msgstr "Ya falta"
 
 #: internal/settings/settings.c
 msgid "Already on the latest version"
-msgstr ""
+msgstr "Ya estás en la versión más reciente"
 
 #: internal/settings/settings.c
 msgid "Already used by %s"
@@ -854,7 +856,7 @@ msgstr "Ya está en uso por %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Also remove retained data for %.180s?\n\nThis separately deletes every declared retained directory on cards that are present now. Absent cards remain unchanged. This cannot be undone."
-msgstr ""
+msgstr "¿Eliminar también los datos retenidos para %.180s?\n\nEsto elimina por separado cada directorio retenido declarado en las tarjetas presentes. Las tarjetas ausentes no se modificarán. Esto no se puede deshacer."
 
 #: internal/settings/timezones.c
 msgid "American Samoa"
@@ -866,7 +868,7 @@ msgstr "Amiga"
 
 #: cmd/jawakad/main.c
 msgid "An SD card check is pending. Finish it before deleting ROMs."
-msgstr ""
+msgstr "La comprobación de la tarjeta SD está pendiente. Termínala antes de eliminar ROMs."
 
 #: cmd/jawaka-launcher/main.c
 msgid "An image in the theme is not a supported PNG or JPEG, or is too large."
@@ -875,7 +877,7 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "App"
-msgstr ""
+msgstr "App"
 
 #: internal/settings/settings.c
 msgid "Appearance"
@@ -905,7 +907,7 @@ msgstr "Apps"
 
 #: cmd/jawakad/main.c
 msgid "Apps directory missing"
-msgstr ""
+msgstr "Falta el directorio de Apps"
 
 #: internal/launcher/system_names.c
 msgid "Arcade"
@@ -921,19 +923,19 @@ msgstr "Prioridad de carátulas"
 
 #: internal/scrape/scrape_worker.c
 msgid "Artwork saved"
-msgstr ""
+msgstr "Arte guardado"
 
 #: internal/settings/settings.c
 msgid "Artwork scrape failed."
-msgstr ""
+msgstr "Error al scrapear el arte."
 
 #: internal/discovery/delete_job.c
 msgid "Artwork scraping is stopping. Try again when it finishes."
-msgstr ""
+msgstr "El scrapeo de arte se está deteniendo. Intenta de nuevo cuando termine."
 
 #: internal/settings/settings.c
 msgid "At least one tab must stay visible"
-msgstr ""
+msgstr "Al menos una pestaña debe permanecer visible"
 
 #: internal/launcher/system_names.c
 msgid "Atari 2600"
@@ -1037,11 +1039,11 @@ msgstr "Batería"
 
 #: internal/settings/settings.c
 msgid "Battery Level"
-msgstr ""
+msgstr "Nivel de batería"
 
 #: internal/settings/settings.c
 msgid "Battery Low"
-msgstr ""
+msgstr "Batería baja"
 
 #: internal/platform/platform_common.c
 msgid "Battery Saver"
@@ -1049,11 +1051,11 @@ msgstr "Ahorro de batería"
 
 #: internal/update/update.c
 msgid "Battery must be at least %d%% or charging"
-msgstr ""
+msgstr "La batería debe estar al menos al %d%% o cargándose"
 
 #: internal/update/update.c
 msgid "Battery status is unknown; confirmation required"
-msgstr ""
+msgstr "El estado de la batería es desconocido; se requiere confirmación"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
@@ -1065,7 +1067,7 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Beta"
-msgstr ""
+msgstr "Beta"
 
 #: internal/settings/settings.c
 msgid ""
@@ -1093,11 +1095,11 @@ msgstr "Inserción de marcos negros desactivada"
 
 #: internal/settings/settings.c
 msgid "Black Frame Insertion on for %d fps"
-msgstr ""
+msgstr "Inserción de marcos negros activada para %d fps"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Blocked"
-msgstr ""
+msgstr "Bloqueado"
 
 #: internal/settings/settings.c
 msgid "Bluetooth"
@@ -1109,63 +1111,63 @@ msgstr "Nombre de Bluetooth"
 
 #: internal/settings/settings.c
 msgid "Bluetooth done"
-msgstr ""
+msgstr "Bluetooth listo"
 
 #: internal/settings/settings.c
 msgid "Bluetooth failed"
-msgstr ""
+msgstr "Error de Bluetooth"
 
 #: internal/settings/settings.c
 msgid "Bluetooth is busy"
-msgstr ""
+msgstr "Bluetooth está ocupado"
 
 #: internal/settings/settings.c
 msgid "Bluetooth is off"
-msgstr ""
+msgstr "Bluetooth está desactivado"
 
 #: internal/settings/settings.c
 msgid "Bluetooth name is read-only"
-msgstr ""
+msgstr "El nombre de Bluetooth es de solo lectura"
 
 #: internal/settings/settings.c
 msgid "Bluetooth off"
-msgstr ""
+msgstr "Bluetooth desactivado"
 
 #: internal/settings/settings.c
 msgid "Bluetooth off failed"
-msgstr ""
+msgstr "Error al desactivar Bluetooth"
 
 #: internal/settings/settings.c
 msgid "Bluetooth on"
-msgstr ""
+msgstr "Bluetooth activado"
 
 #: internal/settings/settings.c
 msgid "Bluetooth on failed"
-msgstr ""
+msgstr "Error al activar Bluetooth"
 
 #: internal/platform/bluetooth_mlp1.c
 msgid "Bluetooth operation complete"
-msgstr ""
+msgstr "Operación de Bluetooth completada"
 
 #: internal/platform/bluetooth_mlp1.c
 msgid "Bluetooth operation failed"
-msgstr ""
+msgstr "Error en la operación de Bluetooth"
 
 #: internal/platform/bluetooth_mlp1.c
 msgid "Bluetooth operation timed out"
-msgstr ""
+msgstr "Tiempo de espera agotado para Bluetooth"
 
 #: internal/platform/bluetooth_mlp1.c
 msgid "Bluetooth scan complete\n"
-msgstr ""
+msgstr "Escanéo de Bluetooth completado\n"
 
 #: internal/platform/bluetooth_mlp1.c
 msgid "Bluetooth scan failed\n"
-msgstr ""
+msgstr "Error al escanear Bluetooth\n"
 
 #: internal/settings/settings.c
 msgid "Bluetooth unavailable"
-msgstr ""
+msgstr "Bluetooth no disponible"
 
 #: internal/settings/settings.c
 msgid "Board"
@@ -1185,11 +1187,11 @@ msgstr "Carátula"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Box art (2D)"
-msgstr ""
+msgstr "Carátula (2D)"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Box art (3D)"
-msgstr ""
+msgstr "Carátula (3D)"
 
 #: internal/settings/timezones.c
 msgid "Brazil (East)"
@@ -1213,11 +1215,11 @@ msgstr "Explorar carpeta de BIOS"
 
 #: internal/settings/settings.c
 msgid "Btn Bg"
-msgstr ""
+msgstr "Fondo del botón"
 
 #: internal/settings/settings.c
 msgid "Btn Text"
-msgstr ""
+msgstr "Texto del botón"
 
 #: internal/settings/settings.c
 msgid "Busy"
@@ -1245,11 +1247,11 @@ msgstr "Por sistema"
 
 #: internal/discovery/content.c
 msgid "CMD has no executable name"
-msgstr ""
+msgstr "El CMD no tiene un nombre ejecutable"
 
 #: internal/discovery/content.c
 msgid "CMD inspection needs the system's file formats"
-msgstr ""
+msgstr "La inspección del CMD requiere los formatos de archivo del sistema"
 
 #: cmd/jawaka-menu/main.c
 msgid "CPU"
@@ -1281,7 +1283,7 @@ msgstr ""
 
 #: internal/discovery/content.c
 msgid "CUE FILE record has no file type"
-msgstr ""
+msgstr "El registro CUE FILE no tiene tipo de archivo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Cancel"
@@ -1289,15 +1291,15 @@ msgstr "Cancelar"
 
 #: internal/settings/settings.c
 msgid "Cancel %d%%"
-msgstr ""
+msgstr "Cancelar %d%%"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Cancel Scraping"
-msgstr ""
+msgstr "Cancelar scrapeo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Cancel failed: daemon unavailable"
-msgstr ""
+msgstr "Falló la cancelación: daemon no disponible"
 
 #: internal/settings/settings.c
 msgid "Cancelled"
@@ -1305,75 +1307,75 @@ msgstr "Cancelado"
 
 #: internal/scrape/scrape_worker.c
 msgid "Cancelled before it started"
-msgstr ""
+msgstr "Cancelado antes de iniciar"
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Cannot copy update runner to runtime storage"
-msgstr ""
+msgstr "No se puede copiar el ejecutor de actualización al almacenamiento de ejecución"
 
 #: internal/update/update.c
 msgid "Cannot download update artifact"
-msgstr ""
+msgstr "No se puede descargar el archivo de actualización"
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Cannot extract update artifact"
-msgstr ""
+msgstr "No se puede extraer el archivo de actualización"
 
 #: internal/update/update.c
 msgid "Cannot fetch Leaf releases"
-msgstr ""
+msgstr "No se pueden obtener las versiones de Leaf"
 
 #: internal/update/update.c
 msgid "Cannot fetch release manifest"
-msgstr ""
+msgstr "No se puede obtener el manifiesto de la versión"
 
 #: internal/settings/settings.c
 msgid "Cannot load releases"
-msgstr ""
+msgstr "No se pueden cargar las versiones"
 
 #: internal/update/update.c
 msgid "Cannot move update download into place: %s"
-msgstr ""
+msgstr "No se puede mover la descarga de actualización a su lugar: %s"
 
 #: internal/update/update.c
 msgid "Cannot prepare update download directory"
-msgstr ""
+msgstr "No se puede preparar el directorio de descarga de la actualización"
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Cannot prepare update for restart"
-msgstr ""
+msgstr "No se puede preparar la actualización para el reinicio"
 
 #: internal/update/update.c
 msgid "Cannot prepare update state directory"
-msgstr ""
+msgstr "No se puede preparar el directorio de estado de la actualización"
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Cannot promote update payload"
-msgstr ""
+msgstr "No se puede promover el contenido de la actualización"
 
 #: internal/update/update.c
 msgid "Cannot read update manifest"
-msgstr ""
+msgstr "No se puede leer el manifiesto de la actualización"
 
 #: internal/update/update.c
 msgid "Cannot start update download"
-msgstr ""
+msgstr "No se puede iniciar la descarga de la actualización"
 
 #: internal/update/update.c
 msgid "Cannot start update runner"
-msgstr ""
+msgstr "No se puede iniciar el ejecutor de la actualización"
 
 #: internal/update/update.c
 msgid "Cannot start update runner: %s"
-msgstr ""
+msgstr "No se puede iniciar el ejecutor de la actualización: %s"
 
 #: internal/update/update.c
 msgid "Cannot verify update artifact"
-msgstr ""
+msgstr "No se puede verificar el archivo de actualización"
 
 #: internal/update/update.c
 msgid "Cannot write update install request"
-msgstr ""
+msgstr "No se puede escribir la solicitud de instalación de la actualización"
 
 #: internal/settings/timezones.c
 msgid "Cape Verde"
@@ -1393,7 +1395,7 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Catalog version: %s"
-msgstr ""
+msgstr "Versión del catálogo: %s"
 
 #: internal/settings/timezones.c
 msgid "Central Europe"
@@ -1401,7 +1403,7 @@ msgstr "Europa Central"
 
 #: internal/settings/settings.c
 msgid "Characters not allowed - account unchanged"
-msgstr ""
+msgstr "Caracteres no permitidos - la cuenta se mantiene sin cambios"
 
 #: internal/settings/timezones.c
 msgid "Chatham Islands"
@@ -1417,23 +1419,23 @@ msgstr "Comprobar tarjeta SD"
 
 #: internal/settings/settings.c
 msgid "Check for updates first"
-msgstr ""
+msgstr "Buscar actualizaciones primero"
 
 #: internal/settings/settings.c
 msgid "Check releases first"
-msgstr ""
+msgstr "Buscar versiones primero"
 
 #: internal/update/update.c
 msgid "Checking for updates"
-msgstr ""
+msgstr "Buscando actualizaciones"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Checking your game's files..."
-msgstr ""
+msgstr "Comprobando los archivos de tu juego..."
 
 #: internal/settings/settings.c
 msgid "Checking..."
-msgstr ""
+msgstr "Comprobando..."
 
 #: internal/settings/timezones.c
 msgid "China"
@@ -1457,11 +1459,11 @@ msgstr "Limpiar completados"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Cleared"
-msgstr ""
+msgstr "Limpiado"
 
 #: internal/settings/settings.c
 msgid "Cleared %d"
-msgstr ""
+msgstr "%d limpiados"
 
 #: internal/settings/settings.c
 msgid "Clock"
@@ -1469,11 +1471,11 @@ msgstr "Reloj"
 
 #: internal/settings/settings.c
 msgid "Close Apps"
-msgstr ""
+msgstr "Cerrar apps"
 
 #: internal/update/update.c
 msgid "Close running games or apps before installing"
-msgstr ""
+msgstr "Cierra los juegos o apps en ejecución antes de instalar"
 
 #: internal/settings/storage_ui.c
 msgid "Close the game or app first, then try again."
@@ -1493,43 +1495,43 @@ msgstr "Esquema de color"
 
 #: internal/settings/settings.c
 msgid "Color Temperature"
-msgstr ""
+msgstr "Temperatura de color"
 
 #: internal/settings/settings.c
 msgid "Color temperature change failed"
-msgstr ""
+msgstr "Error al cambiar la temperatura de color"
 
 #: internal/ipc/ipc_client.c
 msgid "Color temperature failed"
-msgstr ""
+msgstr "Error de temperatura de color"
 
 #: internal/ipc/ipc_client.c
 msgid "Color temperature failed: daemon unavailable"
-msgstr ""
+msgstr "Error de temperatura de color: daemon no disponible"
 
 #: internal/platform/device_mlp1.c
 msgid "Color temperature neutral"
-msgstr ""
+msgstr "Temperatura de color neutra"
 
 #: internal/platform/device_mlp1.c
 msgid "Color temperature neutral for the external display"
-msgstr ""
+msgstr "Temperatura de color neutra para la pantalla externa"
 
 #: internal/platform/device_mlp1.c
 msgid "Color temperature reset for the external display failed"
-msgstr ""
+msgstr "Falló el restablecimiento de la temperatura de color para la pantalla externa"
 
 #: internal/settings/settings.c
 msgid "Color temperature unavailable on this platform"
-msgstr ""
+msgstr "Temperatura de color no disponible en esta plataforma"
 
 #: internal/settings/settings.c
 msgid "Color temperature unavailable while HDMI is active"
-msgstr ""
+msgstr "Temperatura de color no disponible mientras HDMI esté activo"
 
 #: internal/ipc/ipc_client.c
 msgid "Color temperature updated"
-msgstr ""
+msgstr "Temperatura de color actualizada"
 
 #: internal/settings/settings.c
 msgid "Colors"
@@ -1541,7 +1543,7 @@ msgstr "Cometa"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Coming soon"
-msgstr ""
+msgstr "Próximamente"
 
 #: cmd/jawaka-menu/main.c
 msgid "Command: %s"
@@ -1553,7 +1555,7 @@ msgstr "Commodore 64"
 
 #: internal/settings/settings.c
 msgid "Compatible releases"
-msgstr ""
+msgstr "Versiones compatibles"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Confirm"
@@ -1561,11 +1563,11 @@ msgstr "Confirmar"
 
 #: internal/store/pakrat.c
 msgid "Confirmed uninstall could not be completed"
-msgstr ""
+msgstr "La desinstalación confirmada no se pudo completar"
 
 #: internal/platform/bluetooth_mlp1.c
 msgid "Connect failed\n"
-msgstr ""
+msgstr "Error de conexión\n"
 
 #: internal/settings/storage_ui.c
 msgid "Connect to power or charge the battery to at least 30 percent and try again."
@@ -1581,39 +1583,39 @@ msgstr "Conectado"
 
 #: internal/settings/settings.c
 msgid "Connected to %s"
-msgstr ""
+msgstr "Conectado a %s"
 
 #: internal/settings/settings.c
 msgid "Connected: %s"
-msgstr ""
+msgstr "Conectado: %s"
 
 #: internal/settings/settings.c
 msgid "Connecting %s..."
-msgstr ""
+msgstr "Conectando %s..."
 
 #: internal/settings/settings.c
 msgid "Connecting to %s…"
-msgstr ""
+msgstr "Conectando a %s…"
 
 #: internal/discovery/content.c
 msgid "Content descriptors are nested too deeply"
-msgstr ""
+msgstr "Los descriptores de contenido están anidados a demasiada profundidad"
 
 #: internal/discovery/content.c
 msgid "Content path has too many missing directories"
-msgstr ""
+msgstr "La ruta del contenido tiene demasiados directorios faltantes"
 
 #: internal/discovery/content.c
 msgid "Content path is too long"
-msgstr ""
+msgstr "La ruta del contenido es muy larga"
 
 #: internal/discovery/content.c
 msgid "Content references too many files"
-msgstr ""
+msgstr "El contenido hace referencia a demasiados archivos"
 
 #: internal/discovery/content.c
 msgid "Content uses too many directories"
-msgstr ""
+msgstr "El contenido usa demasiados directorios"
 
 #: cmd/jawaka-menu/main.c
 msgid "Continue"
@@ -1621,11 +1623,11 @@ msgstr "Continuar"
 
 #: internal/settings/settings.c
 msgid "Continue your game when you turn on your console after saving with the power button. Hold B during startup to skip."
-msgstr ""
+msgstr "Continúa tu juego al encender tu consola tras guardar con el botón de encendido. Mantén presionado B al iniciar para omitir."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Contribution refused — %s"
-msgstr ""
+msgstr "Contribución rechazada — %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Controller setup failed. Restart Leaf and try again."
@@ -1633,7 +1635,7 @@ msgstr "Falló la configuración del control. Reinicia Leaf e intenta de nuevo."
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Copying update to SD card"
-msgstr ""
+msgstr "Copiando actualización a la tarjeta SD"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Core"
@@ -1641,99 +1643,99 @@ msgstr "Núcleo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Core metadata unavailable: %.180s"
-msgstr ""
+msgstr "Metadatos del núcleo no disponibles: %.180s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Core update failed"
-msgstr ""
+msgstr "Falló la actualización del núcleo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Core: %.160s"
-msgstr ""
+msgstr "Núcleo: %.160s"
 
 #: internal/store/pakrat.c
 msgid "Could not build package mutation request"
-msgstr ""
+msgstr "No se pudo crear la solicitud de modificación del paquete"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Could not change this game's pin"
-msgstr ""
+msgstr "No se pudo cambiar el fijado de este juego"
 
 #: internal/discovery/delete_job.c
 msgid "Could not check artwork work before deletion."
-msgstr ""
+msgstr "No se pudo verificar el trabajo del arte antes de la eliminación."
 
 #: cmd/jawakad/main.c
 msgid "Could not check your game's files."
-msgstr ""
+msgstr "No se pudieron comprobar los archivos de tu juego."
 
 #: internal/settings/settings.c
 msgid "Could not connect to %s"
-msgstr ""
+msgstr "No se pudo conectar a %s"
 
 #: internal/settings/settings.c
 msgid "Could not disconnect"
-msgstr ""
+msgstr "No se pudo desconectar"
 
 #: internal/settings/settings.c
 msgid "Could not forget %s"
-msgstr ""
+msgstr "No se pudo olvidar %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Could not hide this game"
-msgstr ""
+msgstr "No se pudo ocultar este juego"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Could not inspect retained data for %.100s"
-msgstr ""
+msgstr "No se pudieron inspeccionar los datos retenidos para %.100s"
 
 #: internal/scrape/scrape_worker.c
 msgid "Could not keep quota-paused item queued"
-msgstr ""
+msgstr "No se pudo mantener en cola el elemento pausado por cuota"
 
 #: internal/scrape/scrape_worker.c
 msgid "Could not keep storage-paused item queued"
-msgstr ""
+msgstr "No se pudo mantener en cola el elemento pausado por almacenamiento"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Could not load favorites"
-msgstr ""
+msgstr "No se pudieron cargar los favoritos"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Could not load games for %s"
-msgstr ""
+msgstr "No se pudieron cargar los juegos para %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Could not load recents"
-msgstr ""
+msgstr "No se pudieron cargar los recientes"
 
 #: internal/store/pakrat.c
 msgid "Could not lock package mutation: %s"
-msgstr ""
+msgstr "No se pudo bloquear la modificación del paquete: %s"
 
 #: internal/store/pakrat.c
 msgid "Could not read the Themes folder"
-msgstr ""
+msgstr "No se pudo leer la carpeta Themes"
 
 #: internal/store/pakrat.c
 msgid "Could not read the bundled theme list for %s"
-msgstr ""
+msgstr "No se pudo leer la lista de temas incluidos para %s"
 
 #: internal/discovery/delete_job.c
 msgid "Could not read your game's library identity."
-msgstr ""
+msgstr "No se pudo leer la identidad de la biblioteca de tu juego."
 
 #: internal/store/pakrat.c
 msgid "Could not record confirmed uninstall intent"
-msgstr ""
+msgstr "No se pudo registrar la intención de desinstalación confirmada"
 
 #: internal/store/pakrat.c
 msgid "Could not reload confirmed uninstall intent"
-msgstr ""
+msgstr "No se pudo recargar la intención de desinstalación confirmada"
 
 #: internal/discovery/delete_job.c
 msgid "Could not resolve storage sources."
-msgstr ""
+msgstr "No se pudieron resolver las fuentes de almacenamiento."
 
 #: internal/settings/settings.c
 msgid "Could not save"
@@ -1741,23 +1743,23 @@ msgstr "No se pudo guardar"
 
 #: internal/settings/settings.c
 msgid "Could not start Bluetooth connect"
-msgstr ""
+msgstr "No se pudo iniciar la conexión de Bluetooth"
 
 #: internal/settings/settings.c
 msgid "Could not start Bluetooth scan"
-msgstr ""
+msgstr "No se pudo iniciar el escaneo de Bluetooth"
 
 #: cmd/jawakad/main.c
 msgid "Could not start deleting your game."
-msgstr ""
+msgstr "No se pudo iniciar la eliminación de tu juego."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't confirm the result. Check your library."
-msgstr ""
+msgstr "No se pudo confirmar el resultado. Comprueba tu biblioteca."
 
 #: internal/settings/settings.c
 msgid "Couldn't connect — check password"
-msgstr ""
+msgstr "No se pudo conectar — verifica la contraseña"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't install %s"
@@ -1765,19 +1767,19 @@ msgstr "No se pudo instalar %s"
 
 #: internal/settings/settings.c
 msgid "Couldn't load hidden games."
-msgstr ""
+msgstr "No se pudieron cargar los juegos ocultos."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't resume your game. Open it to try loading your save."
-msgstr ""
+msgstr "No se pudo reanudar tu juego. Ábrelo para intentar cargar tu partida."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't resume: Hardcore mode doesn't allow loading a save."
-msgstr ""
+msgstr "No se pudo reanudar: el modo Hardcore no permite cargar partidas."
 
 #: internal/settings/settings.c
 msgid "Couldn't unhide your selection."
-msgstr ""
+msgstr "No se pudo desocultar tu selección."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Couldn't uninstall %s"
@@ -1809,11 +1811,11 @@ msgstr "DMC"
 
 #: internal/scrape/ss_client.c
 msgid "Daily quota exceeded (HTTP 430)"
-msgstr ""
+msgstr "Cuota diaria excedida (HTTP 430)"
 
 #: internal/scrape/scrape_worker.c
 msgid "Daily quota exhausted (%d/%d)"
-msgstr ""
+msgstr "Cuota diaria agotada (%d/%d)"
 
 #: internal/settings/timezones.c
 msgid "Darwin"
@@ -1821,7 +1823,7 @@ msgstr "Darwin"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Declared browser trust and credentials will be revoked.\n"
-msgstr ""
+msgstr "Se revocarán las credenciales y la confianza del navegador declaradas.\n"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Default"
@@ -1833,47 +1835,47 @@ msgstr "Predeterminados"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Delete Game"
-msgstr ""
+msgstr "Eliminar juego"
 
 #: internal/discovery/delete.c
 msgid "Delete can't remove a symlinked game file."
-msgstr ""
+msgstr "La eliminación no puede quitar un archivo de juego enlazado simbólicamente."
 
 #: internal/discovery/delete.c
 msgid "Delete isn't available for this game."
-msgstr ""
+msgstr "La eliminación no está disponible para este juego."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Deleted %zu files."
-msgstr ""
+msgstr "%zu archivos eliminados."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Deleted %zu of %zu files."
-msgstr ""
+msgstr "%zu de %zu archivos eliminados."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Deleted 1 file."
-msgstr ""
+msgstr "1 archivo eliminado."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Deleting your game. Keep your cards inserted."
-msgstr ""
+msgstr "Eliminando tu juego. Mantén las tarjetas insertadas."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Deletion finished. Library refresh failed."
-msgstr ""
+msgstr "Eliminación finalizada. Falló la actualización de la biblioteca."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Deletion is permanent. This might not delete every file your game uses."
-msgstr ""
+msgstr "La eliminación es permanente. Esto podría no eliminar todos los archivos que usa tu juego."
 
 #: internal/discovery/content.c
 msgid "Descriptor argument is too long"
-msgstr ""
+msgstr "El argumento del descriptor es demasiado largo"
 
 #: internal/discovery/content.c
 msgid "Descriptor has an unterminated quote"
-msgstr ""
+msgstr "El descriptor tiene una comilla sin cerrar"
 
 #: internal/retroarch/shader_strings.c
 msgid "Designed for handheld content."
@@ -1896,11 +1898,11 @@ msgstr "Dispositivo"
 
 #: internal/platform/bluetooth_mlp1.c
 msgid "Device is not paired\n"
-msgstr ""
+msgstr "El dispositivo no está emparejado\n"
 
 #: internal/platform/bluetooth_mlp1.c
 msgid "Device not found\n"
-msgstr ""
+msgstr "Dispositivo no encontrado\n"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Digit"
@@ -1922,15 +1924,15 @@ msgstr "Desactivado"
 
 #: internal/discovery/content.c
 msgid "Disc descriptor has missing or inconsistent track records"
-msgstr ""
+msgstr "El descriptor de disco tiene registros de pistas faltantes o inconsistentes"
 
 #: internal/discovery/content.c
 msgid "Disc descriptor has no FILE filename"
-msgstr ""
+msgstr "El descriptor de disco no tiene un nombre de archivo FILE"
 
 #: internal/settings/settings.c
 msgid "Disconnect failed"
-msgstr ""
+msgstr "Falló la desconexión"
 
 #: internal/settings/settings.c
 msgid "Disconnected"
@@ -1938,11 +1940,11 @@ msgstr "Desconectado"
 
 #: internal/settings/settings.c
 msgid "Disconnected %s"
-msgstr ""
+msgstr "%s desconectado"
 
 #: internal/settings/settings.c
 msgid "Disconnected from %s"
-msgstr ""
+msgstr "Desconectado de %s"
 
 #: cmd/jawaka-menu/main.c
 msgid "Disk %d/%d"
@@ -1958,19 +1960,19 @@ msgstr "Nombre a mostrar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Display Name: %.160s"
-msgstr ""
+msgstr "Nombre visible: %.160s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Display name reset"
-msgstr ""
+msgstr "Nombre visible restablecido"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Display name reset failed"
-msgstr ""
+msgstr "Error al restablecer el nombre visible"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Display name update failed"
-msgstr ""
+msgstr "Error al actualizar el nombre visible"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
@@ -1990,31 +1992,31 @@ msgstr "Descargar"
 
 #: internal/settings/settings.c
 msgid "Download First"
-msgstr ""
+msgstr "Descargar primero"
 
 #: internal/settings/settings.c
 msgid "Download update first"
-msgstr ""
+msgstr "Descargar actualización primero"
 
 #: internal/settings/settings.c
 msgid "Downloaded"
-msgstr ""
+msgstr "Descargado"
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Downloaded artifact failed final verification"
-msgstr ""
+msgstr "El archivo descargado falló la verificación final"
 
 #: internal/update/update.c
 msgid "Downloaded update SHA-256 does not match metadata"
-msgstr ""
+msgstr "El SHA-256 de la actualización descargada no coincide con los metadatos"
 
 #: internal/update/update.c
 msgid "Downloaded update artifact is missing"
-msgstr ""
+msgstr "Falta el archivo de actualización descargado"
 
 #: internal/update/update.c
 msgid "Downloaded update size does not match metadata"
-msgstr ""
+msgstr "El tamaño de la actualización descargada no coincide con los metadatos"
 
 #: internal/settings/settings.c
 msgid "Downloading"
@@ -2022,7 +2024,7 @@ msgstr "Descargando"
 
 #: internal/update/update.c
 msgid "Downloading %s"
-msgstr ""
+msgstr "Descargando %s"
 
 #: internal/launcher/system_names.c
 msgid "Dreamcast"
@@ -2050,7 +2052,7 @@ msgstr "Vacío"
 
 #: internal/discovery/content.c
 msgid "Empty or oversized content reference"
-msgstr ""
+msgstr "Referencia de contenido vacía o demasiado grande"
 
 #: internal/settings/settings.c
 msgid "Enable"
@@ -2062,7 +2064,7 @@ msgstr "¿Activar USB ADB y restaurarlo al iniciar?"
 
 #: internal/settings/settings.c
 msgid "Enabled"
-msgstr ""
+msgstr "Activado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Enter PIN to exit"
@@ -2078,11 +2080,11 @@ msgstr "Eucla"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Europe"
-msgstr ""
+msgstr "Europa"
 
 #: internal/settings/settings.c
 msgid "Excluded entries cannot be reordered"
-msgstr ""
+msgstr "Las entradas excluidas no se pueden reordenar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Exit 5-Game Mode?"
@@ -2094,7 +2096,7 @@ msgstr "Volver al sistema de fábrica"
 
 #: cmd/jawaka-menu/main.c
 msgid "Exit to stock failed"
-msgstr ""
+msgstr "Error al salir al sistema de fábrica"
 
 #: internal/settings/settings.c
 msgid "Extra Large"
@@ -2102,7 +2104,7 @@ msgstr "Extra grande"
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Extracting update files"
-msgstr ""
+msgstr "Extrayendo archivos de actualización"
 
 #: internal/settings/settings.c
 msgid "Failed"
@@ -2110,15 +2112,15 @@ msgstr "Error"
 
 #: internal/scrape/ss_client.c
 msgid "Failed to finalize media file"
-msgstr ""
+msgstr "Error al finalizar el archivo multimedia"
 
 #: internal/scrape/ss_client.c
 msgid "Failed to parse ScreenScraper response"
-msgstr ""
+msgstr "Error al analizar la respuesta de ScreenScraper"
 
 #: internal/scrape/ss_client.c
 msgid "Failed to write media file"
-msgstr ""
+msgstr "Error al escribir el archivo multimedia"
 
 #: internal/launcher/system_names.c
 msgid "Famicom Disk System"
@@ -2126,7 +2128,7 @@ msgstr "Famicom Disk System"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Fan art"
-msgstr ""
+msgstr "Arte de fans"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Favorite"
@@ -2134,11 +2136,11 @@ msgstr "Favorito"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Favorite update failed"
-msgstr ""
+msgstr "Error al actualizar favoritos"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Favorited"
-msgstr ""
+msgstr "Agregado a favoritos"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Favorites"
@@ -2150,7 +2152,7 @@ msgstr "Fernando de Noronha"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Files"
-msgstr ""
+msgstr "Archivos"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Filter"
@@ -2158,11 +2160,11 @@ msgstr "Filtrar"
 
 #: internal/settings/settings.c
 msgid "Finish the current update before switching channels"
-msgstr ""
+msgstr "Termina la actualización actual antes de cambiar de canal"
 
 #: internal/settings/settings.c
 msgid "Fixed"
-msgstr ""
+msgstr "Fijo"
 
 #: internal/settings/settings.c
 msgid "Flat"
@@ -2186,7 +2188,7 @@ msgstr "Tamaño de fuente"
 
 #: internal/settings/settings.c
 msgid "Force Off Hold"
-msgstr ""
+msgstr "Tiempo presionado para forzar apagado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Forget"
@@ -2194,7 +2196,7 @@ msgstr "Olvidar"
 
 #: internal/settings/settings.c
 msgid "Forgot %s"
-msgstr ""
+msgstr "Se olvidó %s"
 
 #: internal/settings/settings.c
 msgid "Fountain"
@@ -2202,11 +2204,11 @@ msgstr "Fuente"
 
 #: internal/scrape/scrape_catalog.c
 msgid "France"
-msgstr ""
+msgstr "Francia"
 
 #: internal/update/update.c
 msgid "Free space could not be checked; confirmation required"
-msgstr ""
+msgstr "No se pudo verificar el espacio libre; se requiere confirmación"
 
 #: internal/platform/platform_common.c
 msgid "Frontend"
@@ -2222,31 +2224,31 @@ msgstr "Color GBC"
 
 #: internal/discovery/content.c
 msgid "GDI has an incomplete track record"
-msgstr ""
+msgstr "GDI tiene un registro de pistas incompleto"
 
 #: internal/discovery/content.c
 msgid "GDI has an invalid track count or number"
-msgstr ""
+msgstr "GDI tiene un conteo o número de pistas no válido"
 
 #: internal/discovery/content.c
 msgid "GDI has an invalid track field"
-msgstr ""
+msgstr "GDI tiene un campo de pista no válido"
 
 #: internal/discovery/content.c
 msgid "GDI has an invalid track offset"
-msgstr ""
+msgstr "GDI tiene un desfase de pista no válido"
 
 #: internal/discovery/content.c
 msgid "GDI has no track filename"
-msgstr ""
+msgstr "GDI no tiene nombre de archivo de pista"
 
 #: internal/discovery/content.c
 msgid "GDI has no track offset"
-msgstr ""
+msgstr "GDI no tiene desfase de pista"
 
 #: internal/discovery/content.c
 msgid "GDI track count has extra fields"
-msgstr ""
+msgstr "El conteo de pistas GDI tiene campos adicionales"
 
 #: cmd/jawaka-menu/main.c
 msgid "GPU"
@@ -2298,35 +2300,35 @@ msgstr "Cambiador de juego"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Game hidden. Library refresh failed."
-msgstr ""
+msgstr "Juego oculto. Falló la actualización de la biblioteca."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Game hidden. Unhide it in Settings > Games > Hidden Games."
-msgstr ""
+msgstr "Juego oculto. Desocúltalo en Ajustes > Juegos > Juegos ocultos."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Game launch blocked.\n\n%.128s may still be writing Saves or States. Play anyway only if you accept possible data corruption."
-msgstr ""
+msgstr "Inicio del juego bloqueado.\n\n%.128s aún podría estar escribiendo guardados o estados. Juega de todos modos solo si aceptas la posible corrupción de datos."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Game launch blocked.\n\nA previous game may still be writing Saves or States. Restart the device before launching another game."
-msgstr ""
+msgstr "Inicio del juego bloqueado.\n\nUn juego anterior todavía podría estar escribiendo guardados o estados. Reinicia el dispositivo antes de iniciar otro juego."
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Game not saved"
-msgstr ""
+msgstr "Juego no guardado"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Game saved"
-msgstr ""
+msgstr "Juego guardado"
 
 #: internal/settings/settings.c
 msgid "Game unhidden"
-msgstr ""
+msgstr "Juego desocultado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Game unhidden. Library refresh failed."
-msgstr ""
+msgstr "Juego desocultado. Falló la actualización de la biblioteca."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Games"
@@ -2338,7 +2340,7 @@ msgstr "Juegos jugados"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Germany"
-msgstr ""
+msgstr "Alemania"
 
 #: internal/settings/settings.c
 msgid "Glide"
@@ -2366,15 +2368,15 @@ msgstr "Error al cambiar la salida HDMI"
 
 #: internal/ipc/ipc_client.c
 msgid "HDMI output failed"
-msgstr ""
+msgstr "Falló la salida HDMI"
 
 #: internal/ipc/ipc_client.c
 msgid "HDMI output failed: daemon unavailable"
-msgstr ""
+msgstr "Falló la salida HDMI: demonio no disponible"
 
 #: internal/settings/settings.c
 msgid "HDMI output unavailable"
-msgstr ""
+msgstr "Salida HDMI no disponible"
 
 #: internal/settings/settings.c
 msgid "HDMI output unavailable on this platform"
@@ -2406,11 +2408,11 @@ msgstr "Oculto"
 
 #: internal/settings/settings.c
 msgid "Hidden Games"
-msgstr ""
+msgstr "Juegos ocultos"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Hide Game"
-msgstr ""
+msgstr "Ocultar juego"
 
 # In-game Shortcuts help line.
 #: internal/settings/settings.c
@@ -2419,11 +2421,11 @@ msgstr "Mantén Menú y presiona el botón.   X: Desactivar"
 
 #: internal/settings/settings.c
 msgid "Hold power to shut down, then release to save"
-msgstr ""
+msgstr "Mantén presionado encendido para apagar, luego suelta para guardar"
 
 #: internal/settings/settings.c
 msgid "Hold the power button %d seconds to force off"
-msgstr ""
+msgstr "Mantén presionado el botón de encendido %d segundos para forzar el apagado"
 
 #: internal/settings/settings.c
 msgid "Home Layout"
@@ -2467,15 +2469,15 @@ msgstr "Ícono"
 
 #: internal/settings/settings.c
 msgid "Idle"
-msgstr ""
+msgstr "Inactivo"
 
 #: internal/scrape/ss_client.c
 msgid "Image decode failed (stb_image)"
-msgstr ""
+msgstr "Error al decodificar la imagen (stb_image)"
 
 #: internal/settings/settings.c
 msgid "Incompatible"
-msgstr ""
+msgstr "Incompatible"
 
 #: internal/settings/timezones.c
 msgid "India"
@@ -2491,15 +2493,15 @@ msgstr "Instalar"
 
 #: internal/settings/settings.c
 msgid "Install Again"
-msgstr ""
+msgstr "Instalar de nuevo"
 
 #: internal/settings/settings.c
 msgid "Install Leaf %s?"
-msgstr ""
+msgstr "¿Instalar Leaf %s?"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Install cancelled: %.120s"
-msgstr ""
+msgstr "Instalación cancelada: %.120s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Install cancelled: %s"
@@ -2507,17 +2509,19 @@ msgstr "Instalación cancelada: %s"
 
 #: internal/settings/settings.c
 msgid "Install in progress"
-msgstr ""
+msgstr "Instalación en progreso"
 
 #: internal/settings/storage_ui.c
 msgid ""
 "Install the matching Leaf system update before checking this card on your "
 "device."
 msgstr ""
+"Instala la actualización de sistema de Leaf correspondiente antes de "
+"comprobar esta tarjeta en tu dispositivo."
 
 #: internal/settings/settings.c
 msgid "Install update even though checks are incomplete?"
-msgstr ""
+msgstr "¿Instalar la actualización aunque las comprobaciones estén incompletas?"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installed"
@@ -2529,31 +2533,31 @@ msgstr "%s instalado"
 
 #: internal/store/pakrat.c
 msgid "Installed package metadata cannot be cached: %s"
-msgstr ""
+msgstr "No se pueden almacenar en caché los metadatos del paquete instalado: %s"
 
 #: internal/store/pakrat.c
 msgid "Installed package metadata cannot be validated: %s"
-msgstr ""
+msgstr "No se pueden validar los metadatos del paquete instalado: %s"
 
 #: internal/store/pakrat.c
 msgid "Installed package metadata does not match ownership"
-msgstr ""
+msgstr "Los metadatos del paquete instalado no coinciden con la propiedad"
 
 #: internal/store/pakrat.c
 msgid "Installed package metadata is corrupt or unavailable"
-msgstr ""
+msgstr "Los metadatos del paquete instalado están dañados o no disponibles"
 
 #: internal/store/pakrat.c
 msgid "Installed package source is absent; uninstall will resume when it returns"
-msgstr ""
+msgstr "Falta la fuente del paquete instalado; la desinstalación se reanudará cuando regrese"
 
 #: internal/store/pakrat.c
 msgid "Installed package source is unavailable"
-msgstr ""
+msgstr "La fuente del paquete instalado no está disponible"
 
 #: internal/store/pakrat.c
 msgid "Installed theme is not on the primary card"
-msgstr ""
+msgstr "El tema instalado no está en la tarjeta primaria"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installed version: %s"
@@ -2561,11 +2565,11 @@ msgstr "Versión instalada: %s"
 
 #: internal/settings/settings.c
 msgid "Installing"
-msgstr ""
+msgstr "Instalando"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installing Pak Rat app"
-msgstr ""
+msgstr "Instalando app de Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Installing theme"
@@ -2577,15 +2581,15 @@ msgstr "Intellivision"
 
 #: internal/platform/bluetooth_mlp1.c
 msgid "Invalid Bluetooth address\n"
-msgstr ""
+msgstr "Dirección de Bluetooth no válida\n"
 
 #: internal/discovery/content.c
 msgid "Invalid content identity"
-msgstr ""
+msgstr "Identidad de contenido no válida"
 
 #: cmd/jawakad/main.c
 msgid "Invalid game identity."
-msgstr ""
+msgstr "Identidad de juego no válida."
 
 #: internal/retroarch/shader_strings.c
 msgid "It is a scaling filter, not a CRT or LCD simulation."
@@ -2593,11 +2597,11 @@ msgstr "Es un filtro de escalado, no una simulación de CRT o LCD."
 
 #: internal/scrape/scrape_catalog.c
 msgid "Italy"
-msgstr ""
+msgstr "Italia"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Japan"
-msgstr ""
+msgstr "Japón"
 
 #: internal/settings/timezones.c
 msgid "Japan / Korea"
@@ -2605,15 +2609,15 @@ msgstr "Japón / Corea"
 
 #: internal/store/pakrat.c
 msgid "Jawaka did not complete package quiescence"
-msgstr ""
+msgstr "Jawaka no completó la inactividad del paquete"
 
 #: internal/store/pakrat.c
 msgid "Jawaka refused package mutation"
-msgstr ""
+msgstr "Jawaka rechazó la modificación del paquete"
 
 #: internal/store/pakrat.c
 msgid "Jawaka service supervisor is unavailable"
-msgstr ""
+msgstr "El supervisor del servicio Jawaka no está disponible"
 
 #: cmd/jawaka-menu/main.c
 msgid "Keep"
@@ -2633,7 +2637,7 @@ msgstr "Conservar datos"
 
 #: cmd/jawaka-menu/main.c
 msgid "Keep failed"
-msgstr ""
+msgstr "Error al mantener"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
@@ -2645,7 +2649,7 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Keep this TV display mode?\n\nSending 1080p120 over HDMI. If your TV stays blank it can't show this mode - leave it and Leaf reverts to a safe picture."
-msgstr ""
+msgstr "¿Mantener este modo de pantalla de TV?\n\nEnviando 1080p120 por HDMI. Si tu TV se queda en blanco, no puede mostrar este modo - déjalo y Leaf volverá a una imagen segura."
 
 #: internal/retroarch/shader_strings.c
 msgid ""
@@ -2665,7 +2669,7 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Kept as Slot %d"
-msgstr ""
+msgstr "Guardado como Ranura %d"
 
 #: internal/settings/settings.c
 msgid "Kernel"
@@ -2697,7 +2701,7 @@ msgstr "Última actualización: %s"
 
 #: internal/settings/settings.c
 msgid "Last: %s"
-msgstr ""
+msgstr "Último: %s"
 
 #: internal/settings/settings.c
 msgid "Later"
@@ -2717,11 +2721,11 @@ msgstr "Inicio cancelado"
 
 #: internal/discovery/content.c
 msgid "Launch file escapes the selected ROM source"
-msgstr ""
+msgstr "El archivo de inicio se sale de la fuente de ROM seleccionada"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Launching %.*s..."
-msgstr ""
+msgstr "Iniciando %.*s..."
 
 #: internal/settings/settings.c
 msgid "Leaf"
@@ -2729,27 +2733,27 @@ msgstr "Leaf"
 
 #: internal/update/update.c
 msgid "Leaf %s downloaded and verified"
-msgstr ""
+msgstr "Leaf %s descargado y verificado"
 
 #: internal/update/update.c
 msgid "Leaf %s installed"
-msgstr ""
+msgstr "Leaf %s instalado"
 
 #: internal/update/update.c
 msgid "Leaf %s is already installed"
-msgstr ""
+msgstr "Leaf %s ya está instalado"
 
 #: internal/update/update.c
 msgid "Leaf %s is available"
-msgstr ""
+msgstr "Leaf %s está disponible"
 
 #: internal/update/update.c
 msgid "Leaf %s is available; installed release is unknown"
-msgstr ""
+msgstr "Leaf %s está disponible; la versión instalada es desconocida"
 
 #: internal/update/update.c
 msgid "Leaf %s selected"
-msgstr ""
+msgstr "Leaf %s seleccionado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Leaf can't find %s in the Themes folder"
@@ -2757,7 +2761,7 @@ msgstr "Leaf no puede encontrar %s en la carpeta Themes"
 
 #: internal/settings/storage_ui.c
 msgid "Leaf checked this card and found file system errors, usually left by a shutdown that didn't finish saving. To keep your files safe, you can't save to this card until it's repaired."
-msgstr ""
+msgstr "Leaf comprobó esta tarjeta y encontró errores en el sistema de archivos, generalmente causados por un apagado que no terminó de guardar. Para mantener tus archivos seguros, no podrás guardar en esta tarjeta hasta que se repare."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Leaf couldn't confirm your SD card can be written."
@@ -2777,7 +2781,7 @@ msgstr "Leaf no pudo identificar esta tarjeta."
 
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't repair this card on your device. Turn off your device, repair the card on a computer, then check it here to save to it again."
-msgstr ""
+msgstr "Leaf no pudo reparar esta tarjeta en tu dispositivo. Apágalo, repara la tarjeta en una computadora y luego compruébala aquí para volver a guardar en ella."
 
 #: internal/settings/storage_ui.c
 msgid ""
@@ -2789,11 +2793,11 @@ msgstr ""
 
 #: internal/update/update.c
 msgid "Leaf releases response was not a JSON array"
-msgstr ""
+msgstr "La respuesta de versiones de Leaf no fue un arreglo JSON"
 
 #: internal/settings/settings.c
 msgid "Leaf update"
-msgstr ""
+msgstr "Actualización de Leaf"
 
 #: cmd/jawaka-menu/main.c
 msgid "Leaf's in-game picker supports GLSL presets (.glslp)."
@@ -2813,11 +2817,11 @@ msgstr "Izquierda/Derecha"
 
 #: cmd/jawakad/main.c
 msgid "Legacy save recovery failed; original files were retained"
-msgstr ""
+msgstr "Falló la recuperación de guardado heredado; se conservaron los archivos originales"
 
 #: cmd/jawakad/main.c
 msgid "Legacy save recovery skipped: ambiguous ROM name"
-msgstr ""
+msgstr "Recuperación de guardado heredado omitida: nombre de ROM ambiguo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Library"
@@ -2825,7 +2829,7 @@ msgstr "Biblioteca"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Library refresh failed."
-msgstr ""
+msgstr "Falló la actualización de la biblioteca."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Library scan failed"
@@ -2841,7 +2845,7 @@ msgstr "Actualizando biblioteca…"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Library updating; another scan is queued"
-msgstr ""
+msgstr "Actualizando biblioteca; hay otro escaneo en cola"
 
 #: cmd/jawaka-launcher/main.c
 msgid "License: %s"
@@ -2873,11 +2877,11 @@ msgstr "Cargando vista previa"
 
 #: internal/settings/settings.c
 msgid "Loading releases..."
-msgstr ""
+msgstr "Cargando versiones..."
 
 #: internal/update/update.c
 msgid "Local manifest artifact URL must use HTTPS"
-msgstr ""
+msgstr "La URL del archivo del manifiesto local debe usar HTTPS"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Lock"
@@ -2909,11 +2913,11 @@ msgstr "Islas Marquesas"
 
 #: internal/scrape/ss_client.c
 msgid "Media download returned HTTP %d"
-msgstr ""
+msgstr "La descarga de archivos multimedia devolvió HTTP %d"
 
 #: internal/scrape/ss_client.c
 msgid "Media download returned an empty body"
-msgstr ""
+msgstr "La descarga de archivos multimedia devolvió un cuerpo vacío"
 
 #: internal/settings/settings.c
 msgid "Memory free"
@@ -2925,7 +2929,7 @@ msgstr "Menú"
 
 #: internal/settings/settings.c
 msgid "Menu + %s"
-msgstr ""
+msgstr "Menú + %s"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Menu: Start now"
@@ -2976,9 +2980,8 @@ msgid "Nearby"
 msgstr "Cercano"
 
 #: internal/settings/storage_ui.c
-#, fuzzy
 msgid "Needs check"
-msgstr "Requiere reparación"
+msgstr "Requiere comprobación"
 
 #: internal/settings/storage_ui.c
 msgid "Needs repair"
@@ -3006,7 +3009,7 @@ msgstr "Red: %s"
 
 #: internal/settings/settings.c
 msgid "Neutral"
-msgstr ""
+msgstr "Neutro"
 
 #: internal/settings/settings.c
 msgid "Never"
@@ -3042,7 +3045,7 @@ msgstr "Nintendo Entertainment System"
 
 #: internal/settings/settings.c
 msgid "No"
-msgstr ""
+msgstr "No"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No BIOS file"
@@ -3054,43 +3057,43 @@ msgstr "Ningún archivo BIOS seleccionado"
 
 #: internal/settings/settings.c
 msgid "No HDMI cable connected"
-msgstr ""
+msgstr "No hay cable HDMI conectado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No Pak Rat app selected"
-msgstr ""
+msgstr "No se seleccionó ninguna app de Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No Pak Rat apps found"
-msgstr ""
+msgstr "No se encontraron apps de Pak Rat"
 
 #: internal/scrape/scrape_worker.c
 msgid "No ScreenScraper mapping for this system"
-msgstr ""
+msgstr "No hay mapeo de ScreenScraper para este sistema"
 
 #: internal/scrape/ss_client.c
 msgid "No ScreenScraper platform ids provided"
-msgstr ""
+msgstr "No se proporcionaron identificadores de plataforma de ScreenScraper"
 
 #: internal/scrape/ss_client.c
 msgid "No ScreenScraper username configured"
-msgstr ""
+msgstr "Sin nombre de usuario de ScreenScraper configurado"
 
 #: internal/settings/settings.c
 msgid "No Space"
-msgstr ""
+msgstr "Sin espacio"
 
 #: cmd/jawaka-menu/main.c
 msgid "No active RetroArch session"
-msgstr ""
+msgstr "No hay sesión activa de RetroArch"
 
 #: cmd/jawaka-menu/main.c
 msgid "No active session"
-msgstr ""
+msgstr "No hay sesión activa"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No app selected"
-msgstr ""
+msgstr "No hay app seleccionada"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No apps found"
@@ -3098,15 +3101,15 @@ msgstr "No se encontraron apps"
 
 #: internal/update/update.c
 msgid "No compatible Leaf update metadata found"
-msgstr ""
+msgstr "No se encontraron metadatos de actualización de Leaf compatibles"
 
 #: internal/discovery/delete.c
 msgid "No deletion plan"
-msgstr ""
+msgstr "Sin plan de eliminación"
 
 #: internal/update/update.c
 msgid "No downloadable update artifact is selected"
-msgstr ""
+msgstr "No se ha seleccionado ningún archivo de actualización descargable"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No favorites yet — open a game and press Y to add one"
@@ -3118,7 +3121,7 @@ msgstr "Aún no hay favoritos: presiona Y en un juego para agregar uno"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No game selected"
-msgstr ""
+msgstr "No hay ningún juego seleccionado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No games available"
@@ -3130,19 +3133,19 @@ msgstr "No se encontraron juegos"
 
 #: internal/settings/settings.c
 msgid "No games to scrape"
-msgstr ""
+msgstr "No hay juegos para scrapear"
 
 #: internal/settings/settings.c
 msgid "No hidden games."
-msgstr ""
+msgstr "Sin juegos ocultos."
 
 #: internal/settings/settings.c
 msgid "No jobs match this filter."
-msgstr ""
+msgstr "Ningún trabajo coincide con este filtro."
 
 #: cmd/jawaka-launcher/main.c
 msgid "No launchable games for %s"
-msgstr ""
+msgstr "No hay juegos ejecutables para %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No lock"
@@ -3150,11 +3153,11 @@ msgstr "Sin bloqueo"
 
 #: internal/settings/settings.c
 msgid "No missing artwork"
-msgstr ""
+msgstr "No falta arte"
 
 #: internal/settings/settings.c
 msgid "No new scrape jobs"
-msgstr ""
+msgstr "Sin nuevos trabajos de scrapeo"
 
 #: internal/settings/settings.c
 msgid "No playtime recorded yet."
@@ -3166,7 +3169,7 @@ msgstr "Sin vista previa"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No recent games yet"
-msgstr ""
+msgstr "Aún no hay juegos recientes"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No recent games yet — play something and it'll show up here"
@@ -3174,11 +3177,11 @@ msgstr "Aún no hay juegos recientes: juega a algo y aparecerá aquí"
 
 #: internal/settings/settings.c
 msgid "No releases available"
-msgstr ""
+msgstr "No hay versiones disponibles"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No result selected"
-msgstr ""
+msgstr "Sin resultado seleccionado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No results"
@@ -3186,7 +3189,7 @@ msgstr "Sin resultados"
 
 #: cmd/jawaka-launcher/main.c
 msgid "No retained data directories are declared."
-msgstr ""
+msgstr "No se han declarado directorios de datos retenidos."
 
 #: cmd/jawaka-menu/main.c
 msgid "No save in this slot"
@@ -3210,7 +3213,7 @@ msgstr "Aún no hay partidas guardadas"
 
 #: internal/settings/settings.c
 msgid "No scrape jobs."
-msgstr ""
+msgstr "Sin trabajos de scrapeo."
 
 #: internal/retroarch/shader_strings.c
 msgid "No screen curvature; use CRT Curved for that."
@@ -3230,19 +3233,19 @@ msgstr "Aún no hay temas en Pak Rat"
 
 #: internal/update/update.c
 msgid "No update check has been run"
-msgstr ""
+msgstr "No se ha realizado ninguna búsqueda de actualizaciones"
 
 #: internal/update/update.c
 msgid "No update download is active"
-msgstr ""
+msgstr "No hay ninguna descarga de actualización activa"
 
 #: internal/update/update.c
 msgid "No update manifest path was provided"
-msgstr ""
+msgstr "No se proporcionó la ruta del manifiesto de actualización"
 
 #: internal/settings/settings.c
 msgid "No update release selected"
-msgstr ""
+msgstr "No se seleccionó ninguna versión de actualización"
 
 #: cmd/jawaka-menu/main.c
 msgid "None"
@@ -3250,7 +3253,7 @@ msgstr "Ninguno"
 
 #: internal/settings/settings.c
 msgid "None selected"
-msgstr ""
+msgstr "Ninguno seleccionado"
 
 #: internal/settings/settings.c
 msgid "Not Found"
@@ -3258,7 +3261,7 @@ msgstr "No encontrado"
 
 #: internal/settings/settings.c
 msgid "Not checked"
-msgstr ""
+msgstr "Sin comprobar"
 
 #: internal/settings/settings.c
 msgid "Not connected"
@@ -3266,15 +3269,15 @@ msgstr "No conectado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Not deleted"
-msgstr ""
+msgstr "No eliminado"
 
 #: internal/update/update.c
 msgid "Not enough free space for update download"
-msgstr ""
+msgstr "No hay suficiente espacio libre para descargar la actualización"
 
 #: internal/update/update.c
 msgid "Not enough free space to install update"
-msgstr ""
+msgstr "No hay suficiente espacio libre para instalar la actualización"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Not enough memory to open the BIOS picker"
@@ -3294,23 +3297,23 @@ msgstr "Ahora no"
 
 #: internal/settings/settings.c
 msgid "Not saved - sign in again"
-msgstr ""
+msgstr "No guardado - vuelve a iniciar sesión"
 
 #: internal/settings/settings.c
 msgid "Not signed in"
-msgstr ""
+msgstr "Sesión no iniciada"
 
 #: internal/settings/settings.c
 msgid "Not written"
-msgstr ""
+msgstr "No escrito"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Nothing to scrape - all games have artwork"
-msgstr ""
+msgstr "Nada por scrapear - todos los juegos tienen arte"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Nothing to scrape - no games in this system"
-msgstr ""
+msgstr "Nada por scrapear - no hay juegos en este sistema"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Now"
@@ -3330,19 +3333,19 @@ msgstr "Desactivado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Offline achievements unavailable.\n\nRAOfflineProxy is enabled but not responding. Play directly signs you in to RetroAchievements online, but unlocks can't be queued for offline play. To check the service, cancel and open Settings > System > Services."
-msgstr ""
+msgstr "Logros fuera de línea no disponibles.\n\nRAOfflineProxy está activado pero no responde. Jugar directamente te inicia sesión en RetroAchievements en línea, pero los desbloqueos no se pueden poner en cola para jugar fuera de línea. Para revisar el servicio, cancela y abre Ajustes > Sistema > Servicios."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Offline achievements unavailable.\n\nRAOfflineProxy is enabled but not responding. Retry checks it again. Play directly signs you in to RetroAchievements online, but unlocks can't be queued for offline play. To check the service, cancel and open Settings > System > Services."
-msgstr ""
+msgstr "Logros fuera de línea no disponibles.\n\nRAOfflineProxy está activado pero no responde. Reintentar vuelve a comprobarlo. Jugar directamente te inicia sesión en RetroAchievements en línea, pero los desbloqueos no se pueden poner en cola para jugar fuera de línea. Para revisar el servicio, cancela y abre Ajustes > Sistema > Servicios."
 
 #: internal/settings/settings.c
 msgid "Offsets are standard time; regions adjust for DST"
-msgstr "Desfases estándar; las regiones ajustan en verano"
+msgstr "Desfases son hora estándar; las regiones ajustan en verano"
 
 #: internal/settings/settings.c
 msgid "Older"
-msgstr ""
+msgstr "Más antiguo"
 
 #: internal/settings/settings.c
 msgid "On"
@@ -3358,11 +3361,11 @@ msgstr "Abrir"
 
 #: internal/settings/settings.c
 msgid "Open  "
-msgstr ""
+msgstr "Abrir  "
 
 #: cmd/jawakad/main.c
 msgid "Open Delete Game again."
-msgstr ""
+msgstr "Abre Eliminar juego de nuevo."
 
 #: internal/settings/settings.c
 msgid "Open-source components"
@@ -3374,31 +3377,31 @@ msgstr "Opciones"
 
 #: internal/discovery/content.c
 msgid "Out of memory inspecting content"
-msgstr ""
+msgstr "Sin memoria al inspeccionar el contenido"
 
 #: internal/discovery/content.c
 msgid "Out of memory inspecting files"
-msgstr ""
+msgstr "Sin memoria al inspeccionar los archivos"
 
 #: internal/discovery/content.c
 msgid "Out of memory inspecting references"
-msgstr ""
+msgstr "Sin memoria al inspeccionar las referencias"
 
 #: internal/discovery/delete.c
 msgid "Out of memory preparing deletion"
-msgstr ""
+msgstr "Sin memoria al preparar la eliminación"
 
 #: internal/discovery/content.c
 msgid "Out of memory reading descriptor"
-msgstr ""
+msgstr "Sin memoria al leer el descriptor"
 
 #: internal/discovery/delete.c
 msgid "Out of memory recording deletion"
-msgstr ""
+msgstr "Sin memoria al registrar la eliminación"
 
 #: internal/scrape/ss_client.c
 msgid "Out of memory while downscaling image"
-msgstr ""
+msgstr "Sin memoria al reducir la escala de la imagen"
 
 #: internal/settings/settings.c
 msgid "Output"
@@ -3406,7 +3409,7 @@ msgstr "Salida"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Overrides reset"
-msgstr ""
+msgstr "Ajustes individuales restablecidos"
 
 #: cmd/jawaka-launcher/main.c
 msgid "PIN"
@@ -3418,15 +3421,15 @@ msgstr "Los PIN no coinciden, intenta de nuevo"
 
 #: internal/scrape/ss_client.c
 msgid "PNG encoding failed (miniz)"
-msgstr ""
+msgstr "Falló la codificación PNG (miniz)"
 
 #: internal/store/pakrat.c
 msgid "Package manifest is not transaction-safe: %s"
-msgstr ""
+msgstr "El manifiesto del paquete no es seguro para transacciones: %s"
 
 #: internal/store/pakrat.c
 msgid "Package was removed, but library refresh failed"
-msgstr ""
+msgstr "El paquete fue eliminado, pero falló la actualización de la biblioteca"
 
 #: internal/settings/settings.c
 msgid "Paired"
@@ -3434,7 +3437,7 @@ msgstr "Emparejado"
 
 #: internal/settings/settings.c
 msgid "Pairing %s..."
-msgstr ""
+msgstr "Emparejando %s..."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat"
@@ -3442,7 +3445,7 @@ msgstr "Pak Rat"
 
 #: internal/store/pakrat.c
 msgid "Pak Rat Primary source is unavailable"
-msgstr ""
+msgstr "La fuente primaria de Pak Rat no está disponible"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat Themes"
@@ -3450,27 +3453,27 @@ msgstr "Temas de Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat action failed"
-msgstr ""
+msgstr "Falló la acción de Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat catalog not configured"
-msgstr ""
+msgstr "Catálogo de Pak Rat no configurado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat catalog requires a newer Leaf"
-msgstr ""
+msgstr "El catálogo de Pak Rat requiere una versión más reciente de Leaf"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat catalog unavailable"
-msgstr ""
+msgstr "Catálogo de Pak Rat no disponible"
 
 #: internal/store/pakrat.c
 msgid "Pak Rat ownership record is inconsistent: %s"
-msgstr ""
+msgstr "El registro de propiedad de Pak Rat es inconsistente: %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat runtime paths unavailable"
-msgstr ""
+msgstr "Las rutas de ejecución de Pak Rat no están disponibles"
 
 #: internal/settings/timezones.c
 msgid "Pakistan"
@@ -3478,11 +3481,11 @@ msgstr "Pakistán"
 
 #: internal/settings/settings.c
 msgid "Panel only"
-msgstr ""
+msgstr "Solo panel"
 
 #: internal/settings/settings.c
 msgid "Password for %s\nStart: Confirm\nY: Cancel"
-msgstr ""
+msgstr "Contraseña para %s\nStart: Confirmar\nY: Cancelar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Path: Apps/%s"
@@ -3490,27 +3493,27 @@ msgstr "Ruta: Apps/%s"
 
 #: internal/scrape/scrape_worker.c
 msgid "Paused: the artwork card is not available"
-msgstr ""
+msgstr "Pausado: la tarjeta de arte no está disponible"
 
 #: internal/scrape/scrape_worker.c
 msgid "Paused: the artwork card is read-only"
-msgstr ""
+msgstr "Pausado: la tarjeta de arte es de solo lectura"
 
 #: internal/scrape/scrape_worker.c
 msgid "Paused: the artwork card is waiting for repair"
-msgstr ""
+msgstr "Pausado: la tarjeta de arte está esperando reparación"
 
 #: internal/scrape/scrape_worker.c
 msgid "Paused: the library card is not available"
-msgstr ""
+msgstr "Pausado: la tarjeta de la biblioteca no está disponible"
 
 #: internal/scrape/scrape_worker.c
 msgid "Paused: the library card is read-only"
-msgstr ""
+msgstr "Pausado: la tarjeta de la biblioteca es de solo lectura"
 
 #: internal/scrape/scrape_worker.c
 msgid "Paused: the library card is waiting for repair"
-msgstr ""
+msgstr "Pausado: la tarjeta de la biblioteca está esperando reparación"
 
 #: internal/settings/settings.c
 msgid "Percent"
@@ -3526,11 +3529,11 @@ msgstr "Rendimiento no disponible"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Performance update failed"
-msgstr ""
+msgstr "Error al actualizar el rendimiento"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Performance: %.160s"
-msgstr ""
+msgstr "Rendimiento: %.160s"
 
 #: internal/settings/settings.c
 msgid "Photographic"
@@ -3554,35 +3557,35 @@ msgstr "Elige otro BIOS de Saturn desde el menú de opciones."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pick at least one game"
-msgstr ""
+msgstr "Elige al menos un juego"
 
 #: internal/settings/settings.c
 msgid "Pick installed Leaf %s again?"
-msgstr ""
+msgstr "¿Elegir Leaf %s instalado de nuevo?"
 
 #: internal/settings/settings.c
 msgid "Pick older Leaf %s?"
-msgstr ""
+msgstr "¿Elegir una versión más antigua de Leaf %s?"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pin to Top"
-msgstr ""
+msgstr "Fijar al principio"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pinned to the top of this list."
-msgstr ""
+msgstr "Fijado al principio de esta lista."
 
 #: internal/update/update.c
 msgid "Platform artifact metadata is incomplete"
-msgstr ""
+msgstr "Los metadatos del archivo de la plataforma están incompletos"
 
 #: internal/settings/settings.c
 msgid "Play"
-msgstr "Jugar"
+msgstr "Reproducir"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Play Anyway"
-msgstr ""
+msgstr "Jugar de todos modos"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Play anyway"
@@ -3606,11 +3609,11 @@ msgstr "Reproduciendo sonido de prueba…"
 
 #: internal/discovery/content.c
 msgid "Playlist has an empty archive member"
-msgstr ""
+msgstr "La lista de reproducción tiene un elemento de archivo vacío"
 
 #: internal/discovery/content.c
 msgid "Playlist has an unterminated quote"
-msgstr ""
+msgstr "La lista de reproducción tiene una comilla sin cerrar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Playtime"
@@ -3626,7 +3629,7 @@ msgstr "Ports"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Portugal"
-msgstr ""
+msgstr "Portugal"
 
 #: internal/settings/settings.c
 msgid "Power"
@@ -3638,15 +3641,15 @@ msgstr "Apagar"
 
 #: cmd/jawaka-menu/main.c
 msgid "Power off failed"
-msgstr ""
+msgstr "Error al apagar"
 
 #: internal/settings/settings.c
 msgid "Power off will not save your game"
-msgstr ""
+msgstr "Apagar no guardará tu juego"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Powering off"
-msgstr ""
+msgstr "Apagando"
 
 #: internal/retroarch/shader_strings.c
 msgid ""
@@ -3657,19 +3660,19 @@ msgstr ""
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Preparing restart step"
-msgstr ""
+msgstr "Preparando paso de reinicio"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Preparing to save"
-msgstr ""
+msgstr "Preparando para guardar"
 
 #: internal/update/update.c
 msgid "Preparing update install"
-msgstr ""
+msgstr "Preparando instalación de actualización"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Press L1 then R1 to keep"
-msgstr ""
+msgstr "Presiona L1 y luego R1 para mantener"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Press MENU to exit"
@@ -3685,7 +3688,7 @@ msgstr "Página anterior"
 
 #: internal/settings/settings.c
 msgid "Primary Slot"
-msgstr ""
+msgstr "Ranura primaria"
 
 #: cmd/jawaka-menu/main.c
 msgid "Profile"
@@ -3693,19 +3696,19 @@ msgstr "Perfil"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Progress stored inside a writable game image is erased with that image."
-msgstr ""
+msgstr "El progreso guardado dentro de una imagen de juego escribible se borrará con esa imagen."
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Promoting launcher update"
-msgstr ""
+msgstr "Promoviendo actualización del lanzador"
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Promoting managed apps"
-msgstr ""
+msgstr "Promoviendo apps administradas"
 
 #: internal/settings/settings.c
 msgid "Queue full: queued %d of %d"
-msgstr ""
+msgstr "Cola llena: %d de %d en cola"
 
 #: internal/settings/settings.c
 msgid "Queued"
@@ -3713,15 +3716,15 @@ msgstr "En cola"
 
 #: internal/settings/settings.c
 msgid "Queued %d artwork job"
-msgstr ""
+msgstr "%d trabajo de arte en cola"
 
 #: internal/settings/settings.c
 msgid "Queued %d artwork jobs"
-msgstr ""
+msgstr "%d trabajos de arte en cola"
 
 #: internal/settings/settings.c
 msgid "Queued %d, %d already queued"
-msgstr ""
+msgstr "%d en cola, %d ya estaban en cola"
 
 #: cmd/jawaka-menu/main.c
 msgid "Quit"
@@ -3729,11 +3732,11 @@ msgstr "Salir"
 
 #: internal/settings/settings.c
 msgid "Quota paused"
-msgstr ""
+msgstr "Pausado por cuota"
 
 #: internal/settings/settings.c
 msgid "Quota paused, "
-msgstr ""
+msgstr "Pausado por cuota, "
 
 #: internal/settings/settings.c
 msgid "RAM"
@@ -3741,19 +3744,19 @@ msgstr "RAM"
 
 #: internal/settings/settings.c
 msgid "ROM"
-msgstr ""
+msgstr "ROM"
 
 #: cmd/jawakad/main.c
 msgid "ROM deletion in progress"
-msgstr ""
+msgstr "Eliminación de ROM en progreso"
 
 #: cmd/jawakad/main.c
 msgid "ROM deletion is preparing or committing"
-msgstr ""
+msgstr "La eliminación de ROM se está preparando o aplicando"
 
 #: cmd/jawakad/main.c
 msgid "ROM path missing"
-msgstr ""
+msgstr "Falta la ruta de la ROM"
 
 #: internal/settings/settings.c
 msgid "Rainbow"
@@ -3765,7 +3768,7 @@ msgstr "Reingresa el PIN"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Re-scrape all artwork anonymously? ScreenScraper can be slow and quota-limited without an account."
-msgstr ""
+msgstr "¿Volver a scrapear todo el arte de forma anónima? ScreenScraper puede ser lento y limitado por cuotas sin una cuenta."
 
 #: internal/settings/storage_ui.c
 msgid "Read-only"
@@ -3777,7 +3780,7 @@ msgstr "Leyendo carpeta…"
 
 #: internal/settings/settings.c
 msgid "Ready Check"
-msgstr ""
+msgstr "Comprobación de preparación"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reboot"
@@ -3838,15 +3841,15 @@ msgstr "Reinstalar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reinstall %.180s?\n\nThe app package will be replaced. User data is preserved."
-msgstr ""
+msgstr "¿Reinstalar %.180s?\n\nSe reemplazará el paquete de la app. Se conservan los datos de usuario."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reinstall cancelled: %.120s"
-msgstr ""
+msgstr "Reinstalación cancelada: %.120s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reinstall unavailable: version %s is missing from catalog history."
-msgstr ""
+msgstr "Reinstalación no disponible: la versión %s no existe en el historial del catálogo."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reinstalled %s"
@@ -3854,11 +3857,11 @@ msgstr "%s reinstalado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reinstalling Pak Rat app"
-msgstr ""
+msgstr "Reinstalando app de Pak Rat"
 
 #: internal/settings/settings.c
 msgid "Rejected - wrong username or password"
-msgstr ""
+msgstr "Rechazado - usuario o contraseña incorrectos"
 
 #: internal/settings/settings.c
 msgid "Release"
@@ -3866,19 +3869,19 @@ msgstr "Versión"
 
 #: internal/update/update.c
 msgid "Release %s does not support %s"
-msgstr ""
+msgstr "La versión %s no es compatible con %s"
 
 #: internal/update/update.c
 msgid "Release %s requires a newer updater"
-msgstr ""
+msgstr "La versión %s requiere un actualizador más reciente"
 
 #: internal/update/update.c
 msgid "Release is missing an update asset"
-msgstr ""
+msgstr "Falta el archivo de actualización en la versión"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Release the power button"
-msgstr ""
+msgstr "Suelta el botón de encendido"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Release-managed path"
@@ -3890,7 +3893,7 @@ msgstr "Versiones"
 
 #: internal/settings/settings.c
 msgid "Releases are still loading"
-msgstr ""
+msgstr "Las versiones aún se están cargando"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Remove"
@@ -3904,11 +3907,11 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Removed"
-msgstr ""
+msgstr "Eliminado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Removed from favorites"
-msgstr ""
+msgstr "Eliminado de favoritos"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Removing retained Pak Rat data"
@@ -3948,11 +3951,11 @@ msgstr "Reemplazar todo"
 
 #: internal/settings/settings.c
 msgid "Request failed"
-msgstr ""
+msgstr "Error en la solicitud"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Requires Leaf v%s"
-msgstr ""
+msgstr "Requiere Leaf v%s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Rescan"
@@ -3980,11 +3983,11 @@ msgstr "Restablecer config. de RetroArch"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reset System Overrides"
-msgstr ""
+msgstr "Restablecer ajustes individuales del sistema"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reset failed"
-msgstr ""
+msgstr "Error al restablecer"
 
 #: internal/settings/settings.c
 msgid "Reset shared RetroArch config to packaged defaults?"
@@ -3998,7 +4001,7 @@ msgstr "Reiniciar"
 
 #: internal/settings/settings.c
 msgid "Restart Needed"
-msgstr ""
+msgstr "Se requiere reiniciar"
 
 #: internal/settings/storage_ui.c
 msgid "Restart and check"
@@ -4010,15 +4013,15 @@ msgstr "Reiniciar y reparar"
 
 #: internal/settings/settings.c
 msgid "Restart canceled"
-msgstr ""
+msgstr "Reinicio cancelado"
 
 #: internal/settings/settings.c
 msgid "Restart failed"
-msgstr ""
+msgstr "Falló el reinicio"
 
 #: internal/settings/settings.c
 msgid "Restart needed"
-msgstr ""
+msgstr "Reinicio necesario"
 
 #: internal/settings/settings.c
 msgid "Restart now to finish installing?"
@@ -4026,11 +4029,11 @@ msgstr "¿Reiniciar ahora para finalizar la instalación?"
 
 #: internal/update/update.c
 msgid "Restart to finish installing"
-msgstr ""
+msgstr "Reinicia para finalizar la instalación"
 
 #: internal/settings/settings.c
 msgid "Restarting"
-msgstr ""
+msgstr "Reiniciando"
 
 #: internal/settings/storage_ui.c
 msgid "Restarting to check your SD card"
@@ -4042,19 +4045,19 @@ msgstr "Reiniciando para reparar tu tarjeta SD"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Restore"
-msgstr ""
+msgstr "Restaurar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Restore unavailable: version %s is missing from catalog history."
-msgstr ""
+msgstr "Restauración no disponible: la versión %s no existe en el historial del catálogo."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Restored %s"
-msgstr ""
+msgstr "%s restaurado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Restoring Pak Rat app"
-msgstr ""
+msgstr "Restaurando app de Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Resume"
@@ -4062,11 +4065,11 @@ msgstr "Reanudar"
 
 #: internal/settings/settings.c
 msgid "Resume Game on Boot"
-msgstr ""
+msgstr "Reanudar juego al iniciar"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Resuming your game"
-msgstr ""
+msgstr "Reanudando tu juego"
 
 #: internal/settings/settings.c
 msgid "RetroAchievements"
@@ -4074,11 +4077,11 @@ msgstr "RetroAchievements"
 
 #: internal/settings/settings.c
 msgid "RetroAchievements password\nStart: Confirm\nY: Cancel"
-msgstr ""
+msgstr "Contraseña de RetroAchievements\nStart: Confirmar\nY: Cancelar"
 
 #: internal/settings/settings.c
 msgid "RetroAchievements username\nStart: Confirm\nY: Cancel"
-msgstr ""
+msgstr "Usuario de RetroAchievements\nStart: Confirmar\nY: Cancelar"
 
 #: cmd/jawaka-menu/main.c
 msgid "RetroArch Settings"
@@ -4086,31 +4089,31 @@ msgstr "Ajustes de RetroArch"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch action failed"
-msgstr ""
+msgstr "Falló la acción de RetroArch"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch action failed: %s"
-msgstr ""
+msgstr "Falló la acción de RetroArch: %s"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch action failed: daemon unavailable"
-msgstr ""
+msgstr "Falló la acción de RetroArch: demonio no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch action missing"
-msgstr ""
+msgstr "Falta la acción de RetroArch"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch action requested"
-msgstr ""
+msgstr "Acción de RetroArch solicitada"
 
 #: cmd/jawakad/main.c
 msgid "RetroArch binary missing"
-msgstr ""
+msgstr "Falta el ejecutable de RetroArch"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch config reset"
-msgstr ""
+msgstr "Config. de RetroArch restablecida"
 
 #: cmd/jawaka-menu/main.c
 msgid ""
@@ -4120,7 +4123,7 @@ msgstr ""
 
 #: cmd/jawakad/main.c
 msgid "RetroArch exit failed"
-msgstr ""
+msgstr "Error al salir de RetroArch"
 
 #: cmd/jawaka-menu/main.c
 msgid "RetroArch is not available. Shader unchanged."
@@ -4128,11 +4131,11 @@ msgstr "RetroArch no está disponible. Shader sin cambios."
 
 #: internal/retroarch/catalog.c
 msgid "RetroArch metadata catalog is empty"
-msgstr ""
+msgstr "El catálogo de metadatos de RetroArch está vacío"
 
 #: cmd/jawakad/main.c
 msgid "RetroArch quit failed"
-msgstr ""
+msgstr "Error al cerrar RetroArch"
 
 #: internal/settings/settings.c
 msgid "RetroArch reset canceled"
@@ -4140,31 +4143,31 @@ msgstr "Restablecimiento de RetroArch cancelado"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch reset failed"
-msgstr ""
+msgstr "Falló el restablecimiento de RetroArch"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch reset failed: %s"
-msgstr ""
+msgstr "Falló el restablecimiento de RetroArch: %s"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch reset failed: daemon unavailable"
-msgstr ""
+msgstr "Falló el restablecimiento de RetroArch: demonio no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch session active"
-msgstr ""
+msgstr "Sesión de RetroArch activa"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch session failed"
-msgstr ""
+msgstr "Falló la sesión de RetroArch"
 
 #: internal/ipc/ipc_client.c
 msgid "RetroArch session failed: %s"
-msgstr ""
+msgstr "Falló la sesión de RetroArch: %s"
 
 #: cmd/jawaka-menu/main.c
 msgid "RetroArch session unavailable"
-msgstr ""
+msgstr "Sesión de RetroArch no disponible"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "RetroArch settings not saved"
@@ -4184,7 +4187,7 @@ msgstr "¿Volver a Leaf?"
 
 #: cmd/jawakad/main.c
 msgid "Return to the launcher before deleting ROMs."
-msgstr ""
+msgstr "Regresa al lanzador antes de eliminar ROMs."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Revert"
@@ -4192,15 +4195,15 @@ msgstr "Revertir"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reverting in %d second"
-msgstr ""
+msgstr "Revirtiendo en %d segundo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reverting in %d seconds"
-msgstr ""
+msgstr "Revirtiendo en %d segundos"
 
 #: internal/settings/settings.c
 msgid "Round Cover Art"
-msgstr ""
+msgstr "Carátulas redondeadas"
 
 #: internal/settings/settings.c
 msgid "Rounded"
@@ -4232,7 +4235,7 @@ msgstr "SD de solo lectura"
 
 #: cmd/jawakad/main.c
 msgid "SD-card mounted noexec; switcher remount failed or regressed"
-msgstr ""
+msgstr "Tarjeta SD montada con noexec; el remontaje del cambiador falló o retrocedió"
 
 #: internal/launcher/system_names.c
 msgid "SG-1000"
@@ -4256,11 +4259,11 @@ msgstr "Guardar y salir"
 
 #: cmd/jawaka-menu/main.c
 msgid "Save & Quit quicksave — A resumes, Y keeps it as a slot"
-msgstr ""
+msgstr "Guardado rápido al Guardar y Salir — A reanuda, Y lo conserva como ranura"
 
 #: internal/settings/settings.c
 msgid "Save Before Power Off"
-msgstr ""
+msgstr "Guardar antes de apagar"
 
 #: cmd/jawaka-menu/main.c
 msgid "Save State"
@@ -4272,7 +4275,7 @@ msgstr "Guardar el shader actual…"
 
 #: internal/settings/settings.c
 msgid "Save failed - account unchanged"
-msgstr ""
+msgstr "Error al guardar - la cuenta se mantiene sin cambios"
 
 #: cmd/jawaka-menu/main.c
 msgid "Save globally"
@@ -4284,31 +4287,31 @@ msgstr "Guarda tus cambios en RetroArch antes de salir."
 
 #: cmd/jawakad/main.c
 msgid "Save-state features disabled: core metadata is unavailable"
-msgstr ""
+msgstr "Funciones de guardado de estado desactivadas: los metadatos del núcleo no están disponibles"
 
 #: internal/settings/settings.c
 msgid "Saved - RetroArch can't use this password"
-msgstr ""
+msgstr "Guardado - RetroArch no puede usar esta contraseña"
 
 #: internal/settings/settings.c
 msgid "Saved - could not verify: %s"
-msgstr ""
+msgstr "Guardado - no se pudo verificar: %s"
 
 #: internal/settings/settings.c
 msgid "Saved - emulators sign in on next launch"
-msgstr ""
+msgstr "Guardado - los emuladores iniciarán sesión en el próximo inicio"
 
 #: internal/settings/settings.c
 msgid "Saved: %.48s - not usable by RetroArch"
-msgstr ""
+msgstr "Guardado: %.48s - no utilizable por RetroArch"
 
 #: internal/settings/settings.c
 msgid "Saved: %s"
-msgstr ""
+msgstr "Guardado: %s"
 
 #: internal/settings/settings.c
 msgid "Saved: %s (unverified)"
-msgstr ""
+msgstr "Guardado: %s (sin verificar)"
 
 # Shown when the binding persisted but the daemon push failed.
 #: internal/settings/settings.c
@@ -4317,7 +4320,7 @@ msgstr "Guardado; activo después de reiniciar"
 
 #: cmd/jawaka-menu/main.c
 msgid "Savestates are not available"
-msgstr ""
+msgstr "Los estados guardados no están disponibles"
 
 #: internal/settings/settings.c
 msgid "Saving"
@@ -4325,7 +4328,7 @@ msgstr "Guardando"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Saving game"
-msgstr ""
+msgstr "Guardando juego"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scan"
@@ -4355,7 +4358,7 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scanned"
-msgstr ""
+msgstr "Escaneado"
 
 #: internal/settings/settings.c
 msgid "Scanning"
@@ -4363,11 +4366,11 @@ msgstr "Escaneando"
 
 #: internal/settings/settings.c
 msgid "Scanning Bluetooth..."
-msgstr ""
+msgstr "Escaneando Bluetooth..."
 
 #: internal/settings/settings.c
 msgid "Scanning Wi-Fi…"
-msgstr ""
+msgstr "Escaneando Wi-Fi…"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scanning library..."
@@ -4391,7 +4394,7 @@ msgstr "Scrapear portadas y arte"
 
 #: internal/settings/settings.c
 msgid "Scrape Artwork - %s"
-msgstr ""
+msgstr "Scrapear arte - %s"
 
 #: internal/settings/settings.c
 msgid "Scrape Queue"
@@ -4407,15 +4410,15 @@ msgstr "Resultado del scrapeo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape cancelled"
-msgstr ""
+msgstr "Scrapeo cancelado"
 
 #: internal/settings/settings.c
 msgid "Scrape failed"
-msgstr ""
+msgstr "Falló el scrapeo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape failed: %.180s"
-msgstr ""
+msgstr "Falló el scrapeo: %.180s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape finished: %d found"
@@ -4423,23 +4426,23 @@ msgstr "Scrapeo finalizado: %d encontrados"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape missing artwork anonymously? ScreenScraper can be slow and quota-limited without an account."
-msgstr ""
+msgstr "¿Scrapear el arte faltante de forma anónima? ScreenScraper puede ser lento y limitado por cuotas sin una cuenta."
 
 #: internal/settings/settings.c
 msgid "Scrape queue is full"
-msgstr ""
+msgstr "La cola de scrapeo está llena"
 
 #: internal/settings/settings.c
 msgid "Scrape was cancelled before completion."
-msgstr ""
+msgstr "El scrapeo fue cancelado antes de completarse."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %d game in %.140s"
-msgstr ""
+msgstr "Scrapeando %d juego en %.140s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %d games in %.140s"
-msgstr ""
+msgstr "Scrapeando %d juegos en %.140s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s · %d/%d"
@@ -4447,23 +4450,23 @@ msgstr "Scrapeando %s · %d/%d"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s: %d/%d - %.160s"
-msgstr ""
+msgstr "Scrapeando %s: %d/%d - %.160s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping artwork: %.180s"
-msgstr ""
+msgstr "Scrapeando arte: %.180s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping cancelled (%d item stopped)"
-msgstr ""
+msgstr "Scrapeo cancelado (%d elemento detenido)"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping cancelled (%d items stopped)"
-msgstr ""
+msgstr "Scrapeo cancelado (%d elementos detenidos)"
 
 #: internal/scrape/ss_client.c
 msgid "Scraping is unavailable in this build (no API credentials)"
-msgstr ""
+msgstr "El scrapeo no está disponible en esta versión (sin credenciales de API)"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping paused: %.200s"
@@ -4475,43 +4478,43 @@ msgstr "Scrapeando: %d/%d"
 
 #: internal/scrape/ss_client.c
 msgid "ScreenScraper API temporarily closed (HTTP 423)"
-msgstr ""
+msgstr "La API de ScreenScraper está temporalmente cerrada (HTTP 423)"
 
 #: internal/settings/settings.c
 msgid "ScreenScraper password\nStart: Confirm\nY: Cancel"
-msgstr ""
+msgstr "Contraseña de ScreenScraper\nStart: Confirmar\nY: Cancelar"
 
 #: internal/scrape/ss_client.c
 msgid "ScreenScraper rejected the credentials"
-msgstr ""
+msgstr "ScreenScraper rechazó las credenciales"
 
 #: internal/scrape/ss_client.c
 msgid "ScreenScraper request URL too long"
-msgstr ""
+msgstr "La URL de la solicitud de ScreenScraper es demasiado larga"
 
 #: internal/scrape/ss_client.c
 msgid "ScreenScraper request failed"
-msgstr ""
+msgstr "Error en la solicitud de ScreenScraper"
 
 #: internal/scrape/ss_client.c
 msgid "ScreenScraper response is missing 'response'"
-msgstr ""
+msgstr "A la respuesta de ScreenScraper le falta 'response'"
 
 #: internal/scrape/ss_client.c
 msgid "ScreenScraper returned HTTP %d"
-msgstr ""
+msgstr "ScreenScraper devolvió HTTP %d"
 
 #: internal/scrape/ss_client.c
 msgid "ScreenScraper returned an empty response"
-msgstr ""
+msgstr "ScreenScraper devolvió una respuesta vacía"
 
 #: internal/settings/settings.c
 msgid "ScreenScraper username\nStart: Confirm\nY: Cancel"
-msgstr ""
+msgstr "Usuario de ScreenScraper\nStart: Confirmar\nY: Cancelar"
 
 #: internal/scrape/ss_client.c
 msgid "ScreenScraper validation failed"
-msgstr ""
+msgstr "Error en la validación de ScreenScraper"
 
 #: internal/settings/settings.c
 msgid "ScreenScraper.fr"
@@ -4523,11 +4526,11 @@ msgstr "Captura de pantalla"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Screenshot (in-game)"
-msgstr ""
+msgstr "Captura (en juego)"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Screenshot (title)"
-msgstr ""
+msgstr "Captura (título)"
 
 #: internal/settings/settings.c
 msgid "Screenshot Hotkey"
@@ -4547,23 +4550,23 @@ msgstr "Buscar en este sistema"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Search library\nStart: Confirm\nY: Cancel"
-msgstr ""
+msgstr "Buscar en la biblioteca\nStart: Confirmar\nY: Cancelar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Search: %s"
-msgstr ""
+msgstr "Buscar: %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Search: %s  (%d results)"
-msgstr ""
+msgstr "Buscar: %s  (%d resultados)"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Search: %s  (1 result)"
-msgstr ""
+msgstr "Buscar: %s  (1 resultado)"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Search: (empty)"
-msgstr ""
+msgstr "Buscar: (vacío)"
 
 #: internal/settings/settings.c
 msgid "Searching"
@@ -4575,31 +4578,31 @@ msgstr "Segunda tarjeta SD"
 
 #: internal/settings/settings.c
 msgid "Secondary"
-msgstr ""
+msgstr "Secundaria"
 
 #: internal/platform/device_mlp1.c
 msgid "Secondary SD is busy"
-msgstr ""
+msgstr "La SD secundaria está ocupada"
 
 #: internal/platform/device_mlp1.c
 msgid "Secondary SD is not mounted"
-msgstr ""
+msgstr "La SD secundaria no está montada"
 
 #: internal/platform/device_mlp1.c
 msgid "Secondary SD unmount failed"
-msgstr ""
+msgstr "Falló el desmontaje de la SD secundaria"
 
 #: internal/ipc/ipc_client.c
 msgid "Secondary SD unmounted"
-msgstr ""
+msgstr "SD secundaria desmontada"
 
 #: cmd/jawakad/main.c
 msgid "Secondary SD unmounted; library rescan queued"
-msgstr ""
+msgstr "SD secundaria desmontada; reescaneo de biblioteca en cola"
 
 #: cmd/jawakad/main.c
 msgid "Secondary SD unmounted; library update started"
-msgstr ""
+msgstr "SD secundaria desmontada; actualización de biblioteca iniciada"
 
 #: internal/settings/settings.c
 msgid "Secondary Text"
@@ -4635,7 +4638,7 @@ msgstr "Seleccionar"
 
 #: internal/settings/settings.c
 msgid "Selected"
-msgstr ""
+msgstr "Seleccionado"
 
 #: internal/launcher/bios.c
 msgid "Selected BIOS card is not mounted"
@@ -4671,7 +4674,7 @@ msgstr "La ruta de la BIOS seleccionada no es utilizable"
 
 #: internal/update/update.c
 msgid "Selected update is no longer available"
-msgstr ""
+msgstr "La actualización seleccionada ya no está disponible"
 
 #: internal/settings/settings.c
 msgid "Selection"
@@ -4679,19 +4682,19 @@ msgstr "Selección"
 
 #: internal/settings/settings.c
 msgid "Service is still stopping"
-msgstr ""
+msgstr "El servicio aún se está deteniendo"
 
 #: internal/settings/settings.c
 msgid "Service status unavailable"
-msgstr ""
+msgstr "Estado del servicio no disponible"
 
 #: cmd/jawakad/main.c
 msgid "Service supervisor unavailable; update not started"
-msgstr ""
+msgstr "Supervisor del servicio no disponible; actualización no iniciada"
 
 #: internal/settings/settings.c
 msgid "Service unavailable"
-msgstr ""
+msgstr "Servicio no disponible"
 
 #: internal/settings/settings.c
 msgid "Services"
@@ -4753,7 +4756,7 @@ msgstr "¿Apagar?"
 
 #: internal/settings/settings.c
 msgid "Sign-out failed - account unchanged"
-msgstr ""
+msgstr "Error al cerrar sesión - la cuenta se mantiene sin cambios"
 
 #: internal/settings/settings.c
 msgid "Signal: %s"
@@ -4761,35 +4764,35 @@ msgstr "Señal: %s"
 
 #: internal/settings/settings.c
 msgid "Signed in - %d thread, quota %d/%d today"
-msgstr ""
+msgstr "Sesión iniciada - %d hilo, cuota %d/%d hoy"
 
 #: internal/settings/settings.c
 msgid "Signed in - %d threads, quota %d/%d today"
-msgstr ""
+msgstr "Sesión iniciada - %d hilos, cuota %d/%d hoy"
 
 #: internal/settings/settings.c
 msgid "Signed in as %s"
-msgstr ""
+msgstr "Sesión iniciada como %s"
 
 #: internal/settings/settings.c
 msgid "Signed in as %s - %d thread%s"
-msgstr ""
+msgstr "Sesión iniciada como %s - %d hilo%s"
 
 #: internal/settings/settings.c
 msgid "Signed in as %s - %d threads%s"
-msgstr ""
+msgstr "Sesión iniciada como %s - %d hilos%s"
 
 #: internal/settings/settings.c
 msgid "Signed in as %s%s"
-msgstr ""
+msgstr "Sesión iniciada como %s%s"
 
 #: internal/settings/settings.c
 msgid "Signed out of RetroAchievements"
-msgstr ""
+msgstr "Sesión cerrada de RetroAchievements"
 
 #: internal/settings/settings.c
 msgid "Signed out of ScreenScraper"
-msgstr ""
+msgstr "Sesión cerrada de ScreenScraper"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Size is not proof that a file is a Saturn BIOS."
@@ -4837,7 +4840,7 @@ msgstr "Suave"
 
 #: internal/scrape/ss_client.c
 msgid "Software has been blacklisted (HTTP 426)"
-msgstr ""
+msgstr "El software ha sido puesto en lista negra (HTTP 426)"
 
 #: internal/settings/timezones.c
 msgid "Solomon Islands"
@@ -4845,11 +4848,11 @@ msgstr "Islas Salomón"
 
 #: internal/update/update.c
 msgid "Some releases could not be loaded"
-msgstr ""
+msgstr "No se pudieron cargar algunas versiones"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Spain"
-msgstr ""
+msgstr "España"
 
 #: internal/platform/platform_common.c
 msgid "Speaker"
@@ -4877,7 +4880,7 @@ msgstr "Estable"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Stale"
-msgstr ""
+msgstr "Obsoleto"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start"
@@ -4897,11 +4900,11 @@ msgstr "Iniciar con Leaf"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start: Confirm\nY: Cancel\nLeave empty to reset"
-msgstr ""
+msgstr "Start: Confirmar\nY: Cancelar\nDejar vacío para restablecer"
 
 #: internal/settings/settings.c
 msgid "Starting"
-msgstr ""
+msgstr "Iniciando"
 
 #: internal/settings/settings.c
 msgid "Startup Tab"
@@ -4913,7 +4916,7 @@ msgstr "Estático"
 
 #: internal/settings/settings.c
 msgid "Status"
-msgstr ""
+msgstr "Estado"
 
 #: internal/settings/settings.c
 msgid "Status Bar"
@@ -4929,7 +4932,7 @@ msgstr "Detener"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Stop & Play"
-msgstr ""
+msgstr "Detener y jugar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Stop All"
@@ -4937,11 +4940,11 @@ msgstr "Detener todo"
 
 #: internal/settings/settings.c
 msgid "Stopped %d job"
-msgstr ""
+msgstr "%d trabajo detenido"
 
 #: internal/settings/settings.c
 msgid "Stopped %d jobs"
-msgstr ""
+msgstr "%d trabajos detenidos"
 
 #: internal/settings/settings.c
 msgid "Stopped test sound"
@@ -4949,7 +4952,7 @@ msgstr "Sonido de prueba detenido"
 
 #: internal/settings/settings.c
 msgid "Stopping"
-msgstr ""
+msgstr "Deteniendo"
 
 #: internal/settings/settings.c
 msgid "Storage free"
@@ -4957,11 +4960,11 @@ msgstr "Almacenamiento libre"
 
 #: internal/settings/settings.c
 msgid "Storage paused"
-msgstr ""
+msgstr "Almacenamiento pausado"
 
 #: internal/settings/settings.c
 msgid "Storage paused, "
-msgstr ""
+msgstr "Almacenamiento pausado, "
 
 #: internal/settings/settings.c
 msgid "Strength"
@@ -4985,7 +4988,7 @@ msgstr "Líneas de Escaneo Sutiles"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Summary"
-msgstr ""
+msgstr "Resumen"
 
 #: internal/launcher/system_names.c
 msgid "Super Famicom"
@@ -5027,35 +5030,35 @@ msgstr "Sídney"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Sync before play — %d item, %s"
-msgstr ""
+msgstr "Sincronizar antes de jugar — %d elemento, %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Sync before play — %d items, %s"
-msgstr ""
+msgstr "Sincronizar antes de jugar — %d elementos, %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Sync needs attention.\n\n%d item (%s) remained when waiting ended. Play anyway will stop Syncthing first; Cancel leaves syncing active."
-msgstr ""
+msgstr "La sincronización requiere atención.\n\nQuedó %d elemento (%s) cuando finalizó la espera. Jugar de todos modos detendrá Syncthing primero; Cancelar deja la sincronización activa."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Sync needs attention.\n\n%d items (%s) remained when waiting ended. Play anyway will stop Syncthing first; Cancel leaves syncing active."
-msgstr ""
+msgstr "La sincronización requiere atención.\n\nQuedaron %d elementos (%s) cuando finalizó la espera. Jugar de todos modos detendrá Syncthing primero; Cancelar deja la sincronización activa."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Sync needs attention.\n\nSyncthing could not be verified stopped. Play anyway will retry the safe stop; Leaf will not launch until Syncthing is stopped."
-msgstr ""
+msgstr "La sincronización requiere atención.\n\nNo se pudo verificar si Syncthing se detuvo. Jugar de todos modos reintentará la detención segura; Leaf no iniciará hasta que Syncthing se detenga."
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Syncing update files"
-msgstr ""
+msgstr "Sincronizando archivos de actualización"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Syncthing card setup needs attention.\n\nLeaf could not match this game's card to its Saves and States folders. Review Cards and Folders in Syncthing."
-msgstr ""
+msgstr "La configuración de la tarjeta en Syncthing requiere atención.\n\nLeaf no pudo hacer coincidir la tarjeta de este juego con sus carpetas de Guardados y Estados. Revisa Tarjetas y Carpetas en Syncthing."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Syncthing still has Saves or States to transfer. Wait keeps syncing for up to 15 seconds. Play anyway stops Syncthing first. Cancel leaves syncing active."
-msgstr ""
+msgstr "Syncthing aún tiene guardados o estados por transferir. Esperar mantiene la sincronización hasta 15 segundos. Jugar de todos modos detiene Syncthing primero. Cancelar deja la sincronización activa."
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Syncthing: Checking saves"
@@ -5083,7 +5086,7 @@ msgstr "Íconos del sistema"
 
 #: cmd/jawaka-launcher/main.c
 msgid "System Options: %s"
-msgstr ""
+msgstr "Opciones del sistema: %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "System Update"
@@ -5091,7 +5094,7 @@ msgstr "Actualización del sistema"
 
 #: internal/settings/timezones.c
 msgid "System default"
-msgstr ""
+msgstr "Predeterminado del sistema"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Systems"
@@ -5152,7 +5155,7 @@ msgstr ""
 
 #: internal/store/pakrat.c
 msgid "The Themes folder already holds %d themes, the most Leaf lists"
-msgstr ""
+msgstr "La carpeta Themes ya tiene %d temas, el máximo que Leaf lista"
 
 #: internal/settings/storage_ui.c
 msgid ""
@@ -5166,21 +5169,21 @@ msgstr ""
 msgid ""
 "The check took too long. Your SD card is still protected. You can check it "
 "on a computer or restart to try again."
-msgstr ""
+msgstr "La comprobación tardó demasiado. Tu tarjeta SD sigue protegida. Puedes comprobarla en una computadora o reiniciar para intentarlo de nuevo."
 
 #: internal/settings/storage_ui.c
 msgid ""
 "The last check or repair did not finish. Restart your device to check the "
 "card before saving is enabled again."
-msgstr ""
+msgstr "La última comprobación o reparación no finalizó. Reinicia tu dispositivo para comprobar la tarjeta antes de volver a habilitar el guardado."
 
 #: internal/settings/storage_ui.c
 msgid "The last check took too long and stopped. Restart your device to check the card again before saving is enabled."
-msgstr ""
+msgstr "La última comprobación tardó demasiado y se detuvo. Reinicia tu dispositivo para comprobar la tarjeta de nuevo antes de habilitar el guardado."
 
 #: internal/store/pakrat.c
 msgid "The launcher does not list the installed theme %s"
-msgstr ""
+msgstr "El lanzador no lista el tema instalado %s"
 
 #: internal/settings/storage_ui.c
 msgid "The repair couldn't be started. Check the card on a computer instead."
@@ -5297,15 +5300,15 @@ msgstr "Colores del tema"
 
 #: internal/store/pakrat.c
 msgid "Theme folder %s belongs to a theme Leaf ships"
-msgstr ""
+msgstr "La carpeta de tema %s pertenece a un tema incluido con Leaf"
 
 #: internal/store/pakrat.c
 msgid "Theme package does not match the catalog entry"
-msgstr ""
+msgstr "El paquete del tema no coincide con la entrada del catálogo"
 
 #: internal/store/pakrat.c
 msgid "Theme package is not valid: %s"
-msgstr ""
+msgstr "El paquete del tema no es válido: %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Themes"
@@ -5313,7 +5316,7 @@ msgstr "Temas"
 
 #: cmd/jawaka-launcher/main.c
 msgid "These retained data directories will be preserved:\n"
-msgstr ""
+msgstr "Se conservarán estos directorios de datos retenidos:\n"
 
 #: cmd/jawaka-menu/main.c
 msgid "This RetroArch build does not support Leaf's shader picker."
@@ -5337,7 +5340,7 @@ msgstr ""
 
 #: cmd/jawakad/main.c
 msgid "This connection has no deletion running."
-msgstr ""
+msgstr "Esta conexión no tiene ninguna eliminación en ejecución."
 
 #: cmd/jawaka-menu/main.c
 msgid "This folder"
@@ -5388,7 +5391,7 @@ msgstr ""
 
 #: internal/scrape/ss_client.c
 msgid "Thread limit reached (HTTP 429)"
-msgstr ""
+msgstr "Límite de hilos alcanzado (HTTP 429)"
 
 #: internal/settings/settings.c
 msgid "Time Zone"
@@ -5396,7 +5399,7 @@ msgstr "Zona horaria"
 
 #: internal/settings/settings.c
 msgid "Time zone: %s"
-msgstr ""
+msgstr "Zona horaria: %s"
 
 #: internal/settings/storage_ui.c
 msgid "To repair it, turn off your device and check the card on a computer."
@@ -5410,19 +5413,19 @@ msgstr "Tonga"
 
 #: internal/settings/settings.c
 msgid "Too long - account unchanged"
-msgstr ""
+msgstr "Demasiado largo - la cuenta se mantiene sin cambios"
 
 #: internal/scrape/scrape_worker.c
 msgid "Too many ScreenScraper mappings for this system"
-msgstr ""
+msgstr "Demasiados mapeos de ScreenScraper para este sistema"
 
 #: internal/scrape/ss_client.c
 msgid "Too many unrecognized ROMs (HTTP 431)"
-msgstr ""
+msgstr "Demasiadas ROMs no reconocidas (HTTP 431)"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Tools"
-msgstr ""
+msgstr "Herramientas"
 
 #: internal/settings/settings.c
 msgid "Total"
@@ -5446,23 +5449,23 @@ msgstr "Apaga tu dispositivo y comprueba la tarjeta en una computadora."
 
 #: internal/settings/settings.c
 msgid "Turn on Save Before Power Off first"
-msgstr ""
+msgstr "Activa Guardar antes de apagar primero"
 
 #: internal/settings/settings.c
 msgid "Turning Bluetooth off..."
-msgstr ""
+msgstr "Desactivando Bluetooth..."
 
 #: internal/settings/settings.c
 msgid "Turning Bluetooth on..."
-msgstr ""
+msgstr "Activando Bluetooth..."
 
 #: internal/settings/settings.c
 msgid "Turning Wi-Fi off…"
-msgstr ""
+msgstr "Desactivando Wi-Fi…"
 
 #: internal/settings/settings.c
 msgid "Turning Wi-Fi on…"
-msgstr ""
+msgstr "Activando Wi-Fi…"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Type to search"
@@ -5506,7 +5509,7 @@ msgstr "USA Pacífico"
 
 #: internal/scrape/scrape_catalog.c
 msgid "USA"
-msgstr ""
+msgstr "EE. UU."
 
 #: internal/settings/timezones.c
 msgid "UTC"
@@ -5518,15 +5521,15 @@ msgstr "No disponible"
 
 #: internal/settings/settings.c
 msgid "Unavailable services cannot be enabled"
-msgstr ""
+msgstr "Los servicios no disponibles no se pueden activar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Unfavorited"
-msgstr ""
+msgstr "Eliminado de favoritos"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Unhide"
-msgstr ""
+msgstr "Desocultar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstall"
@@ -5534,7 +5537,7 @@ msgstr "Desinstalar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstall %.180s?\n\n"
-msgstr ""
+msgstr "¿Desinstalar %.180s?\n\n"
 
 #: cmd/jawaka-launcher/main.c
 msgid ""
@@ -5560,7 +5563,7 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstall cancelled: %.120s"
-msgstr ""
+msgstr "Desinstalación cancelada: %.120s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstall cancelled: %s"
@@ -5568,11 +5571,11 @@ msgstr "Desinstalación cancelada: %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalled %.100s and removed retained data"
-msgstr ""
+msgstr "Se desinstaló %.100s y se eliminaron los datos retenidos"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalled %.100s; retained-data removal failed"
-msgstr ""
+msgstr "Se desinstaló %.100s; falló la eliminación de los datos retenidos"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalled %s"
@@ -5584,7 +5587,7 @@ msgstr "%s desinstalado. Se cambió a sin tema."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalling Pak Rat app"
-msgstr ""
+msgstr "Desinstalando app de Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstalling theme"
@@ -5592,7 +5595,7 @@ msgstr "Desinstalando tema"
 
 #: cmd/jawakad/main.c
 msgid "Unix peer pid unavailable"
-msgstr ""
+msgstr "PID de par Unix no disponible"
 
 #: internal/platform/platform_common.c
 msgid "Unknown"
@@ -5600,7 +5603,7 @@ msgstr "Desconocido"
 
 #: cmd/jawakad/main.c
 msgid "Unknown ROM deletion request."
-msgstr ""
+msgstr "Solicitud de eliminación de ROM desconocida."
 
 #: internal/settings/settings.c
 msgid "Unmount"
@@ -5620,31 +5623,31 @@ msgstr "Desemparejar"
 
 #: internal/settings/settings.c
 msgid "Unpair %s?"
-msgstr ""
+msgstr "¿Desemparejar %s?"
 
 #: internal/settings/settings.c
 msgid "Unpair canceled"
-msgstr ""
+msgstr "Desemparejamiento cancelado"
 
 #: internal/settings/settings.c
 msgid "Unpair failed"
-msgstr ""
+msgstr "Falló el desemparejamiento"
 
 #: internal/settings/settings.c
 msgid "Unpaired %s"
-msgstr ""
+msgstr "Se desemparejó %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Unpin"
-msgstr ""
+msgstr "Desfijar"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Unpinned."
-msgstr ""
+msgstr "Desfijado."
 
 #: internal/update/update.c
 msgid "Unsafe stock update trigger: %s"
-msgstr ""
+msgstr "Disparador de actualización de fábrica no seguro: %s"
 
 #: internal/settings/settings.c
 msgid "Unsupported"
@@ -5652,19 +5655,19 @@ msgstr "No compatible"
 
 #: internal/update/update.c
 msgid "Unsupported stock update method for %s"
-msgstr ""
+msgstr "Método de actualización de fábrica no compatible para %s"
 
 #: internal/update/update.c
 msgid "Unsupported update artifact kind: %s"
-msgstr ""
+msgstr "Tipo de archivo de actualización no compatible: %s"
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Unsupported update install method"
-msgstr ""
+msgstr "Método de instalación de actualización no compatible"
 
 #: internal/update/update.c
 msgid "Unsupported update install method: %s"
-msgstr ""
+msgstr "Método de instalación de actualización no compatible: %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Up one level"
@@ -5672,7 +5675,7 @@ msgstr "Subir un nivel"
 
 #: internal/settings/settings.c
 msgid "Up to date"
-msgstr ""
+msgstr "Actualizado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Up/Down"
@@ -5688,135 +5691,135 @@ msgstr "Canal de actualización"
 
 #: internal/settings/settings.c
 msgid "Update already downloaded"
-msgstr ""
+msgstr "Actualización ya descargada"
 
 #: internal/update/update.c
 msgid "Update artifact has not been downloaded"
-msgstr ""
+msgstr "El archivo de actualización no se ha descargado"
 
 #: internal/settings/settings.c
 msgid "Update check failed"
-msgstr ""
+msgstr "Falló la búsqueda de actualizaciones"
 
 #: internal/update/update.c
 msgid "Update download already in progress"
-msgstr ""
+msgstr "La descarga de la actualización ya está en progreso"
 
 #: internal/update/update.c
 msgid "Update download cancelled"
-msgstr ""
+msgstr "Descarga de actualización cancelada"
 
 #: internal/settings/settings.c
 msgid "Update download failed"
-msgstr ""
+msgstr "Falló la descarga de la actualización"
 
 #: internal/update/update.c
 msgid "Update download is still in progress"
-msgstr ""
+msgstr "La descarga de la actualización aún está en progreso"
 
 #: internal/update/update.c
 msgid "Update download path is too long"
-msgstr ""
+msgstr "La ruta de descarga de la actualización es demasiado larga"
 
 #: internal/update/update.c
 msgid "Update download process disappeared"
-msgstr ""
+msgstr "El proceso de descarga de la actualización desapareció"
 
 #: internal/settings/settings.c
 msgid "Update install blocked"
-msgstr ""
+msgstr "Instalación de actualización bloqueada"
 
 #: internal/settings/settings.c
 msgid "Update install canceled"
-msgstr ""
+msgstr "Instalación de actualización cancelada"
 
 #: internal/update/update.c
 msgid "Update install could not be prepared"
-msgstr ""
+msgstr "No se pudo preparar la instalación de la actualización"
 
 #: internal/settings/settings.c
 msgid "Update install failed"
-msgstr ""
+msgstr "Falló la instalación de la actualización"
 
 #: internal/update/update.c
 msgid "Update install is already in progress"
-msgstr ""
+msgstr "La instalación de la actualización ya está en progreso"
 
 #: internal/update/update.c
 msgid "Update install state path is too long"
-msgstr ""
+msgstr "La ruta de estado de instalación de la actualización es demasiado larga"
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Update installed"
-msgstr ""
+msgstr "Actualización instalada"
 
 #: internal/settings/settings.c
 msgid "Update is not ready to install"
-msgstr ""
+msgstr "La actualización no está lista para instalar"
 
 #: internal/update/update.c
 msgid "Update is ready to install"
-msgstr ""
+msgstr "La actualización está lista para instalar"
 
 #: internal/update/update.c
 msgid "Update manifest is missing platforms"
-msgstr ""
+msgstr "Al manifiesto de actualización le faltan plataformas"
 
 #: internal/update/update.c
 msgid "Update manifest is missing release_id"
-msgstr ""
+msgstr "Al manifiesto de actualización le falta release_id"
 
 #: internal/update/update.c
 msgid "Update manifest is missing schema"
-msgstr ""
+msgstr "Al manifiesto de actualización le falta el esquema"
 
 #: internal/update/update.c
 msgid "Update manifest is not valid JSON"
-msgstr ""
+msgstr "El manifiesto de actualización no es un JSON válido"
 
 #: internal/update/update.c
 msgid "Update manifest product is not leaf"
-msgstr ""
+msgstr "El producto del manifiesto de actualización no es leaf"
 
 #: internal/settings/settings.c
 msgid "Update ready check failed"
-msgstr ""
+msgstr "Falló la comprobación de actualización lista"
 
 #: internal/update/update.c
 msgid "Update runner did not write a result file"
-msgstr ""
+msgstr "El ejecutor de la actualización no escribió un archivo de resultado"
 
 #: internal/update/update.c
 msgid "Update runner is not available"
-msgstr ""
+msgstr "El ejecutor de la actualización no está disponible"
 
 #: cmd/jawakad/main.c
 msgid "Update runner path is too long"
-msgstr ""
+msgstr "La ruta del ejecutor de la actualización es demasiado larga"
 
 #: internal/update/update.c
 msgid "Update runner process disappeared"
-msgstr ""
+msgstr "El proceso del ejecutor de la actualización desapareció"
 
 #: internal/update/update.c
 msgid "Update runner result was not valid JSON"
-msgstr ""
+msgstr "El resultado del ejecutor de la actualización no fue un JSON válido"
 
 #: internal/settings/settings.c
 msgid "Update selection canceled"
-msgstr ""
+msgstr "Selección de actualización cancelada"
 
 #: internal/settings/settings.c
 msgid "Update selection failed"
-msgstr ""
+msgstr "Falló la selección de actualización"
 
 #: internal/settings/settings.c
 msgid "Update service unavailable"
-msgstr ""
+msgstr "Servicio de actualización no disponible"
 
 #: internal/settings/settings.c
 msgid "Update status refreshed"
-msgstr ""
+msgstr "Estado de actualización actualizado"
 
 #: internal/settings/settings.c
 msgid "Update status unavailable"
@@ -5824,15 +5827,15 @@ msgstr "Estado de actualización no disponible"
 
 #: internal/update/update.c
 msgid "Update temporary path is too long"
-msgstr ""
+msgstr "La ruta temporal de actualización es demasiado larga"
 
 #: internal/update/update.c
 msgid "Update was prepared on the other SD slot; install again"
-msgstr ""
+msgstr "La actualización se preparó en la otra ranura SD; instala de nuevo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Updated %s"
-msgstr ""
+msgstr "%s actualizado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Updated %s to version %s"
@@ -5840,7 +5843,7 @@ msgstr "Se actualizó %s a la versión %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Updating Pak Rat app"
-msgstr ""
+msgstr "Actualizando app de Pak Rat"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Updating theme"
@@ -5856,7 +5859,7 @@ msgstr "Usa Avanzado para editarlo en RetroArch."
 
 #: cmd/jawakad/main.c
 msgid "Use a separate connection for ROM deletion."
-msgstr ""
+msgstr "Usa una conexión separada para la eliminación de ROMs."
 
 #: internal/retroarch/shader_strings.c
 msgid "Use only for GBA content."
@@ -5884,23 +5887,23 @@ msgstr "Vectrex"
 
 #: internal/settings/settings.c
 msgid "Verified"
-msgstr ""
+msgstr "Verificado"
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Verifying downloaded update"
-msgstr ""
+msgstr "Verificando actualización descargada"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Version %.40s is missing from catalog history"
-msgstr ""
+msgstr "La versión %.40s falta en el historial del catálogo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Version %.40s requires Leaf v%.40s"
-msgstr ""
+msgstr "La versión %.40s requiere Leaf v%.40s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Version %s"
-msgstr ""
+msgstr "Versión %s"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Version %s needs Leaf %s or newer."
@@ -5908,7 +5911,7 @@ msgstr "La versión %s necesita Leaf %s o posterior."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Version %s requires Leaf v%s — update Leaf in Settings to get it."
-msgstr ""
+msgstr "La versión %s requiere Leaf v%s — actualiza Leaf en Ajustes para obtenerla."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Version: %s"
@@ -5928,19 +5931,19 @@ msgstr "Volumen"
 
 #: cmd/jawakad/main.c
 msgid "Wait for ROM deletion before repairing storage"
-msgstr ""
+msgstr "Espera a la eliminación de la ROM antes de reparar el almacenamiento"
 
 #: cmd/jawakad/main.c
 msgid "Wait for ROM deletion before unmounting storage"
-msgstr ""
+msgstr "Espera a la eliminación de la ROM antes de desmontar el almacenamiento"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Wait for sync"
-msgstr ""
+msgstr "Esperar a la sincronización"
 
 #: internal/settings/settings.c
 msgid "Wait for the release check to finish before switching channels"
-msgstr ""
+msgstr "Espera a que finalice la verificación de versiones antes de cambiar de canal"
 
 #: internal/settings/settings.c
 msgid "Weak"
@@ -5948,15 +5951,15 @@ msgstr "Débil"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Wheel"
-msgstr ""
+msgstr "Volante"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Wheel (carbon)"
-msgstr ""
+msgstr "Volante (carbón)"
 
 #: internal/scrape/scrape_catalog.c
 msgid "Wheel (steel)"
-msgstr ""
+msgstr "Volante (acero)"
 
 #: internal/settings/settings.c
 msgid "Wi-Fi"
@@ -5964,11 +5967,11 @@ msgstr "Wi-Fi"
 
 #: cmd/jawakad/main.c
 msgid "Wi-Fi is not connected"
-msgstr ""
+msgstr "Wi-Fi no está conectado"
 
 #: internal/settings/settings.c
 msgid "Wi-Fi unavailable on this platform"
-msgstr ""
+msgstr "Wi-Fi no disponible en esta plataforma"
 
 #: internal/launcher/system_names.c
 msgid "WonderSwan"
@@ -5980,11 +5983,11 @@ msgstr "WonderSwan Color"
 
 #: internal/scrape/scrape_catalog.c
 msgid "World"
-msgstr ""
+msgstr "Mundial"
 
 #: cmd/jawaka-update-runner/main.c
 msgid "Writing installed release marker"
-msgstr ""
+msgstr "Escribiendo marcador de versión instalada"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Wrong PIN, try again"
@@ -5992,7 +5995,7 @@ msgstr "PIN incorrecto, intenta de nuevo"
 
 #: internal/settings/settings.c
 msgid "Wrong password"
-msgstr ""
+msgstr "Contraseña incorrecta"
 
 #: cmd/jawaka-launcher/main.c
 msgid "X: Drop   D-pad: Move"
@@ -6004,30 +6007,29 @@ msgstr "X: Tomar   Y: Eliminar   B: Atrás   A: Siguiente"
 
 #: internal/settings/settings.c
 msgid "Yes"
-msgstr ""
+msgstr "Sí"
 
 #: internal/settings/storage_ui.c
 msgid "You can save files again."
-msgstr ""
+msgstr "Puedes guardar archivos de nuevo."
 
 #: cmd/jawakad/main.c
 msgid "Your ROM card or library card is read-only."
-msgstr ""
+msgstr "Tu tarjeta de ROMs o de la biblioteca es de solo lectura."
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card check did not finish successfully."
-msgstr ""
+msgstr "La comprobación de tu tarjeta SD no finalizó con éxito."
 
 #: internal/settings/storage_ui.c
-#, fuzzy
 msgid "Your SD card is protected"
-msgstr "Tu tarjeta SD está protegida contra escritura"
+msgstr "Tu tarjeta SD está protegida"
 
 #: internal/settings/storage_ui.c
 msgid ""
 "Your SD card is protected because your last shutdown didn't finish saving. "
 "Restart your device to check it."
-msgstr ""
+msgstr "Tu tarjeta SD está protegida porque tu último apagado no terminó de guardar. Reinicia tu dispositivo para comprobarla."
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Your SD card is read-only"
@@ -6060,7 +6062,7 @@ msgid ""
 "Your SD card is still protected. Turn off your device, repair the card on a "
 "computer, safely eject it, then insert it and turn your device on to check "
 "it again."
-msgstr ""
+msgstr "Tu tarjeta SD sigue protegida. Apaga tu dispositivo, repara la tarjeta en una computadora, expúlsala de forma segura, luego insértala y enciende tu dispositivo para comprobarla de nuevo."
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your SD card is waiting for repair. Nothing new can be saved to it."
@@ -6116,14 +6118,12 @@ msgid "Your device will restart to check and repair this card on battery power. 
 msgstr "Tu dispositivo se reiniciará para comprobar y reparar esta tarjeta con batería. Si la batería baja del 30 por ciento antes de que empiece la reparación, esta no se ejecutará. Los archivos dañados pueden acortarse, renombrarse o recuperarse con nuevos nombres. Haz primero una copia de seguridad de los archivos importantes en una computadora."
 
 #: internal/settings/storage_ui.c
-#, fuzzy
 msgid ""
 "Your device will restart to check this card. If the check passes, you can "
 "save files again."
 msgstr ""
 "Tu dispositivo se reiniciará para comprobar esta tarjeta. Si pasa la "
-"comprobación, se podrá volver a escribir en ella. Mantén tu dispositivo "
-"conectado a la corriente hasta que finalice la comprobación."
+"comprobación, podrás guardar archivos de nuevo."
 
 #: internal/settings/storage_ui.c
 msgid ""
@@ -6135,31 +6135,31 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Your game will not resume at startup"
-msgstr ""
+msgstr "Tu juego no se reanudará al iniciar"
 
 #: internal/discovery/delete_job.c
 msgid "Your game's files changed. Open Delete Game again."
-msgstr ""
+msgstr "Los archivos de tu juego cambiaron. Abre Eliminar juego de nuevo."
 
 #: internal/settings/storage_ui.c
 msgid "Your last shutdown didn't finish saving."
-msgstr ""
+msgstr "Tu último apagado no terminó de guardar."
 
 #: internal/discovery/delete_job.c
 msgid "Your library is busy or read-only. Try again."
-msgstr ""
+msgstr "Tu biblioteca está ocupada o es de solo lectura. Intenta de nuevo."
 
 #: internal/settings/storage_ui.c
 msgid "Your library is read-only. You can't save changes. Open Settings > System > SD Cards to check your card."
-msgstr ""
+msgstr "Tu biblioteca es de solo lectura. No puedes guardar cambios. Abre Ajustes > Sistema > Tarjetas SD para comprobar tu tarjeta."
 
 #: internal/settings/settings.c
 msgid "Your library is read-only. Your selection is still hidden."
-msgstr ""
+msgstr "Tu biblioteca es de solo lectura. Tu selección sigue oculta."
 
 #: cmd/jawakad/main.c
 msgid "Your library is scanning. Request a preview when it finishes."
-msgstr ""
+msgstr "Tu biblioteca se está escaneando. Solicita una vista previa cuando termine."
 
 #: internal/settings/storage_ui.c
 msgid ""
@@ -6170,7 +6170,7 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your save files, states and artwork are kept."
-msgstr ""
+msgstr "Tus archivos de guardado, estados y arte se conservan."
 
 #: cmd/jawaka-launcher/main.c
 msgid ""
@@ -6189,35 +6189,35 @@ msgstr ""
 
 #: internal/discovery/delete_job.c
 msgid "Your selected ROM card is not mounted."
-msgstr ""
+msgstr "La tarjeta de ROMs seleccionada no está montada."
 
 #: cmd/jawakad/main.c
 msgid "app launch path too long"
-msgstr ""
+msgstr "la ruta de inicio de la app es demasiado larga"
 
 #: cmd/jawakad/main.c
 msgid "app launch.sh missing or not executable"
-msgstr ""
+msgstr "falta launch.sh de la app o no es ejecutable"
 
 #: cmd/jawakad/main.c
 msgid "app pak missing"
-msgstr ""
+msgstr "falta el paquete de la app"
 
 #: cmd/jawakad/main.c
 msgid "app pak outside Apps"
-msgstr ""
+msgstr "el paquete de la app está fuera de Apps"
 
 #: cmd/jawakad/main.c
 msgid "app path too long"
-msgstr ""
+msgstr "la ruta de la app es demasiado larga"
 
 #: cmd/jawakad/main.c
 msgid "app spawn failed"
-msgstr ""
+msgstr "error al generar el proceso de la app"
 
 #: cmd/jawakad/main.c
 msgid "app storage source missing"
-msgstr ""
+msgstr "falta la fuente de almacenamiento de la app"
 
 #: internal/settings/settings.c
 msgid "audio output failed"
@@ -6225,55 +6225,55 @@ msgstr "error en la salida de audio"
 
 #: internal/ipc/ipc_client.c
 msgid "audio output failed: daemon unavailable"
-msgstr ""
+msgstr "falló la salida de audio: demonio no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "audio output invalid"
-msgstr ""
+msgstr "salida de audio no válida"
 
 #: internal/platform/device_mlp1.c
 msgid "audio output route failed"
-msgstr ""
+msgstr "error en la ruta de salida de audio"
 
 #: internal/ipc/ipc_client.c
 msgid "audio output set"
-msgstr ""
+msgstr "salida de audio configurada"
 
 #: internal/services/supervisor.c
 msgid "backoff"
-msgstr ""
+msgstr "espera de reintento"
 
 #: cmd/jawakad/main.c
 msgid "blocked game launch is not overrideable"
-msgstr ""
+msgstr "el inicio de juego bloqueado no se puede omitir"
 
 #: cmd/jawakad/main.c
 msgid "blocked game launch is not retryable"
-msgstr ""
+msgstr "el inicio de juego bloqueado no se puede reintentar"
 
 #: internal/platform/device_mlp1.c
 msgid "boot splash disable failed"
-msgstr ""
+msgstr "error al desactivar la pantalla de inicio"
 
 #: internal/ipc/ipc_client.c
 msgid "boot splash disabled"
-msgstr ""
+msgstr "pantalla de inicio desactivada"
 
 #: internal/platform/device_mlp1.c
 msgid "boot splash enable failed"
-msgstr ""
+msgstr "error al activar la pantalla de inicio"
 
 #: internal/ipc/ipc_client.c
 msgid "boot splash enabled"
-msgstr ""
+msgstr "pantalla de inicio activada"
 
 #: internal/ipc/ipc_client.c
 msgid "boot splash failed"
-msgstr ""
+msgstr "error en la pantalla de inicio"
 
 #: internal/ipc/ipc_client.c
 msgid "boot splash failed: daemon unavailable"
-msgstr ""
+msgstr "error en la pantalla de inicio: demonio no disponible"
 
 #: internal/settings/settings.c
 msgid "boot splash unavailable on this platform"
@@ -6285,59 +6285,59 @@ msgstr "error en el ajuste de brillo"
 
 #: internal/ipc/ipc_client.c
 msgid "brightness failed: %s"
-msgstr ""
+msgstr "error en el brillo: %s"
 
 #: internal/ipc/ipc_client.c
 msgid "brightness failed: daemon unavailable"
-msgstr ""
+msgstr "error en el brillo: demonio no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "brightness: %d%%"
-msgstr ""
+msgstr "brillo: %d%%"
 
 #: cmd/jawakad/main.c
 msgid "busy"
-msgstr ""
+msgstr "ocupado"
 
 #: internal/store/pakrat.c
 msgid "cache failed"
-msgstr ""
+msgstr "error en el almacenamiento en caché"
 
 #: cmd/jawaka-launcher/main.c
 msgid "card absent; not inventoried"
-msgstr ""
+msgstr "tarjeta ausente; no inventariada"
 
 #: cmd/jawakad/main.c
 msgid "could not build folders"
-msgstr ""
+msgstr "no se pudieron crear las carpetas"
 
 #: cmd/jawakad/main.c
 msgid "could not compute missing counts"
-msgstr ""
+msgstr "no se pudieron calcular los conteos de faltantes"
 
 #: internal/scrape/scrape_worker.c
 msgid "could not list games for this system"
-msgstr ""
+msgstr "no se pudieron listar los juegos para este sistema"
 
 #: internal/scrape/scrape_worker.c
 msgid "could not list systems"
-msgstr ""
+msgstr "no se pudieron listar los sistemas"
 
 #: cmd/jawakad/main.c
 msgid "could not read library"
-msgstr ""
+msgstr "no se pudo leer la biblioteca"
 
 #: cmd/jawakad/main.c
 msgid "could not record acknowledgement"
-msgstr ""
+msgstr "no se pudo registrar la confirmación"
 
 #: internal/retroarch/catalog.c
 msgid "could not resolve catalog path"
-msgstr ""
+msgstr "no se pudo resolver la ruta del catálogo"
 
 #: cmd/jawakad/main.c
 msgid "could not save language"
-msgstr ""
+msgstr "no se pudo guardar el idioma"
 
 #: internal/settings/settings.c
 msgid "count|Systems"
@@ -6345,23 +6345,23 @@ msgstr "Sistemas"
 
 #: internal/scrape/ss_client.c
 msgid "curl global init failed: %s"
-msgstr ""
+msgstr "falló la inicialización global de curl: %s"
 
 #: internal/scrape/ss_client.c
 msgid "curl init failed"
-msgstr ""
+msgstr "falló la inicialización de curl"
 
 #: internal/scrape/ss_client.c
 msgid "curl init failed while building request"
-msgstr ""
+msgstr "falló la inicialización de curl al crear la solicitud"
 
 #: internal/settings/settings.c
 msgid "daemon unavailable"
-msgstr ""
+msgstr "demonio no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "daemon unreachable"
-msgstr ""
+msgstr "demonio inaccesible"
 
 #: cmd/jawaka-launcher/main.c
 msgid "daily quota exceeded"
@@ -6369,23 +6369,23 @@ msgstr "cuota diaria excedida"
 
 #: internal/retroarch/catalog.c
 msgid "default core is missing from metadata"
-msgstr ""
+msgstr "el núcleo predeterminado falta en los metadatos"
 
 #: internal/retroarch/catalog.c
 msgid "default core is not a packaged RetroArch core"
-msgstr ""
+msgstr "el núcleo predeterminado no es un núcleo empaquetado de RetroArch"
 
 #: internal/retroarch/catalog.c
 msgid "default core is packaged but missing on disk"
-msgstr ""
+msgstr "el núcleo predeterminado está empaquetado pero falta en el disco"
 
 #: internal/services/supervisor.c
 msgid "disabled"
-msgstr ""
+msgstr "desactivado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "display name keyboard failed"
-msgstr ""
+msgstr "falló el teclado de nombre visible"
 
 #: cmd/jawaka-menu/main.c
 msgid "empty"
@@ -6397,35 +6397,35 @@ msgstr "Las tarjetas exFAT aún no se pueden reparar en este dispositivo."
 
 #: internal/retroarch/catalog.c
 msgid "expanded RetroArch metadata has wrong shape"
-msgstr ""
+msgstr "los metadatos expandidos de RetroArch tienen una estructura incorrecta"
 
 #: internal/retroarch/catalog.c
 msgid "expanded RetroArch metadata missing"
-msgstr ""
+msgstr "faltan los metadatos expandidos de RetroArch"
 
 #: internal/retroarch/catalog.c
 msgid "expanded RetroArch metadata missing or invalid"
-msgstr ""
+msgstr "los metadatos expandidos de RetroArch faltan o no son válidos"
 
 #: internal/retroarch/catalog.c
 msgid "expanded RetroArch metadata platform mismatch"
-msgstr ""
+msgstr "no coinciden las plataformas de metadatos expandidos de RetroArch"
 
 #: cmd/jawakad/main.c
 msgid "failed"
-msgstr ""
+msgstr "falló"
 
 #: internal/scrape/ss_client.c
 msgid "failed to encode ScreenScraper credentials"
-msgstr ""
+msgstr "error al codificar las credenciales de ScreenScraper"
 
 #: internal/scrape/ss_client.c
 msgid "failed to encode ScreenScraper debug credentials"
-msgstr ""
+msgstr "error al codificar las credenciales de depuración de ScreenScraper"
 
 #: internal/scrape/ss_client.c
 msgid "failed to encode ScreenScraper request"
-msgstr ""
+msgstr "error al codificar la solicitud de ScreenScraper"
 
 #: internal/settings/settings.c
 msgid "font is fixed while a CJK language is selected"
@@ -6437,87 +6437,87 @@ msgstr "error al cargar la fuente"
 
 #: cmd/jawakad/main.c
 msgid "foreground or update operation in progress"
-msgstr ""
+msgstr "operación de primer plano o actualización en progreso"
 
 #: cmd/jawakad/main.c
 msgid "game is relocating"
-msgstr ""
+msgstr "el juego se está trasladando"
 
 #: cmd/jawakad/main.c
 msgid "game is still resuming"
-msgstr ""
+msgstr "el juego aún se está reanudando"
 
 #: cmd/jawakad/main.c
 msgid "game no longer exists"
-msgstr ""
+msgstr "el juego ya no existe"
 
 #: cmd/jawakad/main.c
 msgid "game spawn failed"
-msgstr ""
+msgstr "error al iniciar el proceso del juego"
 
 #: cmd/jawakad/main.c
 msgid "installed package metadata is unavailable"
-msgstr ""
+msgstr "los metadatos del paquete instalado no están disponibles"
 
 #: internal/store/pakrat.c
 msgid "invalid"
-msgstr ""
+msgstr "no válido"
 
 #: cmd/jawakad/main.c
 msgid "invalid battery override"
-msgstr ""
+msgstr "ajuste individual de batería no válido"
 
 #: cmd/jawakad/main.c
 msgid "invalid cancel scope"
-msgstr ""
+msgstr "alcance de cancelación no válido"
 
 #: cmd/jawakad/main.c
 msgid "invalid core id"
-msgstr ""
+msgstr "ID de núcleo no válido"
 
 #: internal/retroarch/catalog.c
 msgid "invalid core row in RetroArch metadata"
-msgstr ""
+msgstr "fila de núcleo no válida en metadatos de RetroArch"
 
 #: cmd/jawakad/main.c
 msgid "invalid input shortcuts"
-msgstr ""
+msgstr "accesos rápidos de entrada no válidos"
 
 #: cmd/jawakad/main.c
 msgid "invalid json"
-msgstr ""
+msgstr "json no válido"
 
 #: cmd/jawakad/main.c
 msgid "invalid language code"
-msgstr ""
+msgstr "código de idioma no válido"
 
 #: cmd/jawakad/main.c
 msgid "invalid refresh-osd-appearance request"
-msgstr ""
+msgstr "solicitud de actualización de apariencia OSD no válida"
 
 #: cmd/jawakad/main.c
 msgid "invalid repair mode"
-msgstr ""
+msgstr "modo de reparación no válido"
 
 #: cmd/jawakad/main.c
 msgid "invalid request id"
-msgstr ""
+msgstr "ID de solicitud no válido"
 
 #: internal/ipc/ipc_client.c
 msgid "invalid service id"
-msgstr ""
+msgstr "ID de servicio no válido"
 
 #: cmd/jawakad/main.c
 msgid "invalid shader scope"
-msgstr ""
+msgstr "alcance de shader no válido"
 
 #: internal/retroarch/catalog.c
 msgid "invalid system row in RetroArch metadata"
-msgstr ""
+msgstr "fila de sistema no válida en metadatos de RetroArch"
 
 #: cmd/jawakad/main.c
 msgid "invalid title groups"
-msgstr ""
+msgstr "grupos de títulos no válidos"
 
 #: cmd/jawaka-menu/main.c
 msgid "just now"
@@ -6525,43 +6525,43 @@ msgstr "hace un momento"
 
 #: internal/ipc/ipc_client.c
 msgid "language change failed"
-msgstr ""
+msgstr "falló el cambio de idioma"
 
 #: internal/ipc/ipc_client.c
 msgid "language change failed: daemon unavailable"
-msgstr ""
+msgstr "falló el cambio de idioma: demonio no disponible"
 
 #: cmd/jawakad/main.c
 msgid "language code too long"
-msgstr ""
+msgstr "código de idioma demasiado largo"
 
 #: internal/ipc/ipc_client.c
 msgid "launch failed"
-msgstr ""
+msgstr "falló el inicio"
 
 #: internal/ipc/ipc_client.c
 msgid "launch failed: %s"
-msgstr ""
+msgstr "falló el inicio: %s"
 
 #: internal/ipc/ipc_client.c
 msgid "launch failed: daemon unavailable"
-msgstr ""
+msgstr "falló el inicio: demonio no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "launch failed: missing app"
-msgstr ""
+msgstr "falló el inicio: falta la app"
 
 #: internal/ipc/ipc_client.c
 msgid "launch failed: missing game"
-msgstr ""
+msgstr "falló el inicio: falta el juego"
 
 #: cmd/jawakad/main.c
 msgid "launch-app failed"
-msgstr ""
+msgstr "falló el inicio de la app"
 
 #: cmd/jawakad/main.c
 msgid "launch-game failed"
-msgstr ""
+msgstr "falló el inicio del juego"
 
 #: internal/settings/storage_ui.c
 msgid "launcher SD card"
@@ -6569,99 +6569,99 @@ msgstr "tarjeta SD del lanzador"
 
 #: cmd/jawakad/main.c
 msgid "libretro core missing"
-msgstr ""
+msgstr "falta el núcleo de libretro"
 
 #: cmd/jawaka-launcher/main.c
 msgid "loading library..."
-msgstr ""
+msgstr "cargando biblioteca..."
 
 #: internal/ipc/ipc_client.c
 msgid "malformed response"
-msgstr ""
+msgstr "respuesta malformada"
 
 #: internal/retroarch/catalog.c
 msgid "metadata path too long"
-msgstr ""
+msgstr "ruta de metadatos demasiado larga"
 
 #: cmd/jawakad/main.c
 msgid "missing RetroArch action"
-msgstr ""
+msgstr "falta la acción de RetroArch"
 
 #: internal/retroarch/catalog.c
 msgid "missing SD-card root"
-msgstr ""
+msgstr "falta la raíz de la tarjeta SD"
 
 #: cmd/jawakad/main.c
 msgid "missing app payload"
-msgstr ""
+msgstr "falta el contenido de la app"
 
 #: cmd/jawakad/main.c
 msgid "missing credentials"
-msgstr ""
+msgstr "faltan credenciales"
 
 #: cmd/jawakad/main.c
 msgid "missing frontend role"
-msgstr ""
+msgstr "falta el rol de interfaz"
 
 #: cmd/jawakad/main.c
 msgid "missing language"
-msgstr ""
+msgstr "falta el idioma"
 
 #: cmd/jawakad/main.c
 msgid "missing launch payload"
-msgstr ""
+msgstr "falta el contenido de inicio"
 
 #: internal/retroarch/catalog.c
 msgid "missing metadata signature output"
-msgstr ""
+msgstr "falta la salida de firma de metadatos"
 
 #: cmd/jawakad/main.c
 msgid "missing performance profile"
-msgstr ""
+msgstr "falta el perfil de rendimiento"
 
 #: cmd/jawakad/main.c
 msgid "missing platform action"
-msgstr ""
+msgstr "falta la acción de la plataforma"
 
 #: cmd/jawakad/main.c
 msgid "missing rom_path"
-msgstr ""
+msgstr "falta la ruta de la ROM"
 
 #: cmd/jawakad/main.c
 msgid "missing scope"
-msgstr ""
+msgstr "falta el alcance"
 
 #: cmd/jawakad/main.c
 msgid "missing shader operation"
-msgstr ""
+msgstr "falta la operación del shader"
 
 #: cmd/jawakad/main.c
 msgid "missing shader path"
-msgstr ""
+msgstr "falta la ruta del shader"
 
 #: cmd/jawakad/main.c
 msgid "missing storage action"
-msgstr ""
+msgstr "falta la acción de almacenamiento"
 
 #: cmd/jawakad/main.c
 msgid "missing suspend inhibitor scope or reason"
-msgstr ""
+msgstr "falta el alcance o la razón del inhibidor de suspensión"
 
 #: cmd/jawakad/main.c
 msgid "missing suspend inhibitor token"
-msgstr ""
+msgstr "falta el token del inhibidor de suspensión"
 
 #: cmd/jawakad/main.c
 msgid "missing system"
-msgstr ""
+msgstr "falta el sistema"
 
 #: cmd/jawakad/main.c
 msgid "missing type"
-msgstr ""
+msgstr "falta el tipo"
 
 #: cmd/jawakad/main.c
 msgid "mutation lock is not held"
-msgstr ""
+msgstr "no se mantiene el bloqueo de modificación"
 
 #: cmd/jawaka-menu/main.c
 msgid "newest"
@@ -6669,35 +6669,35 @@ msgstr "más reciente"
 
 #: internal/scrape/scrape_worker.c
 msgid "no ScreenScraper mapping for this system"
-msgstr ""
+msgstr "no hay mapeo de ScreenScraper para este sistema"
 
 #: cmd/jawakad/main.c
 msgid "no active RetroArch session"
-msgstr ""
+msgstr "no hay sesión activa de RetroArch"
 
 #: cmd/jawakad/main.c
 msgid "no blocked game launch"
-msgstr ""
+msgstr "no hay inicio de juego bloqueado"
 
 #: internal/ipc/ipc_client.c
 msgid "no language given"
-msgstr ""
+msgstr "no se proporcionó idioma"
 
 #: cmd/jawakad/main.c
 msgid "no package mutation in progress"
-msgstr ""
+msgstr "no hay modificación de paquete en progreso"
 
 #: cmd/jawakad/main.c
 msgid "no pending sync check"
-msgstr ""
+msgstr "no hay verificación de sincronización pendiente"
 
 #: cmd/jawakad/main.c
 msgid "no waiting game launch"
-msgstr ""
+msgstr "no hay inicio de juego en espera"
 
 #: cmd/jawakad/main.c
 msgid "not-found"
-msgstr ""
+msgstr "no encontrado"
 
 #: cmd/jawaka-menu/main.c
 msgid "oldest"
@@ -6705,35 +6705,35 @@ msgstr "más antiguo"
 
 #: internal/platform/device_mlp1.c
 msgid "only secondary SD can be unmounted"
-msgstr ""
+msgstr "solo la SD secundaria se puede desmontar"
 
 #: cmd/jawakad/main.c
 msgid "open-menu failed"
-msgstr ""
+msgstr "falló la apertura del menú"
 
 #: cmd/jawakad/main.c
 msgid "open-switcher failed"
-msgstr ""
+msgstr "falló la apertura del cambiador"
 
 #: internal/discovery/discovery.c
 msgid "optional content art metadata ignored"
-msgstr ""
+msgstr "metadatos opcionales de arte de contenido ignorados"
 
 #: internal/discovery/discovery.c
 msgid "optional content scrape metadata ignored; filename behavior retained"
-msgstr ""
+msgstr "metadatos opcionales de scrapeo de contenido ignorados; comportamiento de nombre de archivo mantenido"
 
 #: cmd/jawakad/main.c
 msgid "out of memory"
-msgstr ""
+msgstr "sin memoria"
 
 #: internal/scrape/ss_client.c
 msgid "out of memory while building request"
-msgstr ""
+msgstr "sin memoria al crear la solicitud"
 
 #: cmd/jawakad/main.c
 msgid "overridden game launch still failed"
-msgstr ""
+msgstr "el inicio de juego omitido volvió a fallar"
 
 #: cmd/jawaka-menu/main.c
 msgid "overwrites"
@@ -6741,67 +6741,67 @@ msgstr "sobrescribe"
 
 #: cmd/jawakad/main.c
 msgid "package mutation in progress"
-msgstr ""
+msgstr "modificación de paquete en progreso"
 
 #: cmd/jawakad/main.c
 msgid "package mutation operation mismatch"
-msgstr ""
+msgstr "no coincide la operación de modificación de paquete"
 
 #: cmd/jawakad/main.c
 msgid "package operation in progress"
-msgstr ""
+msgstr "operación de paquete en progreso"
 
 #: internal/discovery/discovery.c
 msgid "patterns contains redundant case variants"
-msgstr ""
+msgstr "los patrones contienen variantes de mayúsculas/minúsculas redundantes"
 
 #: internal/ipc/ipc_client.c
 msgid "performance custom failed"
-msgstr ""
+msgstr "error en el rendimiento personalizado"
 
 #: internal/ipc/ipc_client.c
 msgid "performance custom failed: daemon unavailable"
-msgstr ""
+msgstr "error en el rendimiento personalizado: daemon no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "performance custom missing"
-msgstr ""
+msgstr "falta el rendimiento personalizado"
 
 #: internal/ipc/ipc_client.c
 msgid "performance custom set"
-msgstr ""
+msgstr "rendimiento personalizado establecido"
 
 #: internal/settings/settings.c
 msgid "performance failed"
-msgstr ""
+msgstr "error en el rendimiento"
 
 #: internal/ipc/ipc_client.c
 msgid "performance profile failed"
-msgstr ""
+msgstr "error en el perfil de rendimiento"
 
 #: internal/ipc/ipc_client.c
 msgid "performance profile failed: daemon unavailable"
-msgstr ""
+msgstr "error en el perfil de rendimiento: daemon no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "performance profile missing"
-msgstr ""
+msgstr "falta el perfil de rendimiento"
 
 #: internal/ipc/ipc_client.c
 msgid "performance profile set"
-msgstr ""
+msgstr "perfil de rendimiento configurado"
 
 #: internal/ipc/ipc_client.c
 msgid "performance reset"
-msgstr ""
+msgstr "rendimiento restablecido"
 
 #: internal/ipc/ipc_client.c
 msgid "performance reset failed"
-msgstr ""
+msgstr "falló el restablecimiento de rendimiento"
 
 #: internal/ipc/ipc_client.c
 msgid "performance reset failed: daemon unavailable"
-msgstr ""
+msgstr "falló el restablecimiento de rendimiento: daemon no disponible"
 
 #: internal/settings/settings.c
 msgid "performance unavailable"
@@ -6813,23 +6813,23 @@ msgstr "Plataforma"
 
 #: cmd/jawakad/main.c
 msgid "power-handoff-missing"
-msgstr ""
+msgstr "falta transferencia de energía"
 
 #: cmd/jawakad/main.c
 msgid "power-required"
-msgstr ""
+msgstr "energía requerida"
 
 #: cmd/jawakad/main.c
 msgid "primary storage source missing"
-msgstr ""
+msgstr "falta la fuente primaria de almacenamiento"
 
 #: cmd/jawakad/main.c
 msgid "profile cannot be a session override"
-msgstr ""
+msgstr "el perfil no puede ser un ajuste individual de sesión"
 
 #: cmd/jawakad/main.c
 msgid "profile cannot be global"
-msgstr ""
+msgstr "el perfil no puede ser global"
 
 #: internal/settings/settings.c
 msgid "refresh rate change failed"
@@ -6837,11 +6837,11 @@ msgstr "error al cambiar la tasa de refresco"
 
 #: internal/ipc/ipc_client.c
 msgid "refresh rate failed"
-msgstr ""
+msgstr "error en la tasa de refresco"
 
 #: internal/ipc/ipc_client.c
 msgid "refresh rate failed: daemon unavailable"
-msgstr ""
+msgstr "error en la tasa de refresco: daemon no disponible"
 
 #: internal/settings/settings.c
 msgid "refresh rate unavailable on this platform"
@@ -6849,143 +6849,143 @@ msgstr "tasa de refresco no disponible en esta plataforma"
 
 #: internal/scrape/ss_client.c
 msgid "request failed: %s"
-msgstr ""
+msgstr "error en la solicitud: %s"
 
 #: cmd/jawakad/main.c
 msgid "requested core unavailable"
-msgstr ""
+msgstr "núcleo solicitado no disponible"
 
 #: cmd/jawakad/main.c
 msgid "reset failed"
-msgstr ""
+msgstr "error al restablecer"
 
 #: internal/retroarch/catalog.c
 msgid "resolved alternate core path too long"
-msgstr ""
+msgstr "la ruta de núcleo alternativo resuelta es demasiado larga"
 
 #: internal/retroarch/catalog.c
 msgid "resolved core path too long"
-msgstr ""
+msgstr "la ruta de núcleo resuelta es demasiado larga"
 
 #: internal/retroarch/catalog.c
 msgid "resolved preferred core path too long"
-msgstr ""
+msgstr "la ruta de núcleo preferido resuelta es demasiado larga"
 
 #: internal/ipc/ipc_client.c
 msgid "restarting"
-msgstr ""
+msgstr "reiniciando"
 
 #: cmd/jawakad/main.c
 msgid "resume failed"
-msgstr ""
+msgstr "error al reanudar"
 
 #: cmd/jawakad/main.c
 msgid "retried game launch failed"
-msgstr ""
+msgstr "el reintento de inicio del juego falló"
 
 #: cmd/jawakad/main.c
 msgid "retried game launch still blocked"
-msgstr ""
+msgstr "el reintento de inicio del juego sigue bloqueado"
 
 #: internal/services/supervisor.c
 msgid "running"
-msgstr ""
+msgstr "en ejecución"
 
 #: internal/store/pakrat.c
 msgid "runtime unavailable"
-msgstr ""
+msgstr "entorno de ejecución no disponible"
 
 #: cmd/jawakad/main.c
 msgid "save-state failed"
-msgstr ""
+msgstr "error al guardar estado"
 
 #: cmd/jawakad/main.c
 msgid "savestate namespace unavailable"
-msgstr ""
+msgstr "espacio de nombres de estados guardados no disponible"
 
 #: cmd/jawakad/main.c
 msgid "savestate unavailable"
-msgstr ""
+msgstr "estado guardado no disponible"
 
 #: cmd/jawakad/main.c
 msgid "savestates unsupported"
-msgstr ""
+msgstr "estados guardados no compatibles"
 
 #: internal/ipc/ipc_client.c
 msgid "scan already running; queued rescan"
-msgstr ""
+msgstr "escaneo en ejecución; se puso en cola el reescaneo"
 
 #: internal/ipc/ipc_client.c
 msgid "scan complete: %d games, %d apps"
-msgstr ""
+msgstr "escaneo completado: %d juegos, %d apps"
 
 #: internal/ipc/ipc_client.c
 msgid "scan failed: daemon returned error"
-msgstr ""
+msgstr "falló el escaneo: el demonio devolvió un error"
 
 #: internal/ipc/ipc_client.c
 msgid "scan failed: daemon unavailable"
-msgstr ""
+msgstr "falló el escaneo: demonio no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "scan started"
-msgstr ""
+msgstr "escaneo iniciado"
 
 #: cmd/jawakad/main.c
 msgid "scan-library could not start"
-msgstr ""
+msgstr "no se pudo iniciar scan-library"
 
 #: cmd/jawaka-launcher/main.c
 msgid "scanning library..."
-msgstr ""
+msgstr "escaneando biblioteca..."
 
 #: cmd/jawaka-launcher/main.c
 msgid "scope|custom"
-msgstr ""
+msgstr "personalizado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "scope|default"
-msgstr ""
+msgstr "predeterminado"
 
 #: cmd/jawaka-launcher/main.c
 msgid "scope|game"
-msgstr ""
+msgstr "juego"
 
 #: cmd/jawaka-launcher/main.c
 msgid "scope|system"
-msgstr ""
+msgstr "sistema"
 
 #: internal/ipc/ipc_client.c
 msgid "scrape failed"
-msgstr ""
+msgstr "falló el scrapeo"
 
 #: internal/ipc/ipc_client.c
 msgid "scrape failed: daemon unavailable"
-msgstr ""
+msgstr "falló el scrapeo: daemon no disponible"
 
 #: internal/scrape/scrape_worker.c
 msgid "scrape queue is full"
-msgstr ""
+msgstr "la cola de scrapeo está llena"
 
 #: internal/scrape/scrape_worker.c
 msgid "scrape worker not running"
-msgstr ""
+msgstr "el proceso de scrapeo no está ejecutándose"
 
 #: cmd/jawakad/main.c
 msgid "scrape-start failed"
-msgstr ""
+msgstr "falló la iniciación del scrapeo"
 
 #: cmd/jawakad/main.c
 msgid "scraping unavailable in this build"
-msgstr ""
+msgstr "scrapeo no disponible en esta versión"
 
 #: cmd/jawaka-launcher/main.c
 msgid "search failed"
-msgstr ""
+msgstr "falló la búsqueda"
 
 #: cmd/jawaka-launcher/main.c
 msgid "search keyboard failed"
-msgstr ""
+msgstr "falló el teclado de búsqueda"
 
 #: internal/settings/storage_ui.c
 msgid "second SD card"
@@ -6993,15 +6993,15 @@ msgstr "segunda tarjeta SD"
 
 #: cmd/jawakad/main.c
 msgid "service supervisor is unavailable"
-msgstr ""
+msgstr "el supervisor del servicio no está disponible"
 
 #: cmd/jawakad/main.c
 msgid "service supervisor unavailable"
-msgstr ""
+msgstr "supervisor del servicio no disponible"
 
 #: cmd/jawakad/main.c
 msgid "shader path not permitted"
-msgstr ""
+msgstr "ruta de shader no permitida"
 
 #: cmd/jawaka-launcher/main.c
 msgid "space"
@@ -7009,15 +7009,15 @@ msgstr "espacio"
 
 #: internal/services/supervisor.c
 msgid "stale-generation"
-msgstr ""
+msgstr "generación obsoleta"
 
 #: cmd/jawakad/main.c
 msgid "standalone emulator missing"
-msgstr ""
+msgstr "falta emulador independiente"
 
 #: internal/services/supervisor.c
 msgid "starting"
-msgstr ""
+msgstr "iniciando"
 
 #: cmd/jawaka-launcher/main.c
 msgid "status|Update"
@@ -7025,59 +7025,59 @@ msgstr "Actualización"
 
 #: internal/services/supervisor.c
 msgid "stopped"
-msgstr ""
+msgstr "detenido"
 
 #: internal/services/supervisor.c
 msgid "stopping"
-msgstr ""
+msgstr "deteniendo"
 
 #: cmd/jawakad/main.c
 msgid "storage source unavailable"
-msgstr ""
+msgstr "fuente de almacenamiento no disponible"
 
 #: cmd/jawakad/main.c
 msgid "storage sources unavailable"
-msgstr ""
+msgstr "fuentes de almacenamiento no disponibles"
 
 #: internal/ipc/ipc_client.c
 msgid "switch failed"
-msgstr ""
+msgstr "falló el cambio"
 
 #: internal/ipc/ipc_client.c
 msgid "switch failed: %s"
-msgstr ""
+msgstr "falló el cambio: %s"
 
 #: internal/ipc/ipc_client.c
 msgid "switch failed: daemon unavailable"
-msgstr ""
+msgstr "falló el cambio: demonio no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "switch failed: missing game"
-msgstr ""
+msgstr "falló el cambio: falta el juego"
 
 #: cmd/jawakad/main.c
 msgid "switch-game failed"
-msgstr ""
+msgstr "falló la función switch-game"
 
 #: internal/ipc/ipc_client.c
 msgid "switching HDMI output"
-msgstr ""
+msgstr "cambiando salida HDMI"
 
 #: internal/ipc/ipc_client.c
 msgid "switching to 60 Hz"
-msgstr ""
+msgstr "cambiando a 60 Hz"
 
 #: internal/ipc/ipc_client.c
 msgid "switching to 90 Hz"
-msgstr ""
+msgstr "cambiando a 90 Hz"
 
 #: cmd/jawakad/main.c
 msgid "sync check could not safely proceed"
-msgstr ""
+msgstr "la comprobación de sincronización no se pudo realizar de forma segura"
 
 #: internal/retroarch/catalog.c
 msgid "system missing from metadata"
-msgstr ""
+msgstr "falta el sistema en los metadatos"
 
 #: cmd/jawaka-menu/main.c
 msgid "that scope"
@@ -7085,59 +7085,59 @@ msgstr "ese alcance"
 
 #: internal/update/update.c
 msgid "this platform"
-msgstr ""
+msgstr "esta plataforma"
 
 #: internal/settings/settings.c
 msgid "today"
-msgstr ""
+msgstr "hoy"
 
 #: internal/services/supervisor.c
 msgid "unavailable"
-msgstr ""
+msgstr "no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "unknown operation"
-msgstr ""
+msgstr "operación desconocida"
 
 #: cmd/jawakad/main.c
 msgid "unknown performance profile"
-msgstr ""
+msgstr "perfil de rendimiento desconocido"
 
 #: cmd/jawakad/main.c
 msgid "unknown performance scope"
-msgstr ""
+msgstr "alcance de rendimiento desconocido"
 
 #: cmd/jawakad/main.c
 msgid "unknown resume policy"
-msgstr ""
+msgstr "política de reanudación desconocida"
 
 #: cmd/jawakad/main.c
 msgid "unknown scope"
-msgstr ""
+msgstr "alcance desconocido"
 
 #: cmd/jawakad/main.c
 msgid "unknown service id"
-msgstr ""
+msgstr "ID de servicio desconocido"
 
 #: cmd/jawakad/main.c
 msgid "unknown shader operation"
-msgstr ""
+msgstr "operación de shader desconocida"
 
 #: cmd/jawaka-launcher/main.c
 msgid "unknown size"
-msgstr ""
+msgstr "tamaño desconocido"
 
 #: cmd/jawakad/main.c
 msgid "unknown type"
-msgstr ""
+msgstr "tipo desconocido"
 
 #: internal/ipc/ipc_client.c
 msgid "unmount failed"
-msgstr ""
+msgstr "falló el desmontaje"
 
 #: internal/ipc/ipc_client.c
 msgid "unmount failed: daemon unavailable"
-msgstr ""
+msgstr "falló el desmontaje: daemon no disponible"
 
 #: cmd/jawaka-menu/main.c
 msgid "unsaved · %d of %d"
@@ -7149,103 +7149,103 @@ msgstr "sin guardar · %s · %d de %d"
 
 #: cmd/jawakad/main.c
 msgid "unsupported system"
-msgstr ""
+msgstr "sistema no compatible"
 
 #: cmd/jawakad/main.c
 msgid "unsupported-platform"
-msgstr ""
+msgstr "plataforma no compatible"
 
 #: internal/update/update.c
 msgid "update"
-msgstr ""
+msgstr "actualización"
 
 #: internal/ipc/ipc_client.c
 msgid "update cancel failed"
-msgstr ""
+msgstr "falló la cancelación de la actualización"
 
 #: internal/ipc/ipc_client.c
 msgid "update cancel unavailable"
-msgstr ""
+msgstr "cancelación de actualización no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "update download cancelled"
-msgstr ""
+msgstr "descarga de actualización cancelada"
 
 #: internal/ipc/ipc_client.c
 msgid "update download failed"
-msgstr ""
+msgstr "falló la descarga de la actualización"
 
 #: internal/ipc/ipc_client.c
 msgid "update download finished"
-msgstr ""
+msgstr "finalizó la descarga de la actualización"
 
 #: internal/ipc/ipc_client.c
 msgid "update download unavailable"
-msgstr ""
+msgstr "descarga de actualización no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "update install failed"
-msgstr ""
+msgstr "falló la instalación de la actualización"
 
 #: internal/ipc/ipc_client.c
 msgid "update install started"
-msgstr ""
+msgstr "instalación de actualización iniciada"
 
 #: internal/ipc/ipc_client.c
 msgid "update install unavailable"
-msgstr ""
+msgstr "instalación de actualización no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "update ready check complete"
-msgstr ""
+msgstr "comprobación de actualización lista completada"
 
 #: internal/ipc/ipc_client.c
 msgid "update ready check failed"
-msgstr ""
+msgstr "falló la comprobación de actualización lista"
 
 #: internal/ipc/ipc_client.c
 msgid "update ready check unavailable"
-msgstr ""
+msgstr "comprobación de actualización lista no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "update releases failed"
-msgstr ""
+msgstr "fallaron las versiones de actualización"
 
 #: internal/ipc/ipc_client.c
 msgid "update releases unavailable"
-msgstr ""
+msgstr "versiones de actualización no disponibles"
 
 #: internal/ipc/ipc_client.c
 msgid "update selected"
-msgstr ""
+msgstr "actualización seleccionada"
 
 #: internal/ipc/ipc_client.c
 msgid "update selection failed"
-msgstr ""
+msgstr "falló la selección de actualización"
 
 #: internal/ipc/ipc_client.c
 msgid "update selection unavailable"
-msgstr ""
+msgstr "selección de actualización no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "update status failed"
-msgstr ""
+msgstr "falló el estado de actualización"
 
 #: internal/ipc/ipc_client.c
 msgid "update status ready"
-msgstr ""
+msgstr "estado de actualización listo"
 
 #: internal/ipc/ipc_client.c
 msgid "update status unavailable"
-msgstr ""
+msgstr "estado de actualización no disponible"
 
 #: internal/settings/settings.c
 msgid "update|Missing"
-msgstr ""
+msgstr "Faltante"
 
 #: cmd/jawakad/main.c
 msgid "validation failed"
-msgstr ""
+msgstr "error en la validación"
 
 #: internal/settings/settings.c
 msgid "volume failed"
@@ -7253,19 +7253,19 @@ msgstr "error en el ajuste de volumen"
 
 #: internal/ipc/ipc_client.c
 msgid "volume failed: %s"
-msgstr ""
+msgstr "error en el volumen: %s"
 
 #: internal/ipc/ipc_client.c
 msgid "volume failed: daemon unavailable"
-msgstr ""
+msgstr "error en el volumen: daemon no disponible"
 
 #: internal/ipc/ipc_client.c
 msgid "volume: %d%%"
-msgstr ""
+msgstr "volumen: %d%%"
 
 #: internal/settings/settings.c
 msgid "yesterday"
-msgstr ""
+msgstr "ayer"
 
 #: internal/settings/settings.c
 msgid "—"
