@@ -682,6 +682,15 @@ weston-initd-test: | $(BUILD)/bin
 	@if grep -rnE -A2 --include='*.c' '(system|popen|exec[lv]p?e?) *\(' cmd internal | grep 'JW_WESTON'; then \
 		echo "weston-initd-test: run JW_WESTON_INITD commands through jw_weston_initd_run/_spawn_detached"; exit 1; fi
 
+# MLP1 USB ADB drives /usr/bin/usb-gadget directly; LoongOS 1.4.0.52 removed
+# S50usb-gadget.sh. See mlp1_adb.h.
+.PHONY: mlp1-adb-test
+mlp1-adb-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/mlp1-adb-test internal/platform/mlp1_adb_test.c
+	$(BUILD)/bin/mlp1-adb-test
+	@if grep -rn --include='*.c' --include='*.h' 'S50usb-gadget' cmd internal | grep -v 'internal/platform/mlp1_adb'; then \
+		echo "mlp1-adb-test: drive the USB gadget through JW_MLP1_USB_GADGET (mlp1_adb.h)"; exit 1; fi
+
 # Screenshot and in-game menu still capture; see scanout_capture.h.
 .PHONY: scanout-capture-test
 scanout-capture-test: | $(BUILD)/bin
