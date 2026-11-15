@@ -1,0 +1,22 @@
+name: MLP1 ADB
+
+# The Network settings ADB toggle pins /etc/.usb_config and restarts the USB
+# gadget. LoongOS 1.4.0.52 removed /etc/init.d/S50usb-gadget.sh, so Jawaka
+# drives /usr/bin/usb-gadget itself. mlp1-adb-test runs the real command
+# strings against a fake rootfs, including a freshly flashed one with no
+# /etc/.usb_config.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make mlp1-adb-test

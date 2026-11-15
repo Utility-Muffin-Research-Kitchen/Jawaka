@@ -29,6 +29,7 @@
 #include "internal/platform/stock_volume.h"
 #include "internal/platform/game_display.h"
 #include "internal/platform/weston_initd.h"
+#include "internal/platform/mlp1_adb.h"
 #include "internal/power/power_hard_cut.h"
 #include <linux/i2c-dev.h>
 #include <sys/socket.h>
@@ -179,26 +180,9 @@
 #define JW_MLP1_LED_CFG  "/oem/loong/record/config/loong_light.cfg"
 #define JW_MLP1_LED_DAEMON "loong_light"
 
-#define JW_MLP1_ADBD "/usr/bin/adbd"
-#define JW_MLP1_USB_CONFIG "/etc/.usb_config"
-#define JW_MLP1_USB_GADGET "/etc/init.d/S50usb-gadget.sh"
+/* ADB paths and commands: see mlp1_adb.h. */
 #define JW_MLP1_ADB_MARKER_FILE "adb-enabled"
 #define JW_MLP1_BOOT_SPLASH_DISABLED_FILE "boot-splash-disabled"
-#define JW_MLP1_ROOTFS_RW_CMD \
-    "(mount -o remount,rw / >/dev/null 2>&1 || " \
-    "mount -o remount,rw /dev/root / >/dev/null 2>&1)"
-#define JW_MLP1_ADB_ENABLE_CMD \
-    JW_MLP1_ROOTFS_RW_CMD " || exit 1; " \
-    "chattr -i " JW_MLP1_USB_CONFIG " >/dev/null 2>&1 || true; " \
-    "printf 'usb_adb_en\\n' >" JW_MLP1_USB_CONFIG " && " \
-    "chattr +i " JW_MLP1_USB_CONFIG " && sync"
-#define JW_MLP1_ADB_DISABLE_CMD \
-    JW_MLP1_ROOTFS_RW_CMD " || exit 1; " \
-    "chattr -i " JW_MLP1_USB_CONFIG " >/dev/null 2>&1 || true; " \
-    "printf 'usb_mtp_en\\n' >" JW_MLP1_USB_CONFIG " && sync"
-#define JW_MLP1_USB_RESTART_CMD \
-    JW_MLP1_USB_GADGET " restart >/dev/null 2>&1 || " \
-    JW_MLP1_USB_GADGET " start >/dev/null 2>&1"
 
 /* Run a shell command via /bin/sh -c (for commands with arguments/pipes). */
 static int jw__exec_shell(const char *cmd) {
@@ -1772,8 +1756,7 @@ static int jw__mlp1_set_hdmi_output(int mode) {
 }
 
 static bool jw__mlp1_adb_supported(void) {
-    return access(JW_MLP1_ADBD, X_OK) == 0 &&
-           access(JW_MLP1_USB_GADGET, X_OK) == 0;
+    return jw_mlp1_adb_tools_present(JW_MLP1_ADBD, JW_MLP1_USB_GADGET);
 }
 
 static bool jw__mlp1_usb_config_is_adb(void) {
