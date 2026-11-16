@@ -185,6 +185,10 @@ int jw_osd_backend_event_fd(void) {
     return -1;
 }
 
+bool jw_osd_backend_lost(void) {
+    return false;
+}
+
 int jw_osd_backend_timeout_ms(uint64_t now_ms) {
     int timeout = jw_osd_view_timeout_ms(&s_view, now_ms);
     return (timeout < 0 || timeout > JW_OSD_SDL_PUMP_MS) ? JW_OSD_SDL_PUMP_MS : timeout;

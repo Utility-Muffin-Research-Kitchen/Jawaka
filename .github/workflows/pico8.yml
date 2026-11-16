@@ -18,3 +18,4 @@ jobs:
       - run: make osd-view-test
       - run: make osd-layout-test
       - run: make osd-client-test
+      - run: make osd-respawn-test

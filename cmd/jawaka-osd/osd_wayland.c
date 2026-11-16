@@ -61,7 +61,7 @@ typedef struct {
     jw_osd_view view;
     bool visible;
     bool configured;
-    bool display_lost;            /* logged once; the fd is no longer watched */
+    bool display_lost;            /* logged once; the OSD exits */
 } jw_wayland_osd;
 
 static jw_wayland_osd s_osd;
@@ -718,17 +718,22 @@ static void jw__read_events(void) {
 }
 
 int jw_osd_backend_event_fd(void) {
-    if (!s_osd.display) return -1;
-    int error = wl_display_get_error(s_osd.display);
-    if (error != 0) {
-        /* A dead connection polls readable forever; stop watching it. */
-        if (!s_osd.display_lost) {
-            jw_log_warn("osd: lost the compositor connection: %s", strerror(error));
-            s_osd.display_lost = true;
-        }
-        return -1;
-    }
+    /* A dead connection polls readable forever; stop watching it. */
+    if (!s_osd.display || jw_osd_backend_lost()) return -1;
     return wl_display_get_fd(s_osd.display);
+}
+
+/* Weston going away (a port stopping it, a hand restart) ends the connection
+   for good: every surface, buffer and global belonged to that compositor.
+   Before, the OSD stayed up and failed every show until it was killed. */
+bool jw_osd_backend_lost(void) {
+    if (s_osd.display_lost) return true;
+    if (!s_osd.display) return false;
+    int error = wl_display_get_error(s_osd.display);
+    if (error == 0) return false;
+    jw_log_warn("osd: lost the compositor connection: %s", strerror(error));
+    s_osd.display_lost = true;
+    return true;
 }
 
 int jw_osd_backend_timeout_ms(uint64_t now_ms) {
