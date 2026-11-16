@@ -18,6 +18,10 @@
 #include <time.h>
 #include <unistd.h>
 
+/* Exit status when the display connection is gone; jawakad starts a new OSD
+   once the compositor is back. */
+#define JW_OSD_EXIT_DISPLAY_LOST 3
+
 static volatile sig_atomic_t g_stop;
 /* A signal that lands between the g_stop check and poll() would otherwise
    wait for the next client, which may be never now that the loop has no
@@ -253,8 +257,14 @@ int main(void) {
     jw__announce_ready();
     jw_log_info("osd: listening on %s language=%s ready_ms=%llu", socket_path,
                 jw_i18n_language(), (unsigned long long)(jw__now_ms() - started_ms));
+    int exit_code = 0;
     while (!g_stop) {
         jw_osd_backend_tick(jw__now_ms());
+        if (jw_osd_backend_lost()) {
+            jw_log_warn("osd: exiting for a fresh start on the new compositor");
+            exit_code = JW_OSD_EXIT_DISPLAY_LOST;
+            break;
+        }
         if (!jw__wait(server)) {
             continue;
         }
@@ -285,5 +295,5 @@ int main(void) {
     }
     jw_i18n_shutdown();
     free(socket_path);
-    return 0;
+    return exit_code;
 }

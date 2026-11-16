@@ -3,6 +3,7 @@
 
 #include "cmd/jawaka-osd/game_launch.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Show calls return 0 once the backend has submitted what the view asks for,
@@ -21,6 +22,10 @@ void jw_osd_backend_hide_game_launch(void);
 int  jw_osd_backend_event_fd(void);
 int  jw_osd_backend_timeout_ms(uint64_t now_ms);
 void jw_osd_backend_tick(uint64_t now_ms);
+/* True once the display connection is gone for good. A Wayland client cannot
+   move to a restarted compositor, so the OSD then exits and jawakad starts a
+   new one once Weston is back. */
+bool jw_osd_backend_lost(void);
 void jw_osd_backend_shutdown(void);
 
 #endif /* JW_OSD_BACKEND_H */

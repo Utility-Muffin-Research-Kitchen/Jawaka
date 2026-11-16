@@ -1668,7 +1668,8 @@ static int jw__mlp1_set_refresh_rate(int hz) {
     /* Restart Weston so it re-reads the config at the new mode, then drop the
        launcher AND the OSD so jawakad respawns fresh ones that reconnect to the
        new compositor and repaint (both Wayland clients black-screen across a
-       restart — the old OSD survives the kill of Weston but never redraws).
+       restart). The OSD also exits by itself once Weston goes; the kill is the
+       backstop for one that has not noticed yet.
        Detached child so the action returns to the caller immediately. Double-fork
        so the grandchild reparents to init and is auto-reaped (no zombie). */
     (void)jw_weston_initd_spawn_detached(

@@ -20,6 +20,7 @@
 #include "internal/launcher/menu_escape.h"
 #include "internal/launcher/pico8.h"
 #include "cmd/jawakad/osd_client.h"
+#include "cmd/jawakad/osd_respawn.h"
 #include "internal/platform/external_input_monitor.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
@@ -447,6 +448,7 @@ typedef struct {
     int osd_ready_fd;           /* readiness pipe from the OSD, -1 when none */
     bool osd_ready;             /* fonts, backend and socket are all up */
     long long osd_spawned_ms;
+    jw_osd_respawn osd_respawn; /* a restart waiting on its backoff or on Weston */
     /* The appearance the running OSD opened its font with. */
     char osd_language[JW_I18N_CODE_MAX];
     char osd_font_path[256];
@@ -8194,12 +8196,55 @@ static int jw__spawn_osd(jw_daemon_state *state) {
     /* Without a pipe there is no signal to wait for; fall back to the socket. */
     state->osd_ready = ready_pipe[0] < 0;
     state->osd_spawned_ms = jw__monotonic_ms();
+    jw_osd_respawn_clear(&state->osd_respawn);
     snprintf(state->osd_language, sizeof(state->osd_language), "%s", appearance.language);
     snprintf(state->osd_font_path, sizeof(state->osd_font_path), "%s",
              appearance.font_path ? appearance.font_path : "");
     snprintf(state->osd_font_bump, sizeof(state->osd_font_bump), "%s", appearance.font_bump);
     jw_log_info("spawned jawaka-osd pid=%d", (int)pid);
     return 0;
+}
+
+/* Whether a new OSD could reach its compositor. Only the Wayland OSD has one
+   to wait for; the SDL OSD of host builds opens its own window. */
+static bool jw__osd_display_up(void) {
+#if defined(JW_OSD_WAYLAND)
+    char path[PATH_MAX];
+    return jw_osd_wayland_socket_path(path, sizeof(path)) == 0 &&
+           jw_osd_wayland_accepts(path);
+#else
+    return true;
+#endif
+}
+
+/* Starts the OSD that the reaper left pending once its backoff has run out
+   and Weston accepts clients. Not during a direct-DRM handoff: the handoff
+   stopped the OSD itself, and jw__game_display_end starts it again. */
+static void jw__tick_osd_respawn(jw_daemon_state *state) {
+    jw_osd_respawn *r = &state->osd_respawn;
+    if (!r->pending) {
+        return;
+    }
+    if (state->osd_pid > 0) {
+        jw_osd_respawn_clear(r);
+        return;
+    }
+    if (state->shutdown_requested || g_shutdown_requested || state->direct_drm_active) {
+        return;
+    }
+    long long now = jw__monotonic_ms();
+    if (!jw_osd_respawn_due(r, now)) {
+        return;
+    }
+    if (!jw__osd_display_up()) {
+        jw_osd_respawn_display_down(r, now);
+        return;
+    }
+    jw__spawn_osd(state);
+    if (state->osd_pid <= 0) {
+        /* Missing binary or a failed fork: retry later, not every pass. */
+        jw_osd_respawn_after_exit(r, false, 0, now);
+    }
 }
 
 static void jw__handle_osd_exit(jw_daemon_state *state) {
@@ -8217,6 +8262,8 @@ static void jw__handle_osd_exit(jw_daemon_state *state) {
         return;
     }
 
+    bool was_ready = state->osd_ready;
+    long long now = jw__monotonic_ms();
     state->osd_pid = -1;
     /* A restarted OSD shows nothing, so no old deadline may confirm an exit. */
     jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
@@ -8227,10 +8274,11 @@ static void jw__handle_osd_exit(jw_daemon_state *state) {
         jw_log_warn("jawaka-osd terminated signal=%d", WTERMSIG(status));
     }
 
-    if (!state->shutdown_requested && !g_shutdown_requested &&
-        !state->direct_drm_active) {
-        jw__spawn_osd(state);
-    }
+    /* The OSD exits when Weston goes away, so the new one waits for Weston
+       (jw__tick_osd_respawn); one that keeps failing backs off. */
+    jw_osd_respawn_after_exit(&state->osd_respawn, was_ready,
+                              now - state->osd_spawned_ms, now);
+    jw__tick_osd_respawn(state);
 }
 
 static void jw__spawn_ledd_for(jw_daemon_state *state, const jw_led_config *led);
@@ -8290,6 +8338,11 @@ static int jw__osd_request(void *ctx, const char *json, int timeout_ms, bool sho
            about to go; starting an OSD process now would only leave a stray
            child behind. */
         if (state->shutdown_requested || g_shutdown_requested) {
+            return -1;
+        }
+        /* With Weston down a new OSD would fail at once; the pending respawn
+           starts one when Weston is back. */
+        if (!jw__osd_display_up()) {
             return -1;
         }
         jw__spawn_osd(state);
@@ -17357,6 +17410,12 @@ static int jw__loop_timeout_ms(jw_daemon_state *state) {
             due = at;
         }
     }
+    if (!state->direct_drm_active) {
+        at = jw_osd_respawn_deadline_ms(&state->osd_respawn);
+        if (at >= 0 && at < due) {
+            due = at;
+        }
+    }
     /* A deadline that is already due gets the old cadence rather than 0: if
        its tick cannot act on it yet, 0 would spin. */
     if (due <= now) {
@@ -18688,6 +18747,7 @@ int main(int argc, char *argv[]) {
         if (check_exits || (!state.osd_ready && state.osd_ready_fd >= 0)) {
             jw__handle_osd_exit(&state);
         }
+        jw__tick_osd_respawn(&state);
         if (check_exits) jw__handle_ledd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
         jw__tick_menu_escape(&state);
