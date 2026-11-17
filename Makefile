@@ -595,7 +595,8 @@ wifi-attempt-test: | $(BUILD)/bin
 		internal/platform/wifi_attempt_test.c internal/platform/wifi_attempt.c
 	$(BUILD)/bin/wifi-attempt-test
 
-# Stock's 0-14 SOUND_PARAM volume levels and the migration off Leaf's old 0-10.
+# Stock's SOUND_PARAM volume levels (0-14 on LoongOS 1.3, AUDIO_ names on 0-16 on
+# 1.4) and the migrations off Leaf's old 0-10 and across a 1.4 OTA.
 .PHONY: stock-volume-test
 stock-volume-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/stock-volume-test \
@@ -1897,7 +1898,7 @@ help:
 	@echo "  make power-hard-cut-test  Force Off Hold value mapping and register rewrite"
 	@echo "  make wifi-ssid-test          Validate wpa_supplicant SSID conversions"
 	@echo "  make wifi-attempt-test       Validate when a Wi-Fi join attempt succeeds or fails"
-	@echo "  make stock-volume-test       Validate stock 0-14 volume levels and the 0-10 migration"
+	@echo "  make stock-volume-test       Validate stock volume levels (1.3 and 1.4) and migrations"
 	@echo "  make jawaka-retroarch-runner Build RetroArch app/config runner"
 	@echo "  make jawaka-update-runner    Build OTA install handoff runner"
 	@echo "  make jawaka-pakrat-smoke     Build local Pak Rat install/uninstall smoke helper"

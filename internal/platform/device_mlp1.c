@@ -84,6 +84,8 @@
 #define JW_MLP1_SOC_TEMP "/sys/class/thermal/thermal_zone0/temp"
 
 #define JW_MLP1_LOONG_DB_PATH "/oem/loong/loong.db"
+/* Read once to tell LoongOS 1.4's volume names and scale from 1.3's. */
+#define JW_MLP1_LOONG_SERVICE_PATH "/loong/loong_service"
 #define JW_MLP1_POWER_CFG "/oem/loong/record/config/loong_power.cfg"
 #define JW_MLP1_POWER_DAEMON "loong_power"
 
@@ -2120,32 +2122,72 @@ static const char *jw__mlp1_sound_output_key(jw_platform_audio_output output) {
     }
 }
 
-/* True once this device's SOUND_PARAM levels are known to be on stock's 0-14
-   scale (see stock_volume.h). Only a seen tag is cached; until Leaf's first
-   write sets it, each load asks again. */
-static bool s_mlp1_sound_levels_tagged = false;
-
-static bool jw__mlp1_sound_levels_tagged(void) {
-    if (!s_mlp1_sound_levels_tagged) {
-        char *value = jw__mlp1_read_system_config(JW_STOCK_VOLUME_SCALE_PARAM);
-        s_mlp1_sound_levels_tagged = value && atoi(value) == JW_STOCK_VOLUME_LEVELS;
+/* True once a system_config row (see stock_volume.h) holds want. Only a seen
+   tag is cached; until Leaf's first write sets it, each load asks again. */
+static bool jw__mlp1_sound_tag_is(const char *param, int want, bool *cache) {
+    if (!*cache) {
+        char *value = jw__mlp1_read_system_config(param);
+        *cache = value && atoi(value) == want;
         free(value);
     }
-    return s_mlp1_sound_levels_tagged;
+    return *cache;
 }
 
 /* Set after SOUND_PARAM is written, never before: a tag over levels still on
-   0-10 would read them as 0-14 (quieter). If this write fails, the exact
-   percents beside the levels still read first; only a stock session (which
-   drops them) before the next write retries the tag would read 0-14 as 0-10. */
-static void jw__mlp1_tag_sound_levels(void) {
-    if (s_mlp1_sound_levels_tagged) {
+   the old scale would misread them. If this write fails, the exact percents
+   beside the levels still read first; only a stock session (which drops them)
+   before the next write retries the tag would read the levels on the old
+   scale. */
+static void jw__mlp1_sound_tag_set(const char *param, int value, bool *cache) {
+    if (*cache) {
         return;
     }
-    char value[8];
-    snprintf(value, sizeof(value), "%d", JW_STOCK_VOLUME_LEVELS);
-    s_mlp1_sound_levels_tagged =
-        jw__mlp1_write_system_config(JW_STOCK_VOLUME_SCALE_PARAM, value) == 0;
+    char text[8];
+    snprintf(text, sizeof(text), "%d", value);
+    *cache = jw__mlp1_write_system_config(param, text) == 0;
+}
+
+static bool s_mlp1_sound_levels_tagged = false;
+static bool s_mlp1_sound_audio_levels_tagged = false;
+
+/* 1 or 0 once loong_service has been read; -1 until then. */
+static int s_mlp1_stock_audio_keys = -1;
+
+static bool jw__mlp1_stock_audio_keys(const cJSON *root) {
+    if (s_mlp1_stock_audio_keys < 0) {
+        int found = jw_stock_volume_service_has_audio_keys(JW_MLP1_LOONG_SERVICE_PATH);
+        if (found < 0) {
+            /* Unreadable: a SOUND_PARAM stock 1.4 has saved says as much. */
+            return jw_stock_volume_has_audio_keys(root);
+        }
+        s_mlp1_stock_audio_keys = found;
+    }
+    return s_mlp1_stock_audio_keys == 1;
+}
+
+static jw_stock_volume_scale jw__mlp1_sound_scale(const cJSON *root) {
+    jw_stock_volume_scale scale = {
+        .tagged = jw__mlp1_sound_tag_is(JW_STOCK_VOLUME_SCALE_PARAM,
+                                        JW_STOCK_VOLUME_LEVELS,
+                                        &s_mlp1_sound_levels_tagged),
+        .audio_keys = jw__mlp1_stock_audio_keys(root),
+    };
+    if (scale.audio_keys) {
+        scale.audio_tagged = jw__mlp1_sound_tag_is(JW_STOCK_VOLUME_AUDIO_SCALE_PARAM,
+                                                   JW_STOCK_VOLUME_AUDIO_LEVELS,
+                                                   &s_mlp1_sound_audio_levels_tagged);
+    }
+    return scale;
+}
+
+static void jw__mlp1_tag_sound_levels(const jw_stock_volume_scale *scale) {
+    jw__mlp1_sound_tag_set(JW_STOCK_VOLUME_SCALE_PARAM, JW_STOCK_VOLUME_LEVELS,
+                           &s_mlp1_sound_levels_tagged);
+    if (scale->audio_keys) {
+        jw__mlp1_sound_tag_set(JW_STOCK_VOLUME_AUDIO_SCALE_PARAM,
+                               JW_STOCK_VOLUME_AUDIO_LEVELS,
+                               &s_mlp1_sound_audio_levels_tagged);
+    }
 }
 
 static cJSON *jw__mlp1_load_sound_param(void) {
@@ -2161,7 +2203,10 @@ static cJSON *jw__mlp1_load_sound_param(void) {
     }
 
     (void)jw__json_ensure_number(root, "bgm", 0);
-    (void)jw__json_ensure_number(root, "sysVolume", JW_STOCK_VOLUME_LEVELS);
+    (void)jw__json_ensure_number(root, "sysVolume",
+                                 jw__mlp1_stock_audio_keys(root)
+                                     ? JW_STOCK_VOLUME_AUDIO_LEVELS
+                                     : JW_STOCK_VOLUME_LEVELS);
     (void)jw__json_ensure_number(root, "toneVolume", 10);
     /* Outputs without a level are left out: jw_stock_volume_get reads them as
        100%, and adding one here (a "USB" key above all) would change how the
@@ -2209,11 +2254,11 @@ static void jw__mlp1_get_audio_volumes(int out[JW_PLATFORM_AUDIO_OUTPUT_COUNT]) 
     if (!root) {
         return;
     }
-    bool tagged = jw__mlp1_sound_levels_tagged();
+    jw_stock_volume_scale scale = jw__mlp1_sound_scale(root);
     for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
         const char *key = jw__mlp1_sound_output_key((jw_platform_audio_output)i);
         if (key) {
-            out[i] = jw_stock_volume_get(root, key, tagged);
+            out[i] = jw_stock_volume_get(root, key, &scale);
         }
     }
     cJSON_Delete(root);
@@ -2236,12 +2281,13 @@ static void jw__mlp1_sync_sound_volume(jw_platform_audio_output output, int perc
             keys[key_count++] = k;
         }
     }
-    /* Every write moves all outputs to stock's 0-14 scale, so stock reads Leaf's
-       100% as its own maximum. */
-    if (jw_stock_volume_put(root, keys, key_count, key, percent,
-                            jw__mlp1_sound_levels_tagged()) == 0 &&
+    /* Every write moves all outputs to stock's scale (0-14, and 0-16 under the
+       AUDIO_ names on LoongOS 1.4), so stock reads Leaf's 100% as its own
+       maximum. */
+    jw_stock_volume_scale scale = jw__mlp1_sound_scale(root);
+    if (jw_stock_volume_put(root, keys, key_count, key, percent, &scale) == 0 &&
         jw__mlp1_write_sound_param(root) == 0) {
-        jw__mlp1_tag_sound_levels();
+        jw__mlp1_tag_sound_levels(&scale);
     }
     cJSON_Delete(root);
 }
