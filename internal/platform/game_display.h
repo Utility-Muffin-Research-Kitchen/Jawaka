@@ -62,6 +62,34 @@ static inline bool jw_game_display_needs_restart(bool compositor_stopped,
     return now_w != before_w || now_h != before_h;
 }
 
+/* The TV a standalone game was handed has gone: the cable reads disconnected
+   for JW_GAME_DISPLAY_TV_LOST_POLLS polls in a row while a game that started on
+   the TV (`handed_mode` 1, 2, or -1 for a live TV Leaf did not set up) runs.
+
+   The game cannot follow the output. Weston, run single-head on HDMI-A-1, drops
+   the head itself on a real pull and lights the panel, but an emulator that
+   drives the display (mupen64plus beside Weston, Flycast and PPSSPP after the
+   direct-DRM handoff) keeps its landscape TV picture, so the panel shows it
+   turned 90 degrees, or nothing at all. jawakad closes it the way the in-game
+   menu does, and the after-game restore brings the launcher back on the panel.
+   A TV hidden for the game reads disconnected because Leaf forced it, so it
+   never counts. A connected read, or an unknown one (< 0), resets the count.
+
+   Returns the updated count of disconnected polls in a row. */
+#define JW_GAME_DISPLAY_TV_LOST_POLLS 2
+
+static inline int jw_game_display_tv_lost_polls(int handed_mode, bool external_hidden,
+                                                int connected_now, int misses) {
+    if (handed_mode == JW_GAME_DISPLAY_PANEL || external_hidden || connected_now != 0) {
+        return 0;
+    }
+    return misses < JW_GAME_DISPLAY_TV_LOST_POLLS ? misses + 1 : misses;
+}
+
+static inline bool jw_game_display_tv_lost(int misses) {
+    return misses >= JW_GAME_DISPLAY_TV_LOST_POLLS;
+}
+
 /* The screen a standalone game draws on, for every standalone child:
 
      LEAF_DISPLAY_OUTPUT     panel | hdmi

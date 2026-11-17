@@ -24,6 +24,7 @@
 #include "internal/platform/external_input_monitor.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
+#include "internal/platform/game_display.h"
 #include "internal/platform/input_proxy.h"
 #include "internal/i18n/i18n.h"
 #include "internal/platform/input_shortcuts.h"
@@ -596,6 +597,10 @@ typedef struct {
     bool      lut_sync_external;          /* the output to swap for: true = external display */
     long long hdmi_revert_deadline_ms;    /* 0 = none; auto-revert 1080p120 if not kept */
     int       hdmi_was_120;               /* live-1080p120 edge tracker */
+    int       hdmi_tv_lost_polls;         /* disconnected polls in a row while a
+                                             standalone game has the TV */
+    long long hdmi_tv_lost_quit_ms;       /* 0 = none; when the TV-lost quit
+                                             was sent to the standalone game */
     jw_platform_perf_profile perf_global_profile;
     jw_platform_perf_profile perf_active_profile;
     jw_platform_perf_profile perf_session_profile;
@@ -8962,11 +8967,12 @@ static void jw__input_brightness_delta(void *userdata, int delta_percent) {
     }
 }
 
-static bool jw__standalone_quit(jw_daemon_state *state, bool escalate) {
+static bool jw__standalone_quit(jw_daemon_state *state, bool escalate,
+                                const char *reason) {
     pid_t pid = state->retroarch_session.pid;
     long long now = jw__monotonic_ms();
     if (state->standalone_quit_request_ms == 0) {
-        jw_log_info("menu tap: quitting standalone emulator pid=%d", (int)pid);
+        jw_log_info("%s: quitting standalone emulator pid=%d", reason, (int)pid);
         int rc = state->child_pid == pid
                      ? jw__signal_tracked_game_group(state, SIGTERM)
                      : kill(pid, SIGTERM);
@@ -9011,7 +9017,7 @@ static bool jw__confirm_content_quit(jw_daemon_state *state, bool escalate) {
         jw_log_warn("menu tap: exit prompt unavailable; quitting content-pak core id=%s pid=%d",
                     state->retroarch_session.core_id, (int)pid);
     }
-    return jw__standalone_quit(state, escalate);
+    return jw__standalone_quit(state, escalate, "menu tap");
 }
 
 static bool jw__input_menu_tap(void *userdata) {
@@ -9098,7 +9104,7 @@ static bool jw__input_menu_tap(void *userdata) {
             return false;
         }
 
-        return jw__standalone_quit(state, true);
+        return jw__standalone_quit(state, true, "menu tap");
     }
 
     if (!jw__has_retroarch_session(state)) {
@@ -11819,6 +11825,51 @@ static int jw__hdmi_live_is_1080p120(jw_daemon_state *state) {
     return width == 1920 && height == 1080 && hz >= 119;
 }
 
+/* A standalone game that lost its TV gets this long to save and exit after
+   SIGTERM before it is killed. Longer than the menu-tap quit's 2 s: nobody is
+   waiting on a button, and a memory card or SRAM flush must not be cut short. */
+#define JW_HDMI_TV_LOST_GRACE_MS 8000
+
+/* The cable was pulled under a standalone game that was drawing on the TV (see
+   jw_game_display_tv_lost_polls). Close the game as the in-game menu would; the
+   after-game restore (jw__game_display_end) then rebuilds Weston on the panel,
+   where the launcher comes back upright. Called from the HDMI poll while a
+   standalone game owns the display. */
+static void jw__tick_standalone_tv_lost(jw_daemon_state *state, long long now) {
+    if (!jw__has_standalone_session(state) || !state->game_display.active ||
+        state->shutdown_requested || g_shutdown_requested) {
+        state->hdmi_tv_lost_polls = 0;
+        state->hdmi_tv_lost_quit_ms = 0;
+        return;
+    }
+    if (state->hdmi_tv_lost_quit_ms != 0) {
+        if (now - state->hdmi_tv_lost_quit_ms >= JW_HDMI_TV_LOST_GRACE_MS) {
+            jw_log_warn("HDMI hotplug: standalone game still running %d ms after the TV was "
+                        "lost; forcing it pid=%d", JW_HDMI_TV_LOST_GRACE_MS,
+                        (int)state->retroarch_session.pid);
+            if (state->standalone_quit_request_ms == 0) {
+                /* A Menu tap forwarded to the emulator in between cleared it. */
+                state->standalone_quit_request_ms = state->hdmi_tv_lost_quit_ms;
+            }
+            jw__standalone_quit(state, true, "HDMI hotplug");
+            state->hdmi_tv_lost_quit_ms = now;
+        }
+        return;
+    }
+    const jw_platform_game_display *gd = &state->game_display;
+    state->hdmi_tv_lost_polls = jw_game_display_tv_lost_polls(
+        gd->mode, gd->external_hidden, jw__hdmi_connected_now(), state->hdmi_tv_lost_polls);
+    if (!jw_game_display_tv_lost(state->hdmi_tv_lost_polls)) {
+        return;
+    }
+    jw_log_info("HDMI hotplug: disconnected under a standalone game on the TV "
+                "(core_id=%s pid=%d); closing it so the panel can take over",
+                state->retroarch_session.core_id, (int)state->retroarch_session.pid);
+    state->standalone_quit_request_ms = 0;
+    jw__standalone_quit(state, false, "HDMI hotplug");
+    state->hdmi_tv_lost_quit_ms = now;
+}
+
 static void jw__tick_hdmi(jw_daemon_state *state) {
     long long now = jw__monotonic_ms();
     if (now < state->hdmi_next_poll_ms) {
@@ -11843,10 +11894,14 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
        output is put back for the cable as it is then once the game exits
        (jw__game_display_end). Acting now restarted Weston under the game,
        blanked it, and left a second Weston behind at exit. A hidden TV also
-       reads disconnected here. */
+       reads disconnected here. The one exception is the TV the game itself
+       was drawing on going away: the game is closed then. */
     if (jw__standalone_owns_display(state)) {
+        jw__tick_standalone_tv_lost(state, now);
         return;
     }
+    state->hdmi_tv_lost_polls = 0;
+    state->hdmi_tv_lost_quit_ms = 0;
 
     /* ── Auto-revert safety for 1080p120 ──
        A 1080p120 switch can black out a TV/cable that can't carry the 297MHz signal,
