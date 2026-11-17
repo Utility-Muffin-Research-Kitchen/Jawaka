@@ -19,7 +19,7 @@ jobs:
         with:
           repository: Utility-Muffin-Research-Kitchen/Catastrophe
           # Font-size viewport checks need the merged font-path self-copy fix (#18).
-          ref: cb2bdffa2c6b51b2fdb49262bc1efeddf87e0db1
+          ref: a32c24871f0713e9fc85f067444386761fba669e
           path: Catastrophe
       - name: Install native renderer dependencies
         run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libsqlite3-dev libcurl4-openssl-dev
