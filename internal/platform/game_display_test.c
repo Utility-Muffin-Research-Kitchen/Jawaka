@@ -113,6 +113,33 @@ static void check_decisions(void) {
     CHECK(jw_game_display_needs_restart(false, 1, 1, 1280, 720, 0, 0));
     /* Nothing known from before: nothing to compare. */
     CHECK(!jw_game_display_needs_restart(false, 0, 0, 0, 0, 1024, 768));
+
+    /* The TV a game started on is lost after two disconnected polls in a row. */
+    int misses = 0;
+    misses = jw_game_display_tv_lost_polls(1, false, 0, misses);
+    CHECK(misses == 1 && !jw_game_display_tv_lost(misses));
+    misses = jw_game_display_tv_lost_polls(1, false, 0, misses);
+    CHECK(jw_game_display_tv_lost(misses));
+    /* It stays lost (the count does not grow without bound). */
+    misses = jw_game_display_tv_lost_polls(1, false, 0, misses);
+    CHECK(misses == JW_GAME_DISPLAY_TV_LOST_POLLS && jw_game_display_tv_lost(misses));
+    /* Stretch, and a live TV Leaf did not set up, count the same. */
+    CHECK(jw_game_display_tv_lost_polls(2, false, 0, 1) == 2);
+    CHECK(jw_game_display_tv_lost_polls(-1, false, 0, 1) == 2);
+    /* A single glitch is not a pull: a connected read in between resets it. */
+    misses = jw_game_display_tv_lost_polls(1, false, 0, 0);
+    misses = jw_game_display_tv_lost_polls(1, false, 1, misses);
+    CHECK(misses == 0);
+    misses = jw_game_display_tv_lost_polls(1, false, 0, misses);
+    CHECK(!jw_game_display_tv_lost(misses));
+    /* An unknown read resets too. */
+    CHECK(jw_game_display_tv_lost_polls(1, false, -1, 1) == 0);
+    /* A game on the panel never loses a TV, plugged or pulled. */
+    CHECK(jw_game_display_tv_lost_polls(0, false, 0, 0) == 0);
+    CHECK(jw_game_display_tv_lost_polls(0, false, 0, 5) == 0);
+    /* A TV Leaf hid for the game reads disconnected by its own force. */
+    CHECK(jw_game_display_tv_lost_polls(1, true, 0, 0) == 0);
+    CHECK(jw_game_display_tv_lost_polls(0, true, 0, 1) == 0);
 }
 
 /* The LEAF_DISPLAY_* values a standalone game gets. */
