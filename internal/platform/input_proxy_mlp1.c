@@ -24,7 +24,23 @@
 #include <time.h>
 #include <unistd.h>
 
+/* The built-in devices, by evdev name, per target OS.
+     stock: the vendor "Loong Gamepad" module, which also carries the volume
+            keys, and the PMIC's power key.
+     xylem: ROCKNIX's out-of-tree rocknix-joypad driver, named by its
+            device-tree "joypad-name" ("retrogame_joypad" in Green Genes'
+            rk3566-miniloong-rocknix.dtsi; the driver's own default is
+            "rocknix-joypad"), the same PMIC power key, and the volume keys on
+            their own gpio-keys device. JAWAKA_XYLEM_PAD_NAME overrides the
+            pad's name. */
+#ifdef JW_OS_XYLEM
+#define JW_MLP1_XYLEM_PAD_NAME_DEFAULT "retrogame_joypad"
+#define JW_MLP1_XYLEM_VOLKEYS_NAME     "gpio-keys-vol"   /* KEY_VOLUMEUP/DOWN */
+static const char *jw__xylem_pad_name(void);
+#define JW_MLP1_INPUT_NAME jw__xylem_pad_name()
+#else
 #define JW_MLP1_INPUT_NAME "Loong Gamepad"
+#endif
 #define JW_MLP1_PWRKEY_NAME "rk805 pwrkey"   /* physical power button (KEY_POWER) */
 #define JW_MLP1_BRIGHTNESS_REPEAT_MS 120u
 #define JW_MLP1_MENU_TAP_MS 80u
@@ -151,6 +167,13 @@ typedef struct {
     bool            call_pending;
     bool            call_taken;
     bool            call_result;
+#ifdef JW_OS_XYLEM
+    /* The volume keys' own device (gpio-keys-vol), grabbed and read beside
+       the pad and merged into the same stream, so Volume and Menu+Volume
+       behave as stock's in-pad keys do. -1 when absent. */
+    int             vol_fd;
+    bool            vol_fd_failed;
+#endif
 } jw_mlp1_input_proxy_data;
 
 /* Stamped on each proxy at init; see jw_input_proxy_tick(). */
@@ -350,6 +373,30 @@ static int jw__open_power_key(void) {
     }
     return -1;
 }
+
+#ifdef JW_OS_XYLEM
+static const char *jw__xylem_pad_name(void) {
+    const char *name = getenv("JAWAKA_XYLEM_PAD_NAME");
+    return name && name[0] ? name : JW_MLP1_XYLEM_PAD_NAME_DEFAULT;
+}
+
+/* The volume keys' device, or -1. */
+static int jw__xylem_open_volume_keys(void) {
+    for (int i = 0; i < 32; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/input/event%d", i);
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+        if (jw__event_name_matches(fd, JW_MLP1_XYLEM_VOLKEYS_NAME)) {
+            return fd;
+        }
+        close(fd);
+    }
+    return -1;
+}
+#endif
 
 static int jw__uinput_copy_capabilities(int input_fd, int uinput_fd,
                                         const jw_stick_calibration *cal) {
@@ -737,6 +784,18 @@ static void jw__read_physical_state(jw_mlp1_input_proxy_data *data) {
         else
             data->power_held = jw__bit_is_set(keys, KEY_POWER);
     }
+#ifdef JW_OS_XYLEM
+    /* The pad's EVIOCGKEY above cleared the volume bits it does not carry.
+       A failed read leaves them clear rather than invalidating the pad's
+       state: losing the volume keys must not cost the Menu escape. */
+    if (data->vol_fd >= 0 && !data->vol_fd_failed) {
+        unsigned char keys[(KEY_MAX + 8) / 8] = {0};
+        if (ioctl(data->vol_fd, EVIOCGKEY(sizeof(keys)), keys) >= 0) {
+            if (jw__bit_is_set(keys, KEY_VOLUMEUP)) jw__bit_set(data->physical_keys, KEY_VOLUMEUP);
+            if (jw__bit_is_set(keys, KEY_VOLUMEDOWN)) jw__bit_set(data->physical_keys, KEY_VOLUMEDOWN);
+        }
+    }
+#endif
 }
 
 static void jw__menu_end(jw_input_proxy *proxy) {
@@ -1210,6 +1269,9 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
     data->input_fd = -1;
     data->uinput_fd = -1;
     data->power_fd = -1;
+#ifdef JW_OS_XYLEM
+    data->vol_fd = -1;
+#endif
     data->ff_quit_pipe[0] = data->ff_quit_pipe[1] = -1;
     data->io_kick_pipe[0] = data->io_kick_pipe[1] = -1;
     data->main_wake_pipe[0] = data->main_wake_pipe[1] = -1;
@@ -1227,7 +1289,12 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
 
     data->input_fd = jw__open_loong_gamepad(data->physical_path, sizeof(data->physical_path));
     if (data->input_fd < 0) {
+#ifdef JW_OS_XYLEM
+        jw_log_warn("input proxy: gamepad \"%s\" not found (JAWAKA_XYLEM_PAD_NAME "
+                    "sets the name)", JW_MLP1_INPUT_NAME);
+#else
         jw_log_warn("input proxy: Loong Gamepad not found");
+#endif
         free(data);
         return 0;
     }
@@ -1299,6 +1366,28 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
                 data->power_grabbed ? "grabbed (jawakad owns it)"
                                     : (data->power_fd >= 0 ? "open (grab failed)"
                                                            : "not found"));
+#ifdef JW_OS_XYLEM
+    /* The volume keys live on their own device here. Grabbed in watch-only
+       mode too: jawakad owns the volume, and nothing else should act on the
+       keys (stock's are grabbed with the pad). Kernel event times in the
+       pad's clock let jw__process merge the two streams in order, which is
+       what keeps Menu+Volume a brightness chord. */
+    data->vol_fd = jw__xylem_open_volume_keys();
+    if (data->vol_fd >= 0) {
+        int vol_clock = CLOCK_MONOTONIC;
+        bool vol_grabbed = ioctl(data->vol_fd, EVIOCGRAB, 1) == 0;
+        if (ioctl(data->vol_fd, EVIOCSCLOCKID, &vol_clock) != 0) {
+            jw_log_warn("input proxy: EVIOCSCLOCKID failed on the volume keys; "
+                        "they may sort out of order against the pad");
+        }
+        jw_log_info("input proxy: volume keys %s (%s)",
+                    vol_grabbed ? "grabbed" : "open (grab failed)",
+                    JW_MLP1_XYLEM_VOLKEYS_NAME);
+    } else {
+        jw_log_warn("input proxy: volume keys (%s) not found",
+                    JW_MLP1_XYLEM_VOLKEYS_NAME);
+    }
+#endif
 
     proxy->backend_data = data;
     proxy->enabled = true;
@@ -1468,6 +1557,37 @@ static void jw__handle_power(jw_input_proxy *proxy, const struct input_event *ev
     }
 }
 
+#ifdef JW_OS_XYLEM
+/* A key from the volume device, into the path stock's in-pad volume keys take
+   (jw__handle_key: Volume, or Menu+Volume for brightness). Autorepeat is
+   dropped: gpio-keys-vol repeats a held key, stock's keys never repeat, and
+   every step runs pactl. */
+static void jw__xylem_handle_volume(jw_input_proxy *proxy, const struct input_event *ev) {
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    if (ev->type != EV_KEY || !jw__volume_key(ev->code) ||
+        (ev->value != 0 && ev->value != 1)) {
+        return;
+    }
+    if (ev->value > 0) jw__bit_set(data->physical_keys, ev->code);
+    else jw__bit_clear(data->physical_keys, ev->code);
+    data->last_activity_ms = jw__monotonic_ms();
+    if (data->swallow) {
+        /* Same as a pad key: a screen-off standby wakes on it. */
+        if (data->io_thread_running)
+            jw__pipe_kick(data->main_wake_pipe[1]);
+        return;
+    }
+    jw__handle_key(proxy, ev);
+}
+
+/* True when a sorts strictly after b by kernel event time. */
+static bool jw__xylem_event_after(const struct input_event *a, const struct input_event *b) {
+    return a->input_event_sec > b->input_event_sec ||
+           (a->input_event_sec == b->input_event_sec &&
+            a->input_event_usec > b->input_event_usec);
+}
+#endif
+
 static bool jw__read_input_edge(jw_input_proxy *proxy, int fd, struct input_event *ev) {
     if (fd < 0) return false;
     ssize_t got;
@@ -1492,6 +1612,13 @@ static void jw__process(jw_input_proxy *proxy) {
        separate Power press; draining it last could leak a queued Menu+Power tap. */
     struct input_event input, power;
     bool have_input = false, have_power = false;
+#ifdef JW_OS_XYLEM
+    /* xylem's third stream, the volume keys: it goes first whenever it is
+       not later than both others, so a Menu hold on the pad and a volume
+       press on its own device keep their real order. */
+    struct input_event vol;
+    bool have_vol = false;
+#endif
     uint64_t generation = data->input_generation;
     for (;;) {
         if (data->io_quit) break;   /* shutting down: leave the rest unread */
@@ -1499,13 +1626,28 @@ static void jw__process(jw_input_proxy *proxy) {
             /* Either stream may already have a prefetched edge whose release
                the daemon flushed while a callback was waiting. */
             have_input = have_power = false;
+#ifdef JW_OS_XYLEM
+            have_vol = false;
+#endif
             generation = data->input_generation;
         }
         if (!have_input && !data->input_fd_failed)
             have_input = jw__read_input_edge(proxy, data->input_fd, &input);
         if (!have_power && !data->power_fd_failed)
             have_power = jw__read_input_edge(proxy, data->power_fd, &power);
+#ifdef JW_OS_XYLEM
+        if (!have_vol && !data->vol_fd_failed)
+            have_vol = jw__read_input_edge(proxy, data->vol_fd, &vol);
+#endif
         if (generation != data->input_generation) continue;
+#ifdef JW_OS_XYLEM
+        if (have_vol && (!have_input || !jw__xylem_event_after(&vol, &input)) &&
+            (!have_power || !jw__xylem_event_after(&vol, &power))) {
+            jw__xylem_handle_volume(proxy, &vol);
+            have_vol = false;
+            continue;
+        }
+#endif
         if (!have_input && !have_power) break;
         bool power_first = !have_input || (have_power &&
             (power.input_event_sec < input.input_event_sec ||
@@ -1772,6 +1914,14 @@ static void jw__flush(jw_input_proxy *proxy) {
             /* discard */
         }
     }
+#ifdef JW_OS_XYLEM
+    if (data->vol_fd >= 0) {
+        struct input_event vev;
+        while (read(data->vol_fd, &vev, sizeof(vev)) == (ssize_t)sizeof(vev)) {
+            /* discard */
+        }
+    }
+#endif
     data->power_edge_count = 0;   /* drop already-queued edges too */
 
     /* The drain above just discarded whatever releases were queued, which
@@ -1854,6 +2004,14 @@ static void jw__io_check_resume(jw_input_proxy *proxy) {
     }
 }
 
+/* The forwarding thread's poll set: pad, power key, kick pipe, and on xylem
+   the volume keys last. */
+#ifdef JW_OS_XYLEM
+#define JW__IO_POLL_FDS 4   /* + the volume keys, last */
+#else
+#define JW__IO_POLL_FDS 3
+#endif
+
 static void *jw__io_thread_main(void *arg) {
     jw_input_proxy *proxy = (jw_input_proxy *)arg;
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
@@ -1862,14 +2020,17 @@ static void *jw__io_thread_main(void *arg) {
        pthread_create, so data->io_thread is set by the time this runs. */
     pthread_mutex_lock(&data->lock);
     while (!data->io_quit) {
-        struct pollfd fds[3] = {
+        struct pollfd fds[JW__IO_POLL_FDS] = {
             { data->input_fd_failed ? -1 : data->input_fd, POLLIN, 0 },
             { data->power_fd_failed ? -1 : data->power_fd, POLLIN, 0 },
             { data->io_kick_pipe[0], POLLIN, 0 },
+#ifdef JW_OS_XYLEM
+            { data->vol_fd_failed ? -1 : data->vol_fd, POLLIN, 0 },
+#endif
         };
         int timeout = jw__io_timeout_ms(proxy);
         pthread_mutex_unlock(&data->lock);
-        int rc = poll(fds, 3, timeout);
+        int rc = poll(fds, JW__IO_POLL_FDS, timeout);
         int poll_errno = errno;
         pthread_mutex_lock(&data->lock);
         if (data->io_quit) {
@@ -1901,6 +2062,13 @@ static void *jw__io_thread_main(void *arg) {
                         (unsigned)fds[1].revents);
             data->power_fd_failed = true;
         }
+#ifdef JW_OS_XYLEM
+        if (fds[3].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            jw_log_warn("input proxy: volume keys fd error (revents=0x%x); no longer reading it",
+                        (unsigned)fds[3].revents);
+            data->vol_fd_failed = true;
+        }
+#endif
         jw__io_check_resume(proxy);
         jw__process(proxy);
     }
@@ -2018,6 +2186,12 @@ void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
     if (data->power_fd >= 0) {
         close(data->power_fd);
     }
+#ifdef JW_OS_XYLEM
+    if (data->vol_fd >= 0) {
+        ioctl(data->vol_fd, EVIOCGRAB, 0);
+        close(data->vol_fd);
+    }
+#endif
     free(data);
     memset(proxy, 0, sizeof(*proxy));
 }

@@ -147,6 +147,9 @@ static void reset_proxy(bool watch_only) {
     g_data.input_evdev_clock = true;
     g_data.physical_state_valid = true;
     g_data.power_fd = -1;
+#ifdef JW_OS_XYLEM
+    g_data.vol_fd = -1;   /* not fd 0: the volume device is never under test */
+#endif
     g_proxy.backend_data = &g_data;
     g_proxy.enabled = true;
     g_proxy.shortcut = test_dispatch;
