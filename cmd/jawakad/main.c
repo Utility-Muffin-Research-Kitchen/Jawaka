@@ -18330,6 +18330,142 @@ static void jw__read_boot_id(char *out, size_t out_size) {
     fclose(fp);
 }
 
+#ifdef JW_OS_XYLEM
+#include "internal/platform/power_supply_sysfs.h"
+
+/* ── Low battery (OS=xylem) ──────────────────────────────────────────────────
+   On stock, loong_power watches the gauge, and its low-battery power-off
+   reaches jawakad through the handoff shim as a poweroff request with
+   reason=low-battery. xylem has no loong_power, so jawakad watches the gauge
+   itself and takes that same path, jw__request_power_transition with the same
+   reason: the save before shutdown, the service stop and the supervisor's
+   power handshake all run as they do for the shim's request.
+
+   While the battery reports Discharging and its charge is at or under
+   JAWAKA_LOW_BATTERY_PERCENT (0-100, default 3; 0 turns the power-off off) on
+   two samples JW_LOW_BATTERY_CONFIRM_MS apart, jawakad powers off. Warnings
+   come at 10% and 5%, or at 7 and 2 points above the threshold when those are
+   higher, so a test threshold above the current charge still warns before the
+   power-off. A charge already under both says only the lower one.
+   TODO: the warnings are only logged. Neither jawakad nor the launcher has a
+   low-battery notice yet; show them on the OSD once it has one. */
+#define JW_LOW_BATTERY_DEFAULT_PERCENT 3
+#define JW_LOW_BATTERY_POLL_MS         30000LL
+#define JW_LOW_BATTERY_POLL_LOW_MS     10000LL   /* at or under the first warning */
+#define JW_LOW_BATTERY_CONFIRM_MS      5000LL
+#define JW_LOW_BATTERY_WARNINGS        2
+
+typedef struct {
+    bool init;
+    int threshold;
+    int warn_at[JW_LOW_BATTERY_WARNINGS];   /* highest first */
+    bool warned[JW_LOW_BATTERY_WARNINGS];
+    int low_samples;                        /* in a row, at or under the threshold */
+    long long next_ms;
+    long long seen_resume_ms;
+    char battery_dir[JW_POWER_SUPPLY_PATH_MAX];
+} jw_low_battery_monitor;
+
+static int jw__low_battery_threshold(void) {
+    const char *value = getenv("JAWAKA_LOW_BATTERY_PERCENT");
+    if (!value || !value[0]) {
+        return JW_LOW_BATTERY_DEFAULT_PERCENT;
+    }
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || parsed < 0 || parsed > 100) {
+        jw_log_warn("low battery: ignoring JAWAKA_LOW_BATTERY_PERCENT=%s; using %d%%",
+                    value, JW_LOW_BATTERY_DEFAULT_PERCENT);
+        return JW_LOW_BATTERY_DEFAULT_PERCENT;
+    }
+    return (int)parsed;
+}
+
+static void jw__tick_low_battery(jw_daemon_state *state) {
+    static jw_low_battery_monitor mon;
+    if (!state || state->power_transition_requested || state->shutdown_requested) {
+        return;
+    }
+    long long now = jw__monotonic_ms();
+    if (!mon.init) {
+        mon.init = true;
+        mon.threshold = jw__low_battery_threshold();
+        mon.warn_at[0] = mon.threshold + 7 > 10 ? mon.threshold + 7 : 10;
+        mon.warn_at[1] = mon.threshold + 2 > 5 ? mon.threshold + 2 : 5;
+        mon.next_ms = now + JW_LOW_BATTERY_CONFIRM_MS;
+        mon.seen_resume_ms = state->last_resume_ms;
+        if (mon.threshold > 0) {
+            jw_log_info("low battery: power-off at %d%% while discharging; "
+                        "warnings at %d%% and %d%%",
+                        mon.threshold, mon.warn_at[0], mon.warn_at[1]);
+        } else {
+            jw_log_info("low battery: power-off disabled; warnings at %d%% and %d%%",
+                        mon.warn_at[0], mon.warn_at[1]);
+        }
+    }
+    /* The charge drops while asleep: look at once after a wake. */
+    if (state->last_resume_ms != mon.seen_resume_ms) {
+        mon.seen_resume_ms = state->last_resume_ms;
+        mon.next_ms = now;
+    }
+    if (now < mon.next_ms) {
+        return;
+    }
+
+    int capacity = jw_power_supply_battery_capacity(mon.battery_dir);
+    char status[32] = "";
+    (void)jw_power_supply_battery_status(mon.battery_dir, status, sizeof(status));
+    /* No status attribute: fall back on the charger inputs. */
+    bool discharging = status[0] ? strcmp(status, "Discharging") == 0
+                                 : jw_power_supply_charger_online() == 0;
+    mon.next_ms = now + (capacity >= 0 && capacity <= mon.warn_at[0]
+                             ? JW_LOW_BATTERY_POLL_LOW_MS : JW_LOW_BATTERY_POLL_MS);
+    if (!discharging) {
+        /* On the charger: the next discharge warns again. */
+        memset(mon.warned, 0, sizeof(mon.warned));
+        mon.low_samples = 0;
+        return;
+    }
+    if (capacity < 0) {
+        mon.low_samples = 0;
+        return;
+    }
+
+    /* The lowest level crossed is the one worth saying; the ones above it
+       are spent with it. */
+    for (int i = JW_LOW_BATTERY_WARNINGS - 1; i >= 0; i--) {
+        if (capacity <= mon.warn_at[i] && !mon.warned[i]) {
+            jw_log_warn("low battery: %d%% left (warning at %d%%)", capacity, mon.warn_at[i]);
+            for (int j = 0; j <= i; j++) {
+                mon.warned[j] = true;
+            }
+            break;
+        }
+    }
+
+    if (mon.threshold <= 0 || capacity > mon.threshold) {
+        mon.low_samples = 0;
+        return;
+    }
+    if (++mon.low_samples < 2) {
+        /* One low reading can be the gauge settling (just after boot, or a
+           load spike); confirm it before acting. */
+        jw_log_warn("low battery: %d%% is at or under %d%%; powering off if it holds",
+                    capacity, mon.threshold);
+        mon.next_ms = now + JW_LOW_BATTERY_CONFIRM_MS;
+        return;
+    }
+    jw_log_warn("low battery: %d%% while discharging (threshold %d%%); powering off",
+                capacity, mon.threshold);
+    if (!jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF, "low-battery")) {
+        jw_log_error("low battery: power-off request refused; trying again in %lld s",
+                     JW_LOW_BATTERY_POLL_LOW_MS / 1000);
+        mon.low_samples = 0;
+        mon.next_ms = now + JW_LOW_BATTERY_POLL_LOW_MS;
+    }
+}
+#endif
+
 int main(int argc, char *argv[]) {
     signal(SIGINT, jw__handle_signal);
     signal(SIGTERM, jw__handle_signal);
@@ -18839,6 +18975,9 @@ int main(int argc, char *argv[]) {
         jw__tick_rumble_reclaim(&state);
         jw__tick_suspend_inhibitors(&state);
         jw__tick_auto_sleep(&state);
+#ifdef JW_OS_XYLEM
+        jw__tick_low_battery(&state);   /* loong_power's job on stock */
+#endif
         jw__tick_hdmi(&state);
         jw__tick_storage_health(&state);
         if (jw_platform_storage_tick(&state.platform)) {
