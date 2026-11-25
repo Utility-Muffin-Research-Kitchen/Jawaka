@@ -19,6 +19,9 @@
  *   off, static, and battery write only when the frame changes (steady.h).
  *
  * Standalone + MLP1-specific (like device_mlp1.c): pure libc + sysfs, no deps.
+ *
+ * OS=xylem has no loong_light and no mmrgball: the same effects go out to the
+ * ring's mainline LED-class devices instead (xylem.h).
  */
 #include <dirent.h>
 #include <signal.h>
@@ -29,6 +32,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef JW_OS_XYLEM
+/* OS=xylem: LED-class output, no loong_light, battery by type. Before
+   battery.h, which takes its capacity path from it. */
+#include "xylem.h"
+#endif
 #include "battery.h"
 #include "steady.h"
 
@@ -67,6 +75,7 @@ static const int kLeftChain[4]  = { 6, 5, 4, 3 };  /* bottom → top, left side 
 static volatile sig_atomic_t g_running = 1;
 static pid_t g_daemon_pid = -1;
 
+#ifndef JW_OS_XYLEM   /* xylem has no loong_light to freeze */
 static pid_t jw__find_daemon(const char *name) {
     DIR *proc = opendir("/proc");
     if (!proc) return -1;
@@ -89,6 +98,7 @@ static pid_t jw__find_daemon(const char *name) {
     closedir(proc);
     return found;
 }
+#endif
 
 static void jw__thaw(void) {
     if (g_daemon_pid > 0) kill(g_daemon_pid, SIGCONT);
@@ -106,6 +116,10 @@ static void jw__on_fatal(int sig) {
 }
 
 static void jw__write_frame(const uint32_t argb[JW_LED_COUNT]) {
+#ifdef JW_OS_XYLEM
+    jw_ledd_class_write(argb, JW_LED_COUNT);
+    return;
+#endif
     FILE *fp = fopen(JW_LED_MMRGBALL, "w");
     if (!fp) return;
     for (int i = 0; i < JW_LED_COUNT; i++)
@@ -370,8 +384,13 @@ int main(int argc, char **argv) {
     signal(SIGFPE,  jw__on_fatal);
     signal(SIGBUS,  jw__on_fatal);
 
+#ifdef JW_OS_XYLEM
+    /* Nothing to freeze: the ring is the helper's from the start. */
+    jw_ledd_class_open();
+#else
     g_daemon_pid = jw__find_daemon(JW_LED_DAEMON);
     if (g_daemon_pid > 0) kill(g_daemon_pid, SIGSTOP);
+#endif
 
     if (strcmp(effect, "off") == 0 || strcmp(effect, "static") == 0 ||
         strcmp(effect, "battery") == 0) {

@@ -1734,8 +1734,10 @@ $(BUILD)/bin/jawaka-inhibitctl: $(INHIBIT_CTL_SRCS) | $(BUILD)/bin
 ifeq ($(PLATFORM),mlp1)
 ifeq ($(OS),xylem)
 MLP1_MANIFEST_OS_LINE := printf '  "os": "%s",\n' "$(OS)";
+# ledd's xylem side: the LED-class output and the battery found by type.
+LEDD_OS_DEPS := cmd/jawaka-ledd/xylem.h internal/platform/power_supply_sysfs.h
 endif
-$(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c cmd/jawaka-ledd/battery.h cmd/jawaka-ledd/steady.h | $(BUILD)/bin
+$(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c cmd/jawaka-ledd/battery.h cmd/jawaka-ledd/steady.h $(LEDD_OS_DEPS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ cmd/jawaka-ledd/main.c
 
 $(BUILD)/build-manifest.json: $(ALL_BINS) FORCE

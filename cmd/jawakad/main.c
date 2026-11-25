@@ -8809,7 +8809,13 @@ static int jw__spawn_ledd(jw_daemon_state *state, const char *effect,
 }
 
 static const char *jw__leaf_ledd_effect_name(const jw_led_config *led) {
+#ifdef JW_OS_XYLEM
+    /* No loong_light on xylem to run the stock modes: the helper runs every
+       mode, Leaf mode or not. */
+    if (!led) return NULL;
+#else
     if (!led || !jw__env_is_truthy("UMRK_LEAF_MODE")) return NULL;
+#endif
     if (!led->enabled) return "off";
 
     switch (led->mode) {
