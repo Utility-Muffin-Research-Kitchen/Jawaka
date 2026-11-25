@@ -1,5 +1,5 @@
-/* The pure parts of aw20036_i2c.h: the channel map, the frame conversion and
-   the pattern time steps. Linux hosts only (<linux/i2c-dev.h>); nothing here
+/* The pure parts of aw20036_i2c.h: the channel map and the frame conversion.
+   Linux hosts only (<linux/i2c-dev.h>); nothing here
    opens a bus. */
 #include "internal/platform/aw20036_i2c.h"
 
@@ -57,20 +57,9 @@ static void test_frame(void) {
     CHECK(dim[ch] == 0 && fade[ch] == 0, "LED 2 dark with two LEDs");
 }
 
-static void test_steps(void) {
-    CHECK(jw_aw20036_step(0) == 0, "0 ms");
-    CHECK(jw_aw20036_step(-50) == 0, "negative");
-    CHECK(jw_aw20036_step(1200) == 6, "1.2 s is 1.04 s");
-    CHECK(jw_aw20036_step(325) == 3, "0.325 s is 0.38 s");
-    CHECK(jw_aw20036_step(195) == 1, "a tie takes the shorter step");
-    CHECK(jw_aw20036_step(60000) == 15, "longest");
-    CHECK(jw_aw20036_step_ms(15) == 8300 && jw_aw20036_step_ms(16) == 0, "step lengths");
-}
-
 int main(void) {
     test_channel_map();
     test_frame();
-    test_steps();
     if (failures) {
         fprintf(stderr, "aw20036 tests: %d failed\n", failures);
         return 1;

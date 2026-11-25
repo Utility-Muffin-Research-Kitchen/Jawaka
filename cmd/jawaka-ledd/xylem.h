@@ -9,8 +9,7 @@
  * mmrgball word: each channel's FADE is its colour byte and the LED's DIM is
  * alpha >> 2. A frame is one 25-byte write of the FADE page, plus one of the
  * DIM page when alpha changed, and nothing at all when the frame is the one
- * already shown. Breath runs on the chip's own breathing engine instead
- * (main.c), with no frames.
+ * already shown.
  *
  * The chip's state is checked every JW_LEDD_RING_CHECK_MS of CLOCK_BOOTTIME,
  * and at once after a resume: jawakad puts the chip to sleep before suspending
@@ -141,48 +140,12 @@ static void jw_ledd_ring_write(const uint32_t *argb, int leds) {
     }
 }
 
-/* Breath on the chip's engine: every LED the colour, between dark and
-   `alpha` (0 to 255), rising and falling over the nearest time steps to
-   `rise_ms` and `fall_ms`. */
-static bool jw_ledd_ring_breathe(int r, int g, int b, int alpha, int rise_ms, int fall_ms) {
-    if (!jw_ledd_ring_ensure(true)) {
-        return false;
-    }
-    uint32_t colour = 0xff000000u | ((uint32_t)(r & 0xff) << 16) |
-                      ((uint32_t)(g & 0xff) << 8) | (uint32_t)(b & 0xff);
-    uint32_t argb[JW_AW20036_LEDS];
-    for (int i = 0; i < JW_AW20036_LEDS; i++) argb[i] = colour;
-    uint8_t dim[JW_AW20036_CHANNELS];
-    uint8_t fade[JW_AW20036_CHANNELS];
-    jw_aw20036_frame(argb, JW_AW20036_LEDS, dim, fade);
-    for (int ch = 0; ch < JW_AW20036_CHANNELS; ch++) {
-        dim[ch] = (uint8_t)(fade[ch] >> 2);   /* the colour as current, 0 to 63 */
-    }
-    g_ledd_ring_have_frame = false;
-    bool ok = jw_aw20036_breathe(g_ledd_ring_fd, dim, (uint8_t)(alpha & 0xff),
-                                 jw_aw20036_step(rise_ms), jw_aw20036_step(fall_ms));
-    if (!ok) {
-        fprintf(stderr, "jawaka-ledd: LED ring breathing failed: %s\n", strerror(errno));
-        g_ledd_ring_ready = false;
-    }
-    return ok;
-}
-
-/* Whether the engine is still breathing; false after a resume (jawakad put
-   the chip to sleep) or a reset, and then main.c starts it again. */
-static bool jw_ledd_ring_breathing(void) {
-    if (g_ledd_ring_fd < 0) return false;
-    bool resumed = jw_ledd_ring_resumed();
-    return !resumed && jw_aw20036_breathing(g_ledd_ring_fd);
-}
-
 /* Dark and asleep, once. Async-signal-safe enough for the fatal handler:
    ioctl and nothing else. */
 static void jw_ledd_ring_off(void) {
     static volatile sig_atomic_t done;
     if (done || g_ledd_ring_fd < 0) return;
     done = 1;
-    (void)jw_aw20036_stop_patterns(g_ledd_ring_fd);
     (void)jw_aw20036_sleep(g_ledd_ring_fd);
 }
 

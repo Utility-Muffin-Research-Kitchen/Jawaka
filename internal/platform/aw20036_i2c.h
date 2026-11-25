@@ -4,7 +4,7 @@
  * xylem binds no kernel driver to it: mainline's leds-aw200xx writes one
  * register per transaction, two per channel plus a work item per LED, which
  * cost 5.9% of a core for a 30 fps rainbow against 0.17% as one burst per
- * frame, and it has no way to start the chip's own breathing engines. The
+ * frame. The
  * device tree holds the chip's enable line with a GPIO hog, so the chip
  * powers up at its reset state, asleep, on /dev/i2c-1 at 0x3a. The register
  * recipe was measured on the Green Genes MLP1
@@ -14,8 +14,13 @@
  * writers (jawaka-ledd's frames, jawakad putting the chip to sleep before a
  * suspend) never land between each other's page select and data.
  *
+ * The chip's own pattern (breathing) engines are not used: on the unit their
+ * time steps did not follow the published table (a 4.2 s step measured about
+ * 2.25 s, a 2.1 s step about 0.25 s), so Breath stays frame-driven, as on
+ * stock, which keeps stock's timing and costs about as little as a rainbow.
+ *
  * Header-only: jawaka-ledd and the MLP1 backend both include it. The pure
- * parts (channel map, frame conversion, time steps) are tested on the host. */
+ * parts (channel map, frame conversion) are tested on the host. */
 #ifndef JW_PLATFORM_AW20036_I2C_H
 #define JW_PLATFORM_AW20036_I2C_H
 
@@ -43,21 +48,11 @@
 #define JW_AW20036_PAGE_CONFIG  0
 #define JW_AW20036_PAGE_DIM     1      /* current, 0 to 63 */
 #define JW_AW20036_PAGE_FADE    2      /* PWM, 0 to 255 */
-#define JW_AW20036_PAGE_PATTERN 3      /* 0 manual, n + 1 = pattern controller n */
 
 /* Page 0 registers. */
 #define JW_AW20036_SLPCR        0x01   /* 0x80 asleep, 0x00 awake */
 #define JW_AW20036_RSTR         0x02   /* 0x01 resets every register */
 #define JW_AW20036_GCCR         0x03   /* 0x10: global current 20 mA, ALLON off */
-#define JW_AW20036_PATCR        0x43   /* pattern controllers enabled, bits 0 to 2 */
-#define JW_AW20036_PAT0_MAX     0x44
-#define JW_AW20036_PAT0_MIN     0x47
-#define JW_AW20036_PAT0_T0      0x4a   /* rise << 4 | on, time steps */
-#define JW_AW20036_PAT0_T1      0x4b   /* fall << 4 | off */
-#define JW_AW20036_PAT0_T2      0x4c   /* 0x30: loop from step 3, endless */
-#define JW_AW20036_PAT0_T3      0x4d   /* repeat count, 0 = endless */
-#define JW_AW20036_PAT0_CFG     0x56   /* 0x03: auto breathing with ramp */
-#define JW_AW20036_PATGO        0x59   /* bit n starts controller n; bits 4-6 read back running */
 #define JW_AW20036_LEDON        0x31   /* 0x31 to 0x36: LED-on bits */
 #define JW_AW20036_DSIZE        0x80   /* 0x01: two rows, channels 0 to 23 */
 
@@ -86,26 +81,6 @@ static inline void jw_aw20036_frame(const uint32_t *argb, int leds,
             fade[ch] = (uint8_t)(argb[led] >> (16 - 8 * c));
         }
     }
-}
-
-/* A pattern controller time step's length in ms (0 to 15). */
-static inline int jw_aw20036_step_ms(int step) {
-    static const int ms[16] = {
-        0, 130, 260, 380, 510, 770, 1040, 1600,
-        2100, 2600, 3100, 4200, 5200, 6200, 7300, 8300,
-    };
-    return ms[step & 0xf];
-}
-
-/* The step nearest `ms` (the shorter one on a tie). */
-static inline int jw_aw20036_step(int ms) {
-    int best = 0;
-    for (int i = 1; i < 16; i++) {
-        if (abs(jw_aw20036_step_ms(i) - ms) < abs(jw_aw20036_step_ms(best) - ms)) {
-            best = i;
-        }
-    }
-    return best;
 }
 
 /* The chip's bus with its address set, or -1. I2C_SLAVE (not _FORCE) fails
@@ -158,7 +133,7 @@ static inline int jw_aw20036_get(int fd, int page, uint8_t reg) {
 }
 
 /* Reset, then 20 mA, every LED on, two rows, awake. Every channel is dark
-   and manual afterwards (DIM, FADE and pattern select reset to 0). */
+   afterwards (DIM and FADE reset to 0). */
 static inline bool jw_aw20036_setup(int fd) {
     static const uint8_t on[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     if (!jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_RSTR, 0x01)) return false;
@@ -172,49 +147,6 @@ static inline bool jw_aw20036_setup(int fd) {
 /* Asleep: the ring goes dark and the chip keeps its registers' power. */
 static inline bool jw_aw20036_sleep(int fd) {
     return jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_SLPCR, 0x80);
-}
-
-/* Every pattern controller stopped and every channel back to manual. */
-static inline bool jw_aw20036_stop_patterns(int fd) {
-    static const uint8_t manual[JW_AW20036_CHANNELS] = { 0 };
-    return jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PATGO, 0x00) &&
-           jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PATCR, 0x00) &&
-           jw_aw20036_write(fd, JW_AW20036_PAGE_PATTERN, 0, manual, sizeof(manual));
-}
-
-/* Every channel breathing on pattern controller 0, endlessly, between level
-   0 and `max_level` (0 to 255, standing in for FADE): each channel's DIM is
-   its `dim` byte (0 to 63), rise and fall are time steps, with no hold at
-   the top or the bottom. Needs no I2C and no CPU once started. */
-static inline bool jw_aw20036_breathe(int fd, const uint8_t dim[JW_AW20036_CHANNELS],
-                                      uint8_t max_level, int rise_step, int fall_step) {
-    uint8_t full[JW_AW20036_CHANNELS];
-    uint8_t select[JW_AW20036_CHANNELS];
-    memset(full, 0xff, sizeof(full));
-    memset(select, 1, sizeof(select));
-    return jw_aw20036_stop_patterns(fd) &&
-           jw_aw20036_write(fd, JW_AW20036_PAGE_DIM, 0, dim, JW_AW20036_CHANNELS) &&
-           jw_aw20036_write(fd, JW_AW20036_PAGE_FADE, 0, full, sizeof(full)) &&
-           jw_aw20036_write(fd, JW_AW20036_PAGE_PATTERN, 0, select, sizeof(select)) &&
-           jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PAT0_MAX, max_level) &&
-           jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PAT0_MIN, 0) &&
-           jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PAT0_T0,
-                          (uint8_t)((rise_step & 0xf) << 4)) &&
-           jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PAT0_T1,
-                          (uint8_t)((fall_step & 0xf) << 4)) &&
-           jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PAT0_T2, 0x30) &&
-           jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PAT0_T3, 0x00) &&
-           jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PAT0_CFG, 0x03) &&
-           jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PATCR, 0x07) &&
-           jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PATGO, 0x01) &&
-           jw_aw20036_set(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PATGO, 0x00);
-}
-
-/* Awake with pattern controller 0 running. */
-static inline bool jw_aw20036_breathing(int fd) {
-    if (jw_aw20036_get(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_SLPCR) != 0x00) return false;
-    int go = jw_aw20036_get(fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_PATGO);
-    return go >= 0 && (go & 0x10) != 0;
 }
 
 #endif /* JW_PLATFORM_AW20036_I2C_H */

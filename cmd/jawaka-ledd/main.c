@@ -21,8 +21,7 @@
  * Standalone + MLP1-specific (like device_mlp1.c): pure libc + sysfs, no deps.
  *
  * OS=xylem has no loong_light and no mmrgball: the helper drives the ring's
- * chip itself over I2C (xylem.h), and Breath runs on the chip's own breathing
- * engine with no frames at all. Exiting leaves the ring dark there.
+ * chip itself over I2C (xylem.h). Exiting leaves the ring dark there.
  */
 #include <dirent.h>
 #include <signal.h>
@@ -348,29 +347,6 @@ static void jw__run_steady(const char *effect, const jw_effect_params *p) {
     }
 }
 
-#ifdef JW_OS_XYLEM
-/* Breath on xylem: the chip's own breathing engine, which needs no frames, no
-   I2C and no CPU once started. Rise and fall are jw__fx_breath's two half
-   periods, on the chip's nearest time steps. Each pass checks the engine
-   still runs, which a suspend (jawakad puts the chip to sleep first) or a
-   reset ends, and starts it again. */
-static void jw__run_chip_breath(const jw_effect_params *p, int speed) {
-    int period = 96 - speed * 7;
-    if (period < 24) period = 24;
-    int half = period / 2;
-    int rise_ms = half * JW_LED_TICK_MS;
-    int fall_ms = (period - half) * JW_LED_TICK_MS;
-    bool running = false;
-    while (g_running) {
-        if (!running || !jw_ledd_ring_breathing()) {
-            running = jw_ledd_ring_breathe(p->r, p->g, p->b, p->alpha_max,
-                                           rise_ms, fall_ms);
-        }
-        jw__sleep_boottime_ms(JW_LEDD_STEADY_PASS_MS);
-    }
-}
-#endif
-
 int main(int argc, char **argv) {
     if (argc < 7) {
         fprintf(stderr, "usage: %s <effect> <r> <g> <b> <brightness 0-10> <speed 0-10>\n", argv[0]);
@@ -425,14 +401,6 @@ int main(int argc, char **argv) {
         jw__thaw();
         return 0;
     }
-
-#ifdef JW_OS_XYLEM
-    if (strcmp(effect, "breath") == 0) {
-        jw__run_chip_breath(&p, speed);
-        jw__thaw();
-        return 0;
-    }
-#endif
 
     struct timespec sleep_for = {
         .tv_sec  = interval_ms / 1000,
