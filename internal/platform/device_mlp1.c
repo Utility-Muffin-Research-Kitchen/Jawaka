@@ -31,6 +31,11 @@
 #include "internal/platform/weston_initd.h"
 #include "internal/platform/mlp1_adb.h"
 #include "internal/power/power_hard_cut.h"
+#ifdef JW_OS_XYLEM
+/* OS=xylem: the parts stock's vendor services did. Each seam below is marked
+   JW_OS_XYLEM; everything else is the same board on both kernels. */
+#include "internal/platform/device_mlp1_xylem.h"
+#endif
 #include <linux/i2c-dev.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -608,12 +613,21 @@ static int jw__mlp1_init(jw_platform_context *ctx) {
     data->last_present = jw__mlp1_block_present(ctx) ? 1 : 0;
     data->last_mounted = jw__mlp1_mount_is_active(ctx) ? 1 : 0;
     ctx->backend_data = data;
+#ifdef JW_OS_XYLEM
+    /* No loong_power, so no charge floor to keep: the charger poll in the
+       storage tick never runs (see jw__mlp1_apply_charge_brightness). */
+    data->charge_poll_next_ms = INT64_MAX;
+    jw_mlp1_xylem_init();
+#endif
     return 0;
 }
 
 static void jw__mlp1_bt_monitor_stop(void);
 
 static void jw__mlp1_shutdown(jw_platform_context *ctx) {
+#ifdef JW_OS_XYLEM
+    jw_mlp1_xylem_shutdown();
+#endif
     jw__mlp1_bt_monitor_stop();
     jw_mlp1_platform_data *data = ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
     if (data) {
@@ -1088,6 +1102,19 @@ static int jw__mlp1_set_volume_percent(int percent) {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
 
+#ifdef JW_OS_XYLEM
+    /* The sink volume alone: no numid=16 DAC floor (no such control on the
+       mainline codec) and no loong.db mirror. Leaf's database keeps the level. */
+    {
+        char xylem_cmd[128];
+        snprintf(xylem_cmd, sizeof(xylem_cmd), JW_MLP1_PACTL_SET_VOLUME, percent);
+        if (jw__exec_shell(xylem_cmd) != 0) {
+            return -1;
+        }
+        jw__mlp1_volume_cache_set(percent);
+        return 0;
+    }
+#endif
     jw_platform_audio_output output = jw__mlp1_get_audio_output();
     int rc;
     if (output == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH) {
@@ -2249,6 +2276,11 @@ static void jw__mlp1_get_audio_volumes(int out[JW_PLATFORM_AUDIO_OUTPUT_COUNT]) 
     for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
         out[i] = -1;
     }
+#ifdef JW_OS_XYLEM
+    /* No SOUND_PARAM in loong.db: no stored per-output levels. Both outputs
+       are the one sink, so the live level is the level. */
+    return;
+#endif
 
     cJSON *root = jw__mlp1_load_sound_param();
     if (!root) {
@@ -2777,6 +2809,9 @@ static int jw__mlp1_set_bluealsa_volume_percent(int percent) {
 }
 
 static unsigned jw__mlp1_get_audio_available_outputs(void) {
+#ifdef JW_OS_XYLEM
+    return jw_mlp1_xylem_audio_outputs();
+#endif
     unsigned mask = JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_SPEAKER);
     if (jw__mlp1_headphone_jack_present()) {
         mask |= JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_HEADSET);
@@ -2797,6 +2832,9 @@ static unsigned jw__mlp1_get_audio_available_outputs(void) {
 }
 
 static jw_platform_audio_output jw__mlp1_get_audio_output(void) {
+#ifdef JW_OS_XYLEM
+    return jw_mlp1_xylem_audio_output();
+#endif
     int path = jw__mlp1_playback_path();
     if (path == 5) {
         return JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
@@ -2857,6 +2895,11 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
     }
 
     int rc = -1;
+#ifdef JW_OS_XYLEM
+    /* Mux on HP for both, the speaker switch picks; no Playback Path numid,
+       no DAC floor, no other sink to point PulseAudio at. */
+    rc = jw_mlp1_xylem_route_audio(output);
+#else
     switch (output) {
         case JW_PLATFORM_AUDIO_OUTPUT_SPEAKER:
         case JW_PLATFORM_AUDIO_OUTPUT_HEADSET: {
@@ -2900,6 +2943,7 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
         default:
             break;
     }
+#endif
 
     if (rc != 0) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
@@ -3046,6 +3090,11 @@ static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi) {
 
 static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reason) {
     (void)ctx;
+#ifdef JW_OS_XYLEM
+    /* No speaker gate, playback-node watch, HDMI sink or DAC floor. */
+    jw_mlp1_xylem_audio_reconcile(reason);
+    return;
+#endif
     const char *why = (reason && reason[0]) ? reason : "unknown";
     /* Switch events can be lost across a suspend; take the kernel's word. Arm
        the playback-node watch again too, and settle the gate from scratch. */
@@ -3225,6 +3274,14 @@ static bool s_mlp1_sink_resume_pending = false;
 
 static void jw__mlp1_wake_audio(jw_platform_context *ctx) {
     (void)ctx;
+#ifdef JW_OS_XYLEM
+    /* No spk_ctl gate to raise and no playback node to watch. */
+    if (s_mlp1_sink_resume_pending) {
+        s_mlp1_sink_resume_pending = false;
+        (void)jw__exec_shell(JW_MLP1_PA_RESUME_SINK);
+    }
+    return;
+#endif
     /* Before the sink reopens the device, so its IN_OPEN cannot be missed. */
     jw__mlp1_pcm_watch_arm();
     if (!s_mlp1_sink_resume_pending) {
@@ -3249,6 +3306,11 @@ static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
        lingering as a zombie and keeps the play/stop state accurate). */
     (void)jw__mlp1_test_sound_active();
 
+#ifdef JW_OS_XYLEM
+    /* The jack edge only: no speaker gate, USB-C or Bluetooth audio yet. */
+    events |= jw_mlp1_xylem_audio_tick();
+    return events;
+#endif
     jw__mlp1_speaker_gate_sync(false);
 
     /* ── Headphone-jack edge (cheap kernel switch, checked every loop). ──
@@ -3396,6 +3458,14 @@ static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *ou
     if (!out) {
         return;
     }
+#ifdef JW_OS_XYLEM
+    /* Supplies by type (rk817-battery, rk817-charger). No Wi-Fi, ADB, boot
+       splash, refresh-rate, colour-temperature or HDMI state: all unknown. */
+    jw_mlp1_xylem_get_power_status(out);
+    out->brightness_percent = jw__mlp1_get_brightness_percent();
+    out->volume_percent = jw__mlp1_get_volume_percent();
+    return;
+#endif
 
     int battery = jw__read_int_file("/sys/class/power_supply/battery/capacity");
     if (battery >= 0 && battery <= 100) {
@@ -3443,6 +3513,14 @@ static void jw__mlp1_get_audio_status(jw_platform_context *ctx, jw_platform_stat
 
 static void jw__mlp1_frontend_ready(jw_platform_context *ctx, const char *role,
                                     jw_platform_result *out) {
+#ifdef JW_OS_XYLEM
+    /* No loong_transition boot screen to dismiss, and no libloong_sdk. */
+    if (strcmp(role, "launcher") == 0) {
+        ctx->home_ready_sent = true;
+    }
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "frontend ready noted");
+    return;
+#endif
     if (strcmp(role, "launcher") != 0) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "frontend ready noted");
         return;
@@ -3597,6 +3675,19 @@ static bool s_mlp1_sleep_audio_done = false;
    PulseAudio's realtime thread (measured), past the old 200 ms limit. */
 static void jw__mlp1_sleep_audio(jw_platform_context *ctx) {
     (void)ctx;
+#ifdef JW_OS_XYLEM
+    /* Any sink with its device open, idle too: whether PulseAudio closes an
+       idle device on its own depends on the image's module-suspend-on-idle,
+       and nothing else here would close it before `mem`. */
+    bool open_sink = jw_mlp1_xylem_sink_open();
+    if (open_sink) {
+        (void)jw__exec_shell(JW_MLP1_PA_SUSPEND_SINK);
+        usleep(200000);
+    }
+    s_mlp1_sink_resume_pending = open_sink;
+    s_mlp1_sleep_audio_done = true;
+    return;
+#endif
     bool playing = jw__mlp1_pa_sink_running();
     if (playing) {
         (void)jw__exec_shell(JW_MLP1_PA_SUSPEND_SINK);
@@ -3608,6 +3699,12 @@ static void jw__mlp1_sleep_audio(jw_platform_context *ctx) {
 
 static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                     int value, jw_platform_result *out) {
+#ifdef JW_OS_XYLEM
+    if (jw_mlp1_xylem_action_unsupported(action)) {
+        jw_platform_result_unsupported(action, ctx ? ctx->platform_id : "mlp1", out);
+        return;
+    }
+#endif
     if (action == JW_PLATFORM_ACTION_PLAY_TEST_SOUND) {
         jw__mlp1_play_test_sound(out);
         return;
@@ -3635,6 +3732,25 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
 
     if (action == JW_PLATFORM_ACTION_SLEEP) {
         jw_log_info("platform: sleep -> real suspend-to-RAM");
+#ifdef JW_OS_XYLEM
+        /* Sink suspended (normally done already, before the sleep profile),
+           backlight blanked, `mem`, backlight and brightness back; the sink
+           resumes in jw__mlp1_wake_audio. None of stock's noexec remount
+           repair, headphone-amp registers, DAC floor or spk_ctl. */
+        if (!s_mlp1_sleep_audio_done) {
+            jw__mlp1_sleep_audio(ctx);
+        }
+        s_mlp1_sleep_audio_done = false;
+        {
+            jw_mlp1_platform_data *xylem_data =
+                ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
+            int xylem_rc = jw_mlp1_xylem_suspend(xylem_data ? xylem_data->last_applied_raw : -1);
+            jw_platform_result_set(out,
+                                   xylem_rc == 0 ? JW_PLATFORM_RESULT_OK : JW_PLATFORM_RESULT_FAILED,
+                                   xylem_rc == 0 ? "suspended" : "sleep failed");
+            return;
+        }
+#endif
         /* Real deep suspend via `echo mem`. (The earlier loong PowerApi::powerStandby()
            path only blanked the screen — the system never actually suspended.) The
            input proxy holds the power key exclusively, so loong_power can't see the
@@ -3965,6 +4081,9 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
 /* Is a charger attached? Either rail counts -- the device reports AC and USB
    separately and a plain USB-C charger only lights the second. */
 static int jw__mlp1_charger_online(void) {
+#ifdef JW_OS_XYLEM
+    return jw_mlp1_xylem_charger_online();
+#endif
     int ac = jw__read_int_file("/sys/class/power_supply/ac/online");
     int usb = jw__read_int_file("/sys/class/power_supply/usb/online");
     if (ac < 0 && usb < 0) return -1;
@@ -3978,6 +4097,13 @@ static int jw__mlp1_charger_online(void) {
    correct it. Costs a brief flash to full brightness; the alternative is a
    flicker loop between two daemons. */
 static void jw__mlp1_apply_charge_brightness(jw_mlp1_platform_data *data, int online) {
+#ifdef JW_OS_XYLEM
+    /* No loong_power on xylem, so no raw-70 floor to satisfy; the backlight
+       stays where the user put it. (Init also keeps the charger poll off.) */
+    (void)data;
+    (void)online;
+    return;
+#endif
     if (!data || data->last_applied_raw <= 0) {
         return;
     }
@@ -4104,6 +4230,17 @@ static int jw__mlp1_poll_fds(jw_platform_context *ctx, int *fds, int max) {
     if (data && data->uevent_fd >= 0 && count < max) {
         fds[count++] = data->uevent_fd;
     }
+#ifdef JW_OS_XYLEM
+    /* The uevent socket and the jack: no BlueALSA monitor, no playback-node
+       watch. */
+    {
+        int xylem_jack = jw_mlp1_xylem_jack_fd();
+        if (xylem_jack >= 0 && count < max) {
+            fds[count++] = xylem_jack;
+        }
+        return count;
+    }
+#endif
     int jack = jw__mlp1_jack_fd();
     if (jack >= 0 && count < max) {
         fds[count++] = jack;
@@ -4475,6 +4612,13 @@ static void jw__mlp1_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
     if (speed < 0) speed = 0;
     if (speed > JW_LED_SPEED_MAX) speed = JW_LED_SPEED_MAX;
 
+#ifdef JW_OS_XYLEM
+    /* No loong_light, its cfg or SIGUSR1: jawakad runs jawaka-ledd for every
+       mode, and ledd drives the ring's LED-class devices. */
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                           "led driven by jawaka-ledd");
+    return;
+#endif
     FILE *fp = fopen(JW_MLP1_LED_CFG, "w");
     if (!fp) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "led cfg write failed");
@@ -4562,6 +4706,13 @@ static void jw__mlp1_hdmi_show(const jw_platform_context *ctx) {
 
 static void jw__mlp1_game_display_begin(jw_platform_context *ctx,
                                         jw_platform_game_display *gd) {
+#ifdef JW_OS_XYLEM
+    /* No HDMI output support yet, so nothing to hide or put back; the game
+       keeps whatever display the compositor has. */
+    (void)ctx;
+    gd->mode = JW_GAME_DISPLAY_PANEL;
+    return;
+#endif
     bool live = jw__mlp1_hdmi_live();
     /* A live TV with no applied mode is a state Leaf did not set up (stock
        mirroring, say): unknown, so the end rebuilds it. */
@@ -4598,6 +4749,16 @@ static void jw__mlp1_game_display_end(jw_platform_context *ctx,
                                       int hdmi_setting, bool compositor_stopped,
                                       jw_platform_game_display_result *out) {
     out->mode = s_mlp1_hdmi_mode;
+#ifdef JW_OS_XYLEM
+    /* Stock restarts its Weston through init.d here; xylem's compositor is
+       the session's, so there is nothing for the backend to restart. */
+    (void)ctx;
+    (void)gd;
+    (void)hdmi_setting;
+    (void)compositor_stopped;
+    out->mode = JW_GAME_DISPLAY_PANEL;
+    return;
+#endif
     if (!gd->active && !compositor_stopped) {
         return;
     }
@@ -4663,6 +4824,11 @@ static void jw__mlp1_game_display_end(jw_platform_context *ctx,
 }
 
 static void jw__mlp1_game_display_recover(jw_platform_context *ctx) {
+#ifdef JW_OS_XYLEM
+    /* begin never hides HDMI on xylem, so no earlier daemon left it hidden. */
+    (void)ctx;
+    return;
+#endif
     char marker[PATH_MAX];
     if (!jw__mlp1_hdmi_hidden_marker(ctx, marker, sizeof(marker)) ||
         access(marker, F_OK) != 0) {
@@ -4676,6 +4842,29 @@ const jw_platform_backend *jw_platform_get_backend(void) {
     static const jw_platform_backend backend = {
         .platform_id = "mlp1",
         .platform_name = "Miniloong Pocket 1",
+#ifdef JW_OS_XYLEM
+        /* What xylem has a backend for. Wi-Fi and Bluetooth have none yet;
+           ADB, the boot splash, the refresh-rate override, colour temperature
+           and HDMI output were stock-only (see jw_mlp1_xylem_action_unsupported). */
+        .capabilities = {
+            .battery = true,
+            .charging = true,
+            .sleep = true,
+            .poweroff = true,
+            .reboot = true,
+            .brightness = true,
+            .volume = true,
+            .wifi = false,
+            .bluetooth = false,
+            .adb = false,
+            .boot_splash = false,
+            .refresh_rate = false,
+            .color_temperature = false,
+            .hdmi_output = false,
+            .led = true,
+            .performance = true,
+        },
+#else
         .capabilities = {
             .battery = true,
             .charging = true,
@@ -4694,6 +4883,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .led = true,
             .performance = true,
         },
+#endif
         .init = jw__mlp1_init,
         .shutdown = jw__mlp1_shutdown,
         .get_status = jw__mlp1_get_status,

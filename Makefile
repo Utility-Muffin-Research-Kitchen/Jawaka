@@ -152,7 +152,10 @@ BLUETOOTH_SRC := internal/platform/bluetooth_mlp1.c
 WIFI_SRC := internal/platform/wifi_mlp1.c internal/platform/wifi_ssid.c \
 	internal/platform/wifi_attempt.c
 ifeq ($(OS),xylem)
-# Wi-Fi and Bluetooth have no xylem backend yet.
+# xylem keeps device_mlp1.c (backlight, performance, the PMIC, storage) and
+# takes the parts stock's vendor services did from device_mlp1_xylem.c. Wi-Fi
+# and Bluetooth have no xylem backend yet.
+PLATFORM_BACKEND_SRC += internal/platform/device_mlp1_xylem.c
 BLUETOOTH_SRC := internal/platform/bluetooth_unsupported.c
 WIFI_SRC := internal/platform/wifi_unsupported.c internal/platform/wifi_attempt.c
 endif
