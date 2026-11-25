@@ -79,6 +79,12 @@ typedef struct {
     const char *repair_dir;       /* NULL: no repair state on this platform */
     bool require_mounted_roots;   /* a card root that is not a mount is missing */
     bool skip_statvfs;            /* fixtures: trust the mount table alone */
+#ifdef JW_OS_XYLEM
+    /* xylem: the one root exempt from require_mounted_roots, the launcher
+       root ($SDCARD_PATH), which may be a directory on the root filesystem.
+       The second slot's mount point is still a stub until its card mounts. */
+    const char *directory_root;
+#endif
 } jw_storage_probe_env;
 
 typedef struct {

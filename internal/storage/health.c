@@ -39,7 +39,23 @@ void jw_storage_probe_env_default(jw_storage_probe_env *env) {
     env->require_mounted_roots = true;
     env->repair_dir = JW_STORAGE_MLP1_REPAIR_DIR;
 #endif
+#ifdef JW_OS_XYLEM
+    env->directory_root = getenv("SDCARD_PATH");
+#endif
 }
+
+#ifdef JW_OS_XYLEM
+/* Whether `abs` (resolved) must be a mount of its own to count as a card:
+   every root but the launcher root, which may be a directory. */
+static bool jw__root_needs_mount(const jw_storage_probe_env *env, const char *abs) {
+    if (!env->require_mounted_roots) {
+        return false;
+    }
+    char dir_abs[JW_STORAGE_PATH_MAX];
+    return !(abs && env->directory_root && env->directory_root[0] &&
+             realpath(env->directory_root, dir_abs) && strcmp(dir_abs, abs) == 0);
+}
+#endif
 
 /* ── Mount table ─────────────────────────────────────────────────────── */
 
@@ -743,9 +759,15 @@ void jw_storage_health_probe(const jw_storage_probe_env *env,
         }
         return; /* otherwise access stays unknown */
     }
+#ifdef JW_OS_XYLEM
+    const jw_storage_mount *mount = jw__root_needs_mount(env, lookup)
+        ? jw_storage_mount_at(table, lookup)
+        : jw_storage_mount_for_path(table, lookup);
+#else
     const jw_storage_mount *mount = env->require_mounted_roots
         ? jw_storage_mount_at(table, lookup)
         : jw_storage_mount_for_path(table, lookup);
+#endif
     if (!mount) {
         free(table);
         return; /* not mounted: never writable */
@@ -1012,7 +1034,12 @@ jw_storage_write_verdict jw_storage_path_check_env(const jw_storage_probe_env *e
         char mount_point[JW_STORAGE_PATH_MAX];
         memcpy(mount_point, abs, card_root_len);
         mount_point[card_root_len] = '\0';
+#ifdef JW_OS_XYLEM
+        if (jw__root_needs_mount(env, mount_point) &&
+            !jw_storage_mount_at(table, mount_point)) {
+#else
         if (!jw_storage_mount_at(table, mount_point)) {
+#endif
             free(table);
             return jw__verdict(JW_STORAGE_WRITE_MISSING, reason, reason_size);
         }
