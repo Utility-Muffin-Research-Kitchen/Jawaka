@@ -10,10 +10,18 @@
  *   - JAWAKA_LEDD_LEDS: the 24 names separated by commas;
  *   - else the file named by JAWAKA_LEDD_LEDS_FILE: the same names separated
  *     by commas, spaces or newlines, with '#' starting a comment;
- *   - else ring<N>:red, ring<N>:green, ring<N>:blue for N = 0..7.
+ *   - else mainline's colour-and-function names from the MLP1's device tree,
+ *     red:indicator-<N>, green:indicator-<N>, blue:indicator-<N> for N = 0..7
+ *     (N in ring order, the index of stock's mmrgball word: 0 at about four
+ *     o'clock, then counter-clockwise).
  *
- * A frame's 0xAARRGGBB for one LED becomes, per channel, colour * alpha / 255
- * scaled to that device's max_brightness. Only channels whose value changed
+ * A frame's 0xAARRGGBB for one LED becomes what stock's driver made of an
+ * mmrgball word: each channel's brightness is its colour byte (scaled to
+ * max_brightness, 255 for leds-aw200xx), and the LED's dim attribute (0-63,
+ * the chip's DIM register) is alpha >> 2, written only when alpha changes.
+ * With dim left on "auto" the driver derives DIM from the brightness and the
+ * light goes as brightness squared. A device without dim gets colour * alpha
+ * / 255 in its brightness instead. Only channels whose value changed
  * are written, plus every channel once every JW_LEDD_CLASS_FULL_MS of
  * CLOCK_BOOTTIME: that rewrite also follows a resume, when the chip may have
  * lost its registers, and reopens any device that was missing.
@@ -60,6 +68,8 @@ typedef struct {
     int fd;     /* the brightness attribute, -1 while not open */
     int max;    /* max_brightness */
     int last;   /* value last written, -1 unknown */
+    int dim_fd;   /* the dim attribute (leds-aw200xx), -1 when absent */
+    int dim_last; /* dim last written, -1 unknown */
 } jw_ledd_class_channel;
 
 static jw_ledd_class_channel g_ledd_class[JW_LEDD_CLASS_CHANNELS];
@@ -126,6 +136,11 @@ static void jw_ledd_class_try_open(jw_ledd_class_channel *ch) {
     ch->max = jw_power_supply_read_long(dir, "max_brightness", &max) && max > 0
                   ? (int)max : 255;
     ch->last = -1;
+    if (ch->dim_fd < 0) {
+        snprintf(path, sizeof(path), "%s/%s/dim", JW_LEDD_CLASS_DIR, ch->name);
+        ch->dim_fd = open(path, O_WRONLY | O_CLOEXEC);
+    }
+    ch->dim_last = -1;
 }
 
 /* Resolve the 24 names and open what exists. Missing devices are reported
@@ -136,6 +151,8 @@ static void jw_ledd_class_open(void) {
         g_ledd_class[i].fd = -1;
         g_ledd_class[i].max = 255;
         g_ledd_class[i].last = -1;
+        g_ledd_class[i].dim_fd = -1;
+        g_ledd_class[i].dim_last = -1;
     }
 
     const char *source = NULL;
@@ -159,11 +176,11 @@ static void jw_ledd_class_open(void) {
     if (count == 0) {
         static const char *const colors[3] = { "red", "green", "blue" };
         for (int i = 0; i < JW_LEDD_CLASS_CHANNELS; i++) {
-            snprintf(g_ledd_class[i].name, sizeof(g_ledd_class[i].name), "ring%d:%s",
-                     i / 3, colors[i % 3]);
+            snprintf(g_ledd_class[i].name, sizeof(g_ledd_class[i].name), "%s:indicator-%d",
+                     colors[i % 3], i / 3);
         }
         count = JW_LEDD_CLASS_CHANNELS;
-        source = "default ring<N>:<color> names";
+        source = "default <colour>:indicator-<N> names";
     } else if (count < JW_LEDD_CLASS_CHANNELS) {
         fprintf(stderr, "jawaka-ledd: %s names %d of %d ring channels; "
                 "the rest stay dark\n", source, count, JW_LEDD_CLASS_CHANNELS);
@@ -197,7 +214,19 @@ static void jw_ledd_class_write(const uint32_t *argb, int leds) {
             jw_ledd_class_channel *ch = &g_ledd_class[led * 3 + k];
             if (full) jw_ledd_class_try_open(ch);
             if (ch->fd < 0) continue;
-            int value = (int)((c[k] * a * (uint32_t)ch->max + 255u * 255u / 2u) / (255u * 255u));
+            int value;
+            if (ch->dim_fd >= 0) {
+                int dim = (int)(a >> 2);
+                if (full || dim != ch->dim_last) {
+                    char dbuf[16];
+                    int dlen = snprintf(dbuf, sizeof(dbuf), "%d\n", dim);
+                    ch->dim_last = pwrite(ch->dim_fd, dbuf, (size_t)dlen, 0) == (ssize_t)dlen
+                                       ? dim : -1;
+                }
+                value = (int)((c[k] * (uint32_t)ch->max + 127u) / 255u);
+            } else {
+                value = (int)((c[k] * a * (uint32_t)ch->max + 255u * 255u / 2u) / (255u * 255u));
+            }
             if (!full && value == ch->last) continue;
             char buf[16];
             int len = snprintf(buf, sizeof(buf), "%d\n", value);
