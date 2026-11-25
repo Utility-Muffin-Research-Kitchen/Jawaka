@@ -23,6 +23,7 @@
 #define JW_PLATFORM_DEVICE_MLP1_XYLEM_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "internal/platform/device.h"
 
@@ -55,6 +56,20 @@ void jw_mlp1_xylem_audio_reconcile(const char *reason);
 /* True when the default PulseAudio sink has its device open (RUNNING or
    IDLE), so suspending it around a system sleep closes the device. */
 bool jw_mlp1_xylem_sink_open(void);
+
+/* Cards. The launcher root (SDCARD_PATH) may be a directory on the root
+   filesystem rather than a card of its own. The second slot's card has one
+   mount point, $UMRK_SECONDARY_SDCARD_PATH, else /roms (where Green Genes'
+   image mounts it); stock's /mnt/sdcard and /media/sdcard1 swap does not
+   exist here. */
+const char *jw_mlp1_xylem_secondary_mount(void);
+/* The first partition of the card in the second slot, by its SD controller
+   (stock's mmcblk numbers do not hold on mainline), as /dev/mmcblkNp1; false
+   when the slot is empty. */
+bool jw_mlp1_xylem_secondary_block(char *out, size_t out_size);
+/* The device of the mount holding `path` (the longest mount point that is
+   `path` or one of its parents); false when /proc/mounts can't be read. */
+bool jw_mlp1_xylem_containing_mount(const char *path, char *device, size_t device_size);
 
 /* Suspend to RAM: blank the backlight, write `mem`, unblank and put
    `restore_brightness_raw` back (when > 0). Blocks until resume. 0 when the

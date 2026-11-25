@@ -289,6 +289,11 @@ static bool jw__mlp1_source_is_secondary(const char *source_id) {
 
 static void jw__mlp1_secondary_mount(const jw_platform_context *ctx,
                                      char *out, size_t out_size) {
+#ifdef JW_OS_XYLEM
+    /* xylem: the second slot has one mount point; nothing swaps. */
+    (void)ctx;
+    snprintf(out, out_size, "%s", jw_mlp1_xylem_secondary_mount());
+#else
     const char *primary = ctx && ctx->sdcard_root[0]
                               ? ctx->sdcard_root : "/mnt/sdcard";
     const char *paths = getenv("SDCARD_PATHS");
@@ -320,6 +325,7 @@ static void jw__mlp1_secondary_mount(const jw_platform_context *ctx,
     snprintf(out, out_size, "%s",
              strcmp(primary, "/media/sdcard1") == 0
                  ? "/mnt/sdcard" : "/media/sdcard1");
+#endif
 }
 
 static bool jw__mlp1_mount_lookup(const char *wanted_mount,
@@ -446,12 +452,22 @@ static bool jw__mlp1_device_repair_held(const char *device) {
 
 static int jw__mlp1_remount_exec(const char *mount) {
     char device[256] = "";
+#ifdef JW_OS_XYLEM
+    /* xylem: only the second slot's card. Its only caller here is the
+       secondary mount; stock's resume repair of the launcher card does not
+       run on xylem. */
+    if (!mount || strcmp(mount, jw_mlp1_xylem_secondary_mount()) != 0 ||
+        !jw__mlp1_mount_lookup(mount, device, sizeof(device))) {
+        return -1;
+    }
+#else
     if (!mount ||
         (strcmp(mount, "/mnt/sdcard") != 0 &&
          strcmp(mount, "/media/sdcard1") != 0) ||
         !jw__mlp1_mount_lookup(mount, device, sizeof(device))) {
         return -1;
     }
+#endif
 
     if (!jw__mlp1_mount_has_option(mount, "noexec")) {
         return 0;
@@ -472,6 +488,18 @@ static bool jw__mlp1_secondary_device(const jw_platform_context *ctx,
     if (jw__mlp1_mount_lookup(secondary_mount, out, out_size)) {
         return true;
     }
+#ifdef JW_OS_XYLEM
+    /* xylem: the card in the second slot, found by its controller, and never
+       the one the launcher root is on. */
+    if (ctx && ctx->sdcard_root[0]) {
+        (void)jw_mlp1_xylem_containing_mount(ctx->sdcard_root, primary_device,
+                                             sizeof(primary_device));
+    }
+    if (jw_mlp1_xylem_secondary_block(out, out_size) &&
+        strcmp(out, primary_device) != 0) {
+        return true;
+    }
+#else
     if (ctx && ctx->sdcard_root[0]) {
         (void)jw__mlp1_mount_lookup(ctx->sdcard_root, primary_device,
                                     sizeof(primary_device));
@@ -484,6 +512,7 @@ static bool jw__mlp1_secondary_device(const jw_platform_context *ctx,
             return true;
         }
     }
+#endif
     if (out && out_size > 0) {
         out[0] = '\0';
     }
@@ -4294,8 +4323,15 @@ static void jw__mlp1_get_storage_status(jw_platform_context *ctx,
         snprintf(out->label, sizeof(out->label), "%s", JW_MLP1_LAUNCHER_LABEL);
         snprintf(out->mount_path, sizeof(out->mount_path), "%s",
                  ctx && ctx->sdcard_root[0] ? ctx->sdcard_root : "/mnt/sdcard");
+#ifdef JW_OS_XYLEM
+        /* xylem: the launcher root may be a directory on the root
+           filesystem, not a mount point of its own. */
+        out->mounted = jw_mlp1_xylem_containing_mount(out->mount_path, out->device_path,
+                                                      sizeof(out->device_path));
+#else
         out->mounted = jw__mlp1_mount_lookup(out->mount_path, out->device_path,
                                              sizeof(out->device_path));
+#endif
         out->present = out->mounted;
         out->busy = out->mounted;   /* Leaf runs from this card */
         out->can_unmount = false;

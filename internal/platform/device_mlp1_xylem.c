@@ -6,8 +6,10 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <glob.h>
 #include <linux/input.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -387,4 +389,77 @@ int jw_mlp1_xylem_suspend(int restore_brightness_raw) {
                     strerror(errno));
     }
     return rc;
+}
+
+/* ---- Cards ---------------------------------------------------------------- */
+
+/* The second slot is sdmmc2, the SD controller at fe000000 (sdmmc1 is the
+   Wi-Fi). On mainline the boot card is mmcblk1 and its first partition the
+   boot partition, so stock's /dev/mmcblk1p1 and /dev/mmcblk3p1 guesses would
+   pick the wrong card: the card is found by its controller instead. */
+#define JW_XYLEM_SECONDARY_MOUNT "/roms"
+#define JW_XYLEM_SECONDARY_MMC   "fe000000.mmc"
+#define JW_XYLEM_SECONDARY_GLOB \
+    "/sys/bus/platform/devices/" JW_XYLEM_SECONDARY_MMC \
+    "/mmc_host/mmc*/mmc*:*/block/mmcblk*/mmcblk*p1"
+
+const char *jw_mlp1_xylem_secondary_mount(void) {
+    const char *path = getenv("UMRK_SECONDARY_SDCARD_PATH");
+    return path && path[0] == '/' ? path : JW_XYLEM_SECONDARY_MOUNT;
+}
+
+bool jw_mlp1_xylem_secondary_block(char *out, size_t out_size) {
+    bool found = false;
+    glob_t g;
+    if (glob(JW_XYLEM_SECONDARY_GLOB, 0, NULL, &g) == 0) {
+        for (size_t i = 0; i < g.gl_pathc && !found; i++) {
+            const char *name = strrchr(g.gl_pathv[i], '/');
+            char dev[64];
+            if (!name || (size_t)snprintf(dev, sizeof(dev), "/dev%s", name) >= sizeof(dev) ||
+                access(dev, F_OK) != 0) {
+                continue;
+            }
+            if (out && out_size > 0) {
+                snprintf(out, out_size, "%s", dev);
+            }
+            found = true;
+        }
+        globfree(&g);
+    }
+    if (!found && out && out_size > 0) {
+        out[0] = '\0';
+    }
+    return found;
+}
+
+bool jw_mlp1_xylem_containing_mount(const char *path, char *device, size_t device_size) {
+    if (device && device_size > 0) {
+        device[0] = '\0';
+    }
+    if (!path || path[0] != '/') {
+        return false;
+    }
+    FILE *fp = fopen("/proc/mounts", "r");
+    if (!fp) {
+        return false;
+    }
+    char dev[256];
+    char mount[256];
+    size_t best = 0;
+    bool found = false;
+    while (fscanf(fp, "%255s %255s %*s %*s %*d %*d\n", dev, mount) == 2) {
+        size_t len = strlen(mount);
+        bool holds = strcmp(mount, "/") == 0 ||
+                     (strncmp(path, mount, len) == 0 &&
+                      (path[len] == '\0' || path[len] == '/'));
+        if (holds && (!found || len > best)) {
+            best = len;
+            found = true;
+            if (device && device_size > 0) {
+                snprintf(device, device_size, "%s", dev);
+            }
+        }
+    }
+    fclose(fp);
+    return found;
 }

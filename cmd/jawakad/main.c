@@ -2054,7 +2054,13 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     jw__setenvf_default("STATES_PATH", "%s/States", state->sdcard_root);
     jw__setenvf_default("CHEATS_PATH", "%s/Cheats", state->sdcard_root);
     if (strcmp(platform, "mlp1") == 0) {
+#ifdef JW_OS_XYLEM
+        /* xylem: the second slot's card, where Green Genes' image mounts it
+           (device_mlp1_xylem.h). */
+        jw__setenv_default("UMRK_SECONDARY_SDCARD_PATH", "/roms");
+#else
         jw__setenv_default("UMRK_SECONDARY_SDCARD_PATH", "/media/sdcard1");
+#endif
     }
     if (!getenv("SDCARD_PATHS")) {
         const char *secondary = getenv("UMRK_SECONDARY_SDCARD_PATH");
