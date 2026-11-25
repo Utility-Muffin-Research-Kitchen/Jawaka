@@ -1,54 +1,40 @@
-/* jawaka-ledd's xylem side (OS=xylem, -DJW_OS_XYLEM): the ring as LED-class
- * devices, and the battery found by type.
+/* jawaka-ledd's xylem side (OS=xylem, -DJW_OS_XYLEM): the ring as the AW20036
+ * itself over I2C, and the battery found by type.
  *
  * Stock writes 8 ARGB words to the vendor driver's mmrgball node and freezes
- * loong_light while it does. xylem has neither. Mainline drives the AW20036
- * with leds-aw200xx, one LED-class device per channel: 8 ring LEDs times red,
- * green and blue, 24 devices under /sys/class/leds. Their names come from the
- * device tree, so they are read, in ring order and red, green, blue per LED,
- * from:
- *   - JAWAKA_LEDD_LEDS: the 24 names separated by commas;
- *   - else the file named by JAWAKA_LEDD_LEDS_FILE: the same names separated
- *     by commas, spaces or newlines, with '#' starting a comment;
- *   - else mainline's colour-and-function names from the MLP1's device tree,
- *     red:indicator-<N>, green:indicator-<N>, blue:indicator-<N> for N = 0..7
- *     (N in ring order, the index of stock's mmrgball word: 0 at about four
- *     o'clock, then counter-clockwise).
+ * loong_light while it does. xylem has neither, and binds no kernel driver to
+ * the chip: the helper owns it on /dev/i2c-1 (internal/platform/aw20036_i2c.h).
  *
  * A frame's 0xAARRGGBB for one LED becomes what stock's driver made of an
- * mmrgball word: each channel's brightness is its colour byte (scaled to
- * max_brightness, 255 for leds-aw200xx), and the LED's dim attribute (0-63,
- * the chip's DIM register) is alpha >> 2, written only when alpha changes.
- * With dim left on "auto" the driver derives DIM from the brightness and the
- * light goes as brightness squared. A device without dim gets colour * alpha
- * / 255 in its brightness instead. Only channels whose value changed
- * are written, plus every channel once every JW_LEDD_CLASS_FULL_MS of
- * CLOCK_BOOTTIME: that rewrite also follows a resume, when the chip may have
- * lost its registers, and reopens any device that was missing.
+ * mmrgball word: each channel's FADE is its colour byte and the LED's DIM is
+ * alpha >> 2. A frame is one 25-byte write of the FADE page, plus one of the
+ * DIM page when alpha changed, and nothing at all when the frame is the one
+ * already shown. Breath runs on the chip's own breathing engine instead
+ * (main.c), with no frames.
+ *
+ * The chip's state is checked every JW_LEDD_RING_CHECK_MS of CLOCK_BOOTTIME,
+ * and at once after a resume: jawakad puts the chip to sleep before suspending
+ * (the GPIO hog keeps it powered, so it would stay lit), and a reset or a
+ * failed write leaves it asleep too. Then the chip is set up again and the
+ * whole frame rewritten. Exiting puts it to sleep: nothing else lights the
+ * ring on xylem.
  *
  * Included by main.c only; static state, one translation unit. */
 #ifndef JW_LEDD_XYLEM_H
 #define JW_LEDD_XYLEM_H
 
 #include <errno.h>
-#include <fcntl.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 
+#include "internal/platform/aw20036_i2c.h"
 #include "internal/platform/power_supply_sysfs.h"
 
-#define JW_LEDD_CLASS_LEDS      8
-#define JW_LEDD_CLASS_CHANNELS  (JW_LEDD_CLASS_LEDS * 3)
-#ifndef JW_LEDD_CLASS_DIR   /* overridable so a test can point at a fixture */
-#define JW_LEDD_CLASS_DIR       "/sys/class/leds"
-#endif
-#define JW_LEDD_CLASS_NAME_MAX  64
-#define JW_LEDD_CLASS_FULL_MS   5000LL
+#define JW_LEDD_RING_CHECK_MS 5000LL
 
 /* Battery Level reads the gauge the type lookup finds (rk817-battery on the
    MLP1) instead of stock's power_supply/battery. */
@@ -63,180 +49,141 @@ static const char *jw_ledd_xylem_capacity_path(void) {
 }
 #define JW_LEDD_CAPACITY_PATH jw_ledd_xylem_capacity_path()
 
-typedef struct {
-    char name[JW_LEDD_CLASS_NAME_MAX];
-    int fd;     /* the brightness attribute, -1 while not open */
-    int max;    /* max_brightness */
-    int last;   /* value last written, -1 unknown */
-    int dim_fd;   /* the dim attribute (leds-aw200xx), -1 when absent */
-    int dim_last; /* dim last written, -1 unknown */
-} jw_ledd_class_channel;
+static int g_ledd_ring_fd = -1;
+static bool g_ledd_ring_ready;          /* set up and awake, as far as we know */
+static bool g_ledd_ring_reported;       /* the "unavailable" line is logged once */
+static bool g_ledd_ring_have_frame;     /* dim/fade below are what the chip shows */
+static uint8_t g_ledd_ring_dim[JW_AW20036_CHANNELS];
+static uint8_t g_ledd_ring_fade[JW_AW20036_CHANNELS];
+static long long g_ledd_ring_checked_ms = -1;
+static long long g_ledd_ring_gap_ms = -1;   /* CLOCK_BOOTTIME - CLOCK_MONOTONIC */
 
-static jw_ledd_class_channel g_ledd_class[JW_LEDD_CLASS_CHANNELS];
-static long long g_ledd_class_full_ms = -1;
-
-static long long jw_ledd_class_now_ms(void) {
+static long long jw_ledd_ring_clock_ms(clockid_t clock) {
     struct timespec ts;
-    clock_gettime(CLOCK_BOOTTIME, &ts);
+    clock_gettime(clock, &ts);
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* Split `text` into up to JW_LEDD_CLASS_CHANNELS names at commas and white
-   space; with `comments`, '#' runs to the end of its line. Returns the count. */
-static int jw_ledd_class_parse(const char *text, bool comments) {
-    int count = 0;
-    const char *p = text;
-    while (p && *p && count < JW_LEDD_CLASS_CHANNELS) {
-        if (comments && *p == '#') {
-            while (*p && *p != '\n') p++;
-            continue;
-        }
-        if (*p == ',' || *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
-            p++;
-            continue;
-        }
-        const char *start = p;
-        while (*p && *p != ',' && *p != ' ' && *p != '\t' && *p != '\r' &&
-               *p != '\n' && !(comments && *p == '#')) {
-            p++;
-        }
-        size_t len = (size_t)(p - start);
-        if (len >= JW_LEDD_CLASS_NAME_MAX) {
-            fprintf(stderr, "jawaka-ledd: LED name too long: %.*s\n", (int)len, start);
-            len = JW_LEDD_CLASS_NAME_MAX - 1;
-        }
-        memcpy(g_ledd_class[count].name, start, len);
-        g_ledd_class[count].name[len] = '\0';
-        count++;
-    }
-    return count;
+/* True once after a suspend: BOOTTIME pulls ahead of MONOTONIC only then. */
+static bool jw_ledd_ring_resumed(void) {
+    long long gap = jw_ledd_ring_clock_ms(CLOCK_BOOTTIME) -
+                    jw_ledd_ring_clock_ms(CLOCK_MONOTONIC);
+    bool resumed = g_ledd_ring_gap_ms >= 0 && gap - g_ledd_ring_gap_ms > 1000;
+    g_ledd_ring_gap_ms = gap;
+    return resumed;
 }
 
-static char *jw_ledd_class_read_file(const char *path) {
-    FILE *fp = fopen(path, "r");
-    if (!fp) return NULL;
-    char *buf = calloc(1, 4096);
-    if (buf) {
-        size_t n = fread(buf, 1, 4095, fp);
-        buf[n] = '\0';
-    }
-    fclose(fp);
-    return buf;
-}
-
-static void jw_ledd_class_try_open(jw_ledd_class_channel *ch) {
-    if (ch->fd >= 0 || !ch->name[0]) return;
-    char path[sizeof(JW_LEDD_CLASS_DIR) + JW_LEDD_CLASS_NAME_MAX + 32];
-    snprintf(path, sizeof(path), "%s/%s/brightness", JW_LEDD_CLASS_DIR, ch->name);
-    ch->fd = open(path, O_WRONLY | O_CLOEXEC);
-    if (ch->fd < 0) return;
-    char dir[sizeof(JW_LEDD_CLASS_DIR) + JW_LEDD_CLASS_NAME_MAX + 8];
-    snprintf(dir, sizeof(dir), "%s/%s", JW_LEDD_CLASS_DIR, ch->name);
-    long max = 0;
-    ch->max = jw_power_supply_read_long(dir, "max_brightness", &max) && max > 0
-                  ? (int)max : 255;
-    ch->last = -1;
-    if (ch->dim_fd < 0) {
-        snprintf(path, sizeof(path), "%s/%s/dim", JW_LEDD_CLASS_DIR, ch->name);
-        ch->dim_fd = open(path, O_WRONLY | O_CLOEXEC);
-    }
-    ch->dim_last = -1;
-}
-
-/* Resolve the 24 names and open what exists. Missing devices are reported
-   once here and looked for again on every full rewrite. */
-static void jw_ledd_class_open(void) {
-    for (int i = 0; i < JW_LEDD_CLASS_CHANNELS; i++) {
-        g_ledd_class[i].name[0] = '\0';
-        g_ledd_class[i].fd = -1;
-        g_ledd_class[i].max = 255;
-        g_ledd_class[i].last = -1;
-        g_ledd_class[i].dim_fd = -1;
-        g_ledd_class[i].dim_last = -1;
-    }
-
-    const char *source = NULL;
-    int count = 0;
-    const char *list = getenv("JAWAKA_LEDD_LEDS");
-    const char *file = getenv("JAWAKA_LEDD_LEDS_FILE");
-    if (list && list[0]) {
-        count = jw_ledd_class_parse(list, false);
-        source = "JAWAKA_LEDD_LEDS";
-    } else if (file && file[0]) {
-        char *text = jw_ledd_class_read_file(file);
-        if (text) {
-            count = jw_ledd_class_parse(text, true);
-            free(text);
-            source = file;
-        } else {
-            fprintf(stderr, "jawaka-ledd: cannot read JAWAKA_LEDD_LEDS_FILE %s: %s\n",
-                    file, strerror(errno));
-        }
-    }
-    if (count == 0) {
-        static const char *const colors[3] = { "red", "green", "blue" };
-        for (int i = 0; i < JW_LEDD_CLASS_CHANNELS; i++) {
-            snprintf(g_ledd_class[i].name, sizeof(g_ledd_class[i].name), "%s:indicator-%d",
-                     colors[i % 3], i / 3);
-        }
-        count = JW_LEDD_CLASS_CHANNELS;
-        source = "default <colour>:indicator-<N> names";
-    } else if (count < JW_LEDD_CLASS_CHANNELS) {
-        fprintf(stderr, "jawaka-ledd: %s names %d of %d ring channels; "
-                "the rest stay dark\n", source, count, JW_LEDD_CLASS_CHANNELS);
-    }
-
-    int opened = 0;
-    for (int i = 0; i < count; i++) {
-        jw_ledd_class_try_open(&g_ledd_class[i]);
-        if (g_ledd_class[i].fd >= 0) {
-            opened++;
-        } else {
-            fprintf(stderr, "jawaka-ledd: %s/%s/brightness: %s\n",
-                    JW_LEDD_CLASS_DIR, g_ledd_class[i].name, strerror(errno));
-        }
-    }
-    if (opened < count) {
-        fprintf(stderr, "jawaka-ledd: %d of %d ring LEDs open (%s)\n",
-                opened, count, source);
-    }
-}
-
-static void jw_ledd_class_write(const uint32_t *argb, int leds) {
-    if (leds > JW_LEDD_CLASS_LEDS) leds = JW_LEDD_CLASS_LEDS;
-    long long now = jw_ledd_class_now_ms();
-    bool full = g_ledd_class_full_ms < 0 || now - g_ledd_class_full_ms >= JW_LEDD_CLASS_FULL_MS;
-    if (full) g_ledd_class_full_ms = now;
-    for (int led = 0; led < leds; led++) {
-        uint32_t a = (argb[led] >> 24) & 0xff;
-        uint32_t c[3] = { (argb[led] >> 16) & 0xff, (argb[led] >> 8) & 0xff, argb[led] & 0xff };
-        for (int k = 0; k < 3; k++) {
-            jw_ledd_class_channel *ch = &g_ledd_class[led * 3 + k];
-            if (full) jw_ledd_class_try_open(ch);
-            if (ch->fd < 0) continue;
-            int value;
-            if (ch->dim_fd >= 0) {
-                int dim = (int)(a >> 2);
-                if (full || dim != ch->dim_last) {
-                    char dbuf[16];
-                    int dlen = snprintf(dbuf, sizeof(dbuf), "%d\n", dim);
-                    ch->dim_last = pwrite(ch->dim_fd, dbuf, (size_t)dlen, 0) == (ssize_t)dlen
-                                       ? dim : -1;
-                }
-                value = (int)((c[k] * (uint32_t)ch->max + 127u) / 255u);
-            } else {
-                value = (int)((c[k] * a * (uint32_t)ch->max + 255u * 255u / 2u) / (255u * 255u));
+/* Open the chip if needed and set it up if it isn't (or `check` finds it
+   asleep). Leaves the ring dark and manual after a set-up. */
+static bool jw_ledd_ring_ensure(bool check) {
+    if (g_ledd_ring_fd < 0) {
+        g_ledd_ring_fd = jw_aw20036_open();
+        if (g_ledd_ring_fd < 0) {
+            if (!g_ledd_ring_reported) {
+                fprintf(stderr, "jawaka-ledd: LED ring chip %s 0x%02x unavailable: %s%s\n",
+                        JW_AW20036_I2C_DEV, JW_AW20036_ADDR, strerror(errno),
+                        errno == EBUSY ? " (a kernel driver holds it)" : "");
+                g_ledd_ring_reported = true;
             }
-            if (!full && value == ch->last) continue;
-            char buf[16];
-            int len = snprintf(buf, sizeof(buf), "%d\n", value);
-            if (pwrite(ch->fd, buf, (size_t)len, 0) == (ssize_t)len) {
-                ch->last = value;
-            } else {
-                ch->last = -1;   /* try again on the next frame */
-            }
+            return false;
+        }
+        g_ledd_ring_ready = false;
+    }
+    if (g_ledd_ring_ready && check &&
+        jw_aw20036_get(g_ledd_ring_fd, JW_AW20036_PAGE_CONFIG, JW_AW20036_SLPCR) != 0x00) {
+        g_ledd_ring_ready = false;
+    }
+    if (!g_ledd_ring_ready) {
+        g_ledd_ring_ready = jw_aw20036_setup(g_ledd_ring_fd);
+        g_ledd_ring_have_frame = false;
+        if (!g_ledd_ring_ready) {
+            fprintf(stderr, "jawaka-ledd: LED ring set-up failed: %s\n", strerror(errno));
         }
     }
+    return g_ledd_ring_ready;
+}
+
+/* Whether this call is due a state check: the first, after a resume, or
+   every JW_LEDD_RING_CHECK_MS. */
+static bool jw_ledd_ring_check_due(void) {
+    long long now = jw_ledd_ring_clock_ms(CLOCK_BOOTTIME);
+    bool due = jw_ledd_ring_resumed() || g_ledd_ring_checked_ms < 0 ||
+               now - g_ledd_ring_checked_ms >= JW_LEDD_RING_CHECK_MS;
+    if (due) g_ledd_ring_checked_ms = now;
+    return due;
+}
+
+static void jw_ledd_ring_open(void) {
+    (void)jw_ledd_ring_resumed();   /* start the suspend clock */
+    (void)jw_ledd_ring_ensure(false);
+}
+
+static void jw_ledd_ring_write(const uint32_t *argb, int leds) {
+    if (!jw_ledd_ring_ensure(jw_ledd_ring_check_due())) {
+        return;
+    }
+    uint8_t dim[JW_AW20036_CHANNELS];
+    uint8_t fade[JW_AW20036_CHANNELS];
+    jw_aw20036_frame(argb, leds, dim, fade);
+    bool all = !g_ledd_ring_have_frame;
+    bool ok = true;
+    if (all || memcmp(dim, g_ledd_ring_dim, sizeof(dim)) != 0) {
+        ok = jw_aw20036_write(g_ledd_ring_fd, JW_AW20036_PAGE_DIM, 0, dim, sizeof(dim));
+        if (ok) memcpy(g_ledd_ring_dim, dim, sizeof(dim));
+    }
+    if (ok && (all || memcmp(fade, g_ledd_ring_fade, sizeof(fade)) != 0)) {
+        ok = jw_aw20036_write(g_ledd_ring_fd, JW_AW20036_PAGE_FADE, 0, fade, sizeof(fade));
+        if (ok) memcpy(g_ledd_ring_fade, fade, sizeof(fade));
+    }
+    g_ledd_ring_have_frame = ok;
+    if (!ok) {
+        g_ledd_ring_ready = false;   /* set up again on the next frame */
+    }
+}
+
+/* Breath on the chip's engine: every LED the colour, between dark and
+   `alpha` (0 to 255), rising and falling over the nearest time steps to
+   `rise_ms` and `fall_ms`. */
+static bool jw_ledd_ring_breathe(int r, int g, int b, int alpha, int rise_ms, int fall_ms) {
+    if (!jw_ledd_ring_ensure(true)) {
+        return false;
+    }
+    uint32_t colour = 0xff000000u | ((uint32_t)(r & 0xff) << 16) |
+                      ((uint32_t)(g & 0xff) << 8) | (uint32_t)(b & 0xff);
+    uint32_t argb[JW_AW20036_LEDS];
+    for (int i = 0; i < JW_AW20036_LEDS; i++) argb[i] = colour;
+    uint8_t dim[JW_AW20036_CHANNELS];
+    uint8_t fade[JW_AW20036_CHANNELS];
+    jw_aw20036_frame(argb, JW_AW20036_LEDS, dim, fade);
+    for (int ch = 0; ch < JW_AW20036_CHANNELS; ch++) {
+        dim[ch] = (uint8_t)(fade[ch] >> 2);   /* the colour as current, 0 to 63 */
+    }
+    g_ledd_ring_have_frame = false;
+    bool ok = jw_aw20036_breathe(g_ledd_ring_fd, dim, (uint8_t)(alpha & 0xff),
+                                 jw_aw20036_step(rise_ms), jw_aw20036_step(fall_ms));
+    if (!ok) {
+        fprintf(stderr, "jawaka-ledd: LED ring breathing failed: %s\n", strerror(errno));
+        g_ledd_ring_ready = false;
+    }
+    return ok;
+}
+
+/* Whether the engine is still breathing; false after a resume (jawakad put
+   the chip to sleep) or a reset, and then main.c starts it again. */
+static bool jw_ledd_ring_breathing(void) {
+    if (g_ledd_ring_fd < 0) return false;
+    bool resumed = jw_ledd_ring_resumed();
+    return !resumed && jw_aw20036_breathing(g_ledd_ring_fd);
+}
+
+/* Dark and asleep, once. Async-signal-safe enough for the fatal handler:
+   ioctl and nothing else. */
+static void jw_ledd_ring_off(void) {
+    static volatile sig_atomic_t done;
+    if (done || g_ledd_ring_fd < 0) return;
+    done = 1;
+    (void)jw_aw20036_stop_patterns(g_ledd_ring_fd);
+    (void)jw_aw20036_sleep(g_ledd_ring_fd);
 }
 
 #endif /* JW_LEDD_XYLEM_H */

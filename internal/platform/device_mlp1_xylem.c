@@ -2,6 +2,7 @@
 #include "internal/platform/device_mlp1_xylem.h"
 
 #include "internal/core/log.h"
+#include "internal/platform/aw20036_i2c.h"
 #include "internal/platform/power_supply_sysfs.h"
 
 #include <errno.h>
@@ -359,6 +360,18 @@ bool jw_mlp1_xylem_sink_open(void) {
 /* ── Sleep ──────────────────────────────────────────────────────────────── */
 
 int jw_mlp1_xylem_suspend(int restore_brightness_raw) {
+    /* The LED ring's chip stays powered through suspend (a GPIO hog holds its
+       enable line), so it would stay lit: put it to sleep. jawaka-ledd sees
+       the resume and sets the chip up again. No chip, or a kernel driver
+       holding it, leaves nothing to do. */
+    int ring = jw_aw20036_open();
+    if (ring >= 0) {
+        if (!jw_aw20036_sleep(ring)) {
+            jw_log_warn("platform: LED ring sleep before suspend failed: %s",
+                        strerror(errno));
+        }
+        close(ring);
+    }
     /* Mainline keeps the panel lit through `mem` unless it is blanked first.
        jawakad has normally blanked it already (SCREEN_OFF); doing it here
        too keeps a bare SLEEP request from suspending with the panel on. */

@@ -20,8 +20,9 @@
  *
  * Standalone + MLP1-specific (like device_mlp1.c): pure libc + sysfs, no deps.
  *
- * OS=xylem has no loong_light and no mmrgball: the same effects go out to the
- * ring's mainline LED-class devices instead (xylem.h).
+ * OS=xylem has no loong_light and no mmrgball: the helper drives the ring's
+ * chip itself over I2C (xylem.h), and Breath runs on the chip's own breathing
+ * engine with no frames at all. Exiting leaves the ring dark there.
  */
 #include <dirent.h>
 #include <signal.h>
@@ -33,7 +34,7 @@
 #include <unistd.h>
 
 #ifdef JW_OS_XYLEM
-/* OS=xylem: LED-class output, no loong_light, battery by type. Before
+/* OS=xylem: the chip over I2C, no loong_light, battery by type. Before
    battery.h, which takes its capacity path from it. */
 #include "xylem.h"
 #endif
@@ -101,6 +102,9 @@ static pid_t jw__find_daemon(const char *name) {
 #endif
 
 static void jw__thaw(void) {
+#ifdef JW_OS_XYLEM
+    jw_ledd_ring_off();   /* nothing else lights the ring on xylem */
+#endif
     if (g_daemon_pid > 0) kill(g_daemon_pid, SIGCONT);
 }
 
@@ -117,7 +121,7 @@ static void jw__on_fatal(int sig) {
 
 static void jw__write_frame(const uint32_t argb[JW_LED_COUNT]) {
 #ifdef JW_OS_XYLEM
-    jw_ledd_class_write(argb, JW_LED_COUNT);
+    jw_ledd_ring_write(argb, JW_LED_COUNT);
     return;
 #endif
     FILE *fp = fopen(JW_LED_MMRGBALL, "w");
@@ -344,6 +348,29 @@ static void jw__run_steady(const char *effect, const jw_effect_params *p) {
     }
 }
 
+#ifdef JW_OS_XYLEM
+/* Breath on xylem: the chip's own breathing engine, which needs no frames, no
+   I2C and no CPU once started. Rise and fall are jw__fx_breath's two half
+   periods, on the chip's nearest time steps. Each pass checks the engine
+   still runs, which a suspend (jawakad puts the chip to sleep first) or a
+   reset ends, and starts it again. */
+static void jw__run_chip_breath(const jw_effect_params *p, int speed) {
+    int period = 96 - speed * 7;
+    if (period < 24) period = 24;
+    int half = period / 2;
+    int rise_ms = half * JW_LED_TICK_MS;
+    int fall_ms = (period - half) * JW_LED_TICK_MS;
+    bool running = false;
+    while (g_running) {
+        if (!running || !jw_ledd_ring_breathing()) {
+            running = jw_ledd_ring_breathe(p->r, p->g, p->b, p->alpha_max,
+                                           rise_ms, fall_ms);
+        }
+        jw__sleep_boottime_ms(JW_LEDD_STEADY_PASS_MS);
+    }
+}
+#endif
+
 int main(int argc, char **argv) {
     if (argc < 7) {
         fprintf(stderr, "usage: %s <effect> <r> <g> <b> <brightness 0-10> <speed 0-10>\n", argv[0]);
@@ -386,7 +413,7 @@ int main(int argc, char **argv) {
 
 #ifdef JW_OS_XYLEM
     /* Nothing to freeze: the ring is the helper's from the start. */
-    jw_ledd_class_open();
+    jw_ledd_ring_open();
 #else
     g_daemon_pid = jw__find_daemon(JW_LED_DAEMON);
     if (g_daemon_pid > 0) kill(g_daemon_pid, SIGSTOP);
@@ -398,6 +425,14 @@ int main(int argc, char **argv) {
         jw__thaw();
         return 0;
     }
+
+#ifdef JW_OS_XYLEM
+    if (strcmp(effect, "breath") == 0) {
+        jw__run_chip_breath(&p, speed);
+        jw__thaw();
+        return 0;
+    }
+#endif
 
     struct timespec sleep_for = {
         .tv_sec  = interval_ms / 1000,
