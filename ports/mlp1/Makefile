@@ -4,7 +4,14 @@
 SHELL := /bin/bash
 
 JAWAKA_DIR ?= /workspace/Jawaka
+# Target OS: stock (LoongOS) or xylem (mainline). xylem gets its own output
+# folder so both builds can sit side by side.
+OS ?= stock
+ifeq ($(OS),xylem)
+BUILD ?= build/mlp1-xylem
+else
 BUILD ?= build/mlp1
+endif
 CATASTROPHE_DIR ?= /workspace/Catastrophe
 MLP1_BUILD_PROFILE ?= release
 I18N_COVERAGE ?= 0
@@ -16,6 +23,7 @@ all:
 		BUILD="$(BUILD)" \
 		CSTD="-std=gnu11" \
 		PLATFORM=mlp1 \
+		OS="$(OS)" \
 		MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
 		I18N_COVERAGE="$(I18N_COVERAGE)" \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
@@ -26,6 +34,7 @@ pakrat-smoke:
 		BUILD="$(BUILD)" \
 		CSTD="-std=gnu11" \
 		PLATFORM=mlp1 \
+		OS="$(OS)" \
 		MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
 		I18N_COVERAGE="$(I18N_COVERAGE)" \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
@@ -36,6 +45,7 @@ inhibit-smoke:
 		BUILD="$(BUILD)" \
 		CSTD="-std=gnu11" \
 		PLATFORM=mlp1 \
+		OS="$(OS)" \
 		MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
 		I18N_COVERAGE="$(I18N_COVERAGE)" \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
@@ -46,6 +56,7 @@ chord-test:
 		BUILD="$(BUILD)" \
 		CSTD="-std=gnu11" \
 		PLATFORM=mlp1 \
+		OS="$(OS)" \
 		MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
 		I18N_COVERAGE="$(I18N_COVERAGE)" \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
@@ -56,6 +67,7 @@ timezone-probe:
 		BUILD="$(BUILD)" \
 		CSTD="-std=gnu11" \
 		PLATFORM=mlp1 \
+		OS="$(OS)" \
 		MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
 		I18N_COVERAGE="$(I18N_COVERAGE)" \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \

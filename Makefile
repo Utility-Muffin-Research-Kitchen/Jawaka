@@ -29,6 +29,26 @@ ifeq ($(PLATFORM),mlp1)
 CFLAGS_PLATFORM += -DPLATFORM_MLP1
 endif
 
+# Target OS for the MLP1 build. "stock" is LoongOS with its vendor services;
+# "xylem" is the mainline-kernel Buildroot distro, where none of them exist
+# (see internal/platform/device_mlp1_xylem.h). The stock build is unchanged by
+# this flag. `make mlp1 OS=xylem` runs on the host with the default PLATFORM
+# and hands OS to the toolchain container, which builds with PLATFORM=mlp1.
+OS ?= stock
+ifeq ($(filter stock xylem,$(OS)),)
+$(error OS must be stock or xylem, not "$(OS)")
+endif
+ifeq ($(OS),xylem)
+ifneq ($(PLATFORM),mlp1)
+ifneq ($(filter-out mlp1 clean,$(or $(MAKECMDGOALS),all)),)
+$(error OS=xylem is only valid with PLATFORM=mlp1; build it with `make mlp1 OS=xylem`)
+endif
+endif
+endif
+ifeq ($(PLATFORM)-$(OS),mlp1-xylem)
+CFLAGS_PLATFORM += -DJW_OS_XYLEM
+endif
+
 DEFAULT_CATASTROPHE_DIR := $(if $(wildcard ../Catastrophe/include/catastrophe.h),$(abspath ../Catastrophe),third_party/catastrophe)
 CATASTROPHE_DIR ?= $(DEFAULT_CATASTROPHE_DIR)
 CATASTROPHE_INCLUDE := $(CATASTROPHE_DIR)/include
@@ -131,6 +151,11 @@ EXTERNAL_INPUT_SRC := internal/platform/external_input_monitor_mlp1.c
 BLUETOOTH_SRC := internal/platform/bluetooth_mlp1.c
 WIFI_SRC := internal/platform/wifi_mlp1.c internal/platform/wifi_ssid.c \
 	internal/platform/wifi_attempt.c
+ifeq ($(OS),xylem)
+# Wi-Fi and Bluetooth have no xylem backend yet.
+BLUETOOTH_SRC := internal/platform/bluetooth_unsupported.c
+WIFI_SRC := internal/platform/wifi_unsupported.c internal/platform/wifi_attempt.c
+endif
 OSD_BACKEND_SRC := cmd/jawaka-osd/osd_wayland.c $(BUILD)/generated/xdg-shell-protocol.c
 # jawakad waits for Weston to accept clients before it restarts this OSD.
 CFLAGS_DAEMON += -DJW_OSD_WAYLAND=1
@@ -1704,6 +1729,9 @@ $(BUILD)/bin/jawaka-inhibitctl: $(INHIBIT_CTL_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(INHIBIT_CTL_SRCS)
 
 ifeq ($(PLATFORM),mlp1)
+ifeq ($(OS),xylem)
+MLP1_MANIFEST_OS_LINE := printf '  "os": "%s",\n' "$(OS)";
+endif
 $(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c cmd/jawaka-ledd/battery.h cmd/jawaka-ledd/steady.h | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ cmd/jawaka-ledd/main.c
 
@@ -1712,6 +1740,7 @@ $(BUILD)/build-manifest.json: $(ALL_BINS) FORCE
 	@{ \
 		printf '{\n'; \
 		printf '  "platform": "mlp1",\n'; \
+		$(MLP1_MANIFEST_OS_LINE) \
 		printf '  "target_soc": "%s",\n' "$(UMRK_MLP1_TARGET_SOC)"; \
 		printf '  "target_cpu": "%s",\n' "$(UMRK_MLP1_TARGET_CPU)"; \
 		printf '  "build_profile": "%s",\n' "$(MLP1_BUILD_PROFILE)"; \
@@ -1805,9 +1834,15 @@ clean:
 tg5040 tg5050 my355:
 	$(MAKE) -C ports/$@ all
 
+# OS picks the target OS (stock or xylem). ports/mlp1/Makefile gives xylem its
+# own output folder, build/mlp1-xylem, or a BUILD set on this command line;
+# stock always builds into build/mlp1, as before.
+MLP1_DOCKER_BUILD_ENV := $(if $(and $(filter xylem,$(OS)),$(filter command line,$(origin BUILD))),-e BUILD="$(BUILD)")
 mlp1:
 	docker run --rm \
 		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		-e OS="$(OS)" \
+		$(MLP1_DOCKER_BUILD_ENV) \
 		-e SCREENSCRAPER_REQUIRED="$(SCREENSCRAPER_REQUIRED)" \
 		-e I18N_COVERAGE="$(I18N_COVERAGE)" \
 		-e SCREENSCRAPER_ENV_FILE \
