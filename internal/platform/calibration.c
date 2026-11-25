@@ -15,8 +15,15 @@
    released stick therefore reads a leftover of up to 1151 that never decays,
    a different one after each release. A smaller deadzone forwards it as a
    constant deflection; this one swallows it and also smooths the driver's jump
-   from 0 straight to 1800. */
+   from 0 straight to 1800. xylem takes its floor from the board instead. */
 #define JW_CAL_MIN_DEADZONE 1800
+/* The profile's file under $USERDATA_PATH/input. xylem's is its own: a stock
+   profile is in loong1-joystick's units, which no xylem driver shares. */
+#ifdef JW_OS_XYLEM
+#define JW_CAL_PROFILE_FILE "leaf-gamepad-calibration.json"
+#else
+#define JW_CAL_PROFILE_FILE "loong-gamepad-calibration.json"
+#endif
 /* Reject obviously-garbage bounds (the panel is a signed 16-bit axis). */
 #define JW_CAL_SANE_LIMIT   40000
 #define JW_CAL_MAX_BYTES    (64 * 1024)
@@ -80,7 +87,7 @@ static const char *jw__cal_profile_path(void) {
     }
     static char path[1024];
     int n = snprintf(path, sizeof(path),
-                     "%s/input/loong-gamepad-calibration.json", userdata);
+                     "%s/input/" JW_CAL_PROFILE_FILE, userdata);
     if (n <= 0 || (size_t)n >= sizeof(path)) {
         return NULL;
     }
@@ -107,7 +114,9 @@ static bool jw__cal_axis_sane(int32_t mn, int32_t zero, int32_t mx,
    Y -21765..-22635 / 23520..25056. Every one reaches these, so a stick with more
    throw just hits full output a little early rather than never getting there.
    No center is needed: the driver re-centers at every boot (median of its last
-   nine boot-time readings) and zeroes everything inside its deadzone. */
+   nine boot-time readings) and zeroes everything inside its deadzone.
+   Stock only: xylem's default is the board's entry in the source table. */
+#ifndef JW_OS_XYLEM
 void jw_calibration_default(jw_stick_calibration *out) {
     if (!out) {
         return;
@@ -122,12 +131,36 @@ void jw_calibration_default(jw_stick_calibration *out) {
         .radial_clamp = false,   /* per-axis scaling, as Phase 0 settled */
     };
 }
+#endif
 
+#ifdef JW_OS_XYLEM
+/* On the board's scale: within twice its extents on every side. That leaves
+   room for a unit with more reach than the default, and none for a profile in
+   another driver's units. */
+static bool jw__cal_on_board_scale(const jw_stick_calibration *profile,
+                                   const jw_stick_calibration *board) {
+    return profile->x_min >= 2L * board->x_min && profile->x_max <= 2L * board->x_max &&
+           profile->y_min >= 2L * board->y_min && profile->y_max <= 2L * board->y_max;
+}
+
+bool jw_calibration_load_board(jw_stick_calibration *out,
+                               const jw_stick_calibration *board) {
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!board || !board->loaded) {
+        return false;
+    }
+    const int32_t min_deadzone = board->deadzone;
+#else
 bool jw_calibration_load(jw_stick_calibration *out) {
     if (!out) {
         return false;
     }
     memset(out, 0, sizeof(*out));
+    const int32_t min_deadzone = JW_CAL_MIN_DEADZONE;
+#endif
 
     const char *path = jw__cal_profile_path();
     if (!path) {
@@ -188,8 +221,20 @@ bool jw_calibration_load(jw_stick_calibration *out) {
 
     cJSON_Delete(root);
 
-    out->deadzone = (center_noise > JW_CAL_MIN_DEADZONE) ? center_noise
-                                                         : JW_CAL_MIN_DEADZONE;
+#ifdef JW_OS_XYLEM
+    if (!jw__cal_on_board_scale(out, board)) {
+        jw_log_warn("calibration: %s is not on this stick's scale "
+                    "(X[%d..%d] Y[%d..%d], a stock profile?); using the default",
+                    path, out->x_min, out->x_max, out->y_min, out->y_max);
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    /* The pad's stick range, whatever the profile asked for. */
+    out->out_min = board->out_min;
+    out->out_max = board->out_max;
+#endif
+
+    out->deadzone = (center_noise > min_deadzone) ? center_noise : min_deadzone;
 
     if (out->out_min >= 0 || out->out_max <= 0 ||
         !jw__cal_axis_sane(out->x_min, out->x_zero, out->x_max, out->deadzone) ||

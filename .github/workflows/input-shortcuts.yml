@@ -17,6 +17,8 @@ name: Input shortcuts
 #
 # The proxy test uses pipes and a private file sink. Linux CI covers its
 # event state machine; the MLP1 spike covers actual evdev/uinput and SDL.
+# xylem-input-tests runs it again as xylem builds it, with the Leaf Gamepad's
+# translation, descriptor and stick calibration test.
 
 on:
   pull_request:
@@ -38,6 +40,7 @@ jobs:
       - run: make shortcut-dispatch-check
       - run: make menu-escape-test jawaka-input-proxy-chord-test
       - run: build/bin/input-proxy-chord-test
+      - run: make xylem-input-tests
 
   # Split out because it is the only job here that needs a dependency: the
   # smoke runs a real jawakad, which links libcurl. Keeping it separate means

@@ -6,6 +6,9 @@
 #include "internal/platform/input_proxy.h"
 #include "internal/platform/calibration.h"
 #include "internal/core/log.h"
+#ifdef JW_OS_XYLEM
+#include "internal/platform/leaf_gamepad.h"
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -26,20 +29,20 @@
 
 /* The built-in devices, by evdev name, per target OS.
      stock: the vendor "Loong Gamepad" module, which also carries the volume
-            keys, and the PMIC's power key.
-     xylem: ROCKNIX's out-of-tree rocknix-joypad driver, named by its
-            device-tree "joypad-name" ("retrogame_joypad" in Green Genes'
-            rk3566-miniloong-rocknix.dtsi; the driver's own default is
-            "rocknix-joypad"), the same PMIC power key, and the volume keys on
-            their own gpio-keys device. JAWAKA_XYLEM_PAD_NAME overrides the
-            pad's name. */
+            keys, and the PMIC's power key. The virtual pad is a clone of
+            it, name, ids and all.
+     xylem: the board's devices, from the Leaf Gamepad's source table
+            (leaf_gamepad.h): on the MLP1 ROCKNIX's rocknix-joypad, named by
+            its device-tree "joypad-name" ("retrogame_joypad"), the same PMIC
+            power key, and the volume keys on their own gpio-keys device.
+            JAWAKA_XYLEM_PAD_NAME overrides the pad's name. The virtual pad
+            is the Leaf Gamepad, the same on every board, which the board's
+            pad is translated into. */
 #ifdef JW_OS_XYLEM
-#define JW_MLP1_XYLEM_PAD_NAME_DEFAULT "retrogame_joypad"
-#define JW_MLP1_XYLEM_VOLKEYS_NAME     "gpio-keys-vol"   /* KEY_VOLUMEUP/DOWN */
-static const char *jw__xylem_pad_name(void);
-#define JW_MLP1_INPUT_NAME jw__xylem_pad_name()
+#define JW_MLP1_VIRTUAL_NAME JW_LEAF_PAD_NAME
 #else
 #define JW_MLP1_INPUT_NAME "Loong Gamepad"
+#define JW_MLP1_VIRTUAL_NAME JW_MLP1_INPUT_NAME
 #endif
 #define JW_MLP1_PWRKEY_NAME "rk805 pwrkey"   /* physical power button (KEY_POWER) */
 #define JW_MLP1_BRIGHTNESS_REPEAT_MS 120u
@@ -173,6 +176,10 @@ typedef struct {
        behave as stock's in-pad keys do. -1 when absent. */
     int             vol_fd;
     bool            vol_fd_failed;
+    /* The board the pad belongs to, and what its d-pad buttons leave the
+       Leaf Gamepad's hat at. */
+    const jw_leaf_pad_board *board;
+    jw_leaf_pad_state        leaf;
 #endif
 } jw_mlp1_input_proxy_data;
 
@@ -337,6 +344,7 @@ static bool jw__event_name_matches(int fd, const char *expected) {
            strcmp(name, expected) == 0;
 }
 
+#ifndef JW_OS_XYLEM
 static int jw__open_loong_gamepad(char *out_path, size_t out_size) {
     for (int i = 0; i < 32; i++) {
         char path[64];
@@ -373,15 +381,14 @@ static int jw__open_power_key(void) {
     }
     return -1;
 }
+#endif
 
 #ifdef JW_OS_XYLEM
-static const char *jw__xylem_pad_name(void) {
-    const char *name = getenv("JAWAKA_XYLEM_PAD_NAME");
-    return name && name[0] ? name : JW_MLP1_XYLEM_PAD_NAME_DEFAULT;
-}
-
-/* The volume keys' device, or -1. */
-static int jw__xylem_open_volume_keys(void) {
+/* The first event device whose name is a known board's pad, with that board;
+   or -1. */
+static int jw__xylem_open_pad(char *out_path, size_t out_size,
+                              const jw_leaf_pad_board **board) {
+    const char *override = getenv("JAWAKA_XYLEM_PAD_NAME");
     for (int i = 0; i < 32; i++) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
@@ -389,7 +396,31 @@ static int jw__xylem_open_volume_keys(void) {
         if (fd < 0) {
             continue;
         }
-        if (jw__event_name_matches(fd, JW_MLP1_XYLEM_VOLKEYS_NAME)) {
+        char name[128];
+        memset(name, 0, sizeof(name));
+        const jw_leaf_pad_board *found =
+            ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0
+                ? jw_leaf_pad_board_for_name(name, override) : NULL;
+        if (found) {
+            snprintf(out_path, out_size, "%s", path);
+            *board = found;
+            return fd;
+        }
+        close(fd);
+    }
+    return -1;
+}
+
+/* The device by this name (the power key, the volume keys), or -1. */
+static int jw__xylem_open_named(const char *name) {
+    for (int i = 0; name && i < 32; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/input/event%d", i);
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+        if (jw__event_name_matches(fd, name)) {
             return fd;
         }
         close(fd);
@@ -398,6 +429,7 @@ static int jw__xylem_open_volume_keys(void) {
 }
 #endif
 
+#ifndef JW_OS_XYLEM
 static int jw__uinput_copy_capabilities(int input_fd, int uinput_fd,
                                         const jw_stick_calibration *cal) {
     unsigned char ev_bits[(EV_MAX + 8) / 8];
@@ -463,9 +495,46 @@ static int jw__uinput_copy_capabilities(int input_fd, int uinput_fd,
 
     return 0;
 }
+#endif
 
 /* Record where each ABS axis rests, for jw_input_proxy_release_buttons. A hat
    rests at 0; a stick rests at the midpoint of its range. */
+#ifdef JW_OS_XYLEM
+/* xylem: the Leaf Gamepad's axes rather than the board's. Its hat comes from
+   the d-pad buttons' key state on a board that has those; the rest are read
+   from the board's own axes. Board axes the pad lacks are never tracked. */
+static bool jw__capture_abs_neutrals(jw_mlp1_input_proxy_data *data) {
+    unsigned char keys[(KEY_MAX + 8) / 8];
+    memset(keys, 0, sizeof(keys));
+    if (ioctl(data->input_fd, EVIOCGKEY(sizeof(keys)), keys) < 0) {
+        return false;
+    }
+    jw_leaf_pad_resync(&data->leaf, keys, sizeof(keys));
+    bool button_hat = data->board->dpad == JW_LEAF_DPAD_BUTTONS;
+    for (int code = 0; code <= ABS_MAX; code++) {
+        if (!jw_leaf_pad_has_abs(data->board, (uint16_t)code)) {
+            continue;
+        }
+        data->abs_present[code] = true;
+        bool hat = code == ABS_HAT0X || code == ABS_HAT0Y;
+        if (hat && button_hat) {
+            data->abs_neutral[code] = 0;
+            data->abs_deadzone[code] = 0;
+            data->abs_value[code] = jw_leaf_pad_hat(&data->leaf, (uint16_t)code);
+            continue;
+        }
+        struct input_absinfo absinfo;
+        memset(&absinfo, 0, sizeof(absinfo));
+        if (ioctl(data->input_fd, EVIOCGABS(code), &absinfo) != 0) {
+            return false;
+        }
+        data->abs_neutral[code] = hat ? 0 : (absinfo.minimum + absinfo.maximum) / 2;
+        data->abs_deadzone[code] = absinfo.flat;
+        data->abs_value[code] = absinfo.value;
+    }
+    return true;
+}
+#else
 static bool jw__capture_abs_neutrals(jw_mlp1_input_proxy_data *data) {
     unsigned char abs_bits[(ABS_MAX + 8) / 8];
     memset(abs_bits, 0, sizeof(abs_bits));
@@ -490,7 +559,66 @@ static bool jw__capture_abs_neutrals(jw_mlp1_input_proxy_data *data) {
     }
     return true;
 }
+#endif
 
+#ifdef JW_OS_XYLEM
+/* A board stick value on the pad's scale: the left stick through its
+   calibration, a right stick through the board's default. */
+static int32_t jw__xylem_stick_value(const jw_mlp1_input_proxy_data *data,
+                                     uint16_t code, int32_t raw) {
+    if (code == ABS_RX || code == ABS_RY) {
+        return jw_calibration_axis(&data->board->right_stick, code == ABS_RX, raw);
+    }
+    return jw_calibration_axis(&data->cal, code == ABS_X, raw);
+}
+
+/* The Leaf Gamepad (leaf_gamepad.h): its own identity and layout, whatever
+   the board's pad declares. Each axis starts where the board's controls are
+   now, on the pad's scale, so anything that reads the pad before the first
+   event sees the real state. Rumble is added here as on stock: the motor
+   hangs off a PWM channel jawakad owns, not the board's pad. */
+static int jw__create_virtual_gamepad(jw_mlp1_input_proxy_data *data) {
+    jw_leaf_pad_descriptor desc;
+    jw_leaf_pad_describe(data->board, &desc);
+
+    int ufd = open("/dev/uinput", O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (ufd < 0) {
+        return -1;
+    }
+    bool ok = ioctl(ufd, UI_SET_EVBIT, EV_KEY) >= 0 &&
+              ioctl(ufd, UI_SET_EVBIT, EV_ABS) >= 0;
+    for (int i = 0; ok && i < desc.key_count; i++) {
+        ok = ioctl(ufd, UI_SET_KEYBIT, desc.keys[i]) >= 0;
+    }
+    for (int i = 0; ok && i < desc.abs_count; i++) {
+        struct uinput_abs_setup setup = desc.abs[i];
+        uint16_t code = setup.code;
+        setup.absinfo.value = code == ABS_HAT0X || code == ABS_HAT0Y
+            ? data->abs_value[code]
+            : jw__xylem_stick_value(data, code, data->abs_value[code]);
+        ok = ioctl(ufd, UI_SET_ABSBIT, code) >= 0 &&
+             ioctl(ufd, UI_ABS_SETUP, &setup) >= 0;
+    }
+    if (!ok) {
+        close(ufd);
+        return -1;
+    }
+
+    bool have_ff = ioctl(ufd, UI_SET_EVBIT, EV_FF) >= 0 &&
+                   ioctl(ufd, UI_SET_FFBIT, FF_RUMBLE) >= 0;
+    if (!have_ff) {
+        jw_log_warn("input proxy: force feedback unavailable on the virtual pad: %s",
+                    strerror(errno));
+    }
+    desc.setup.ff_effects_max = have_ff ? JW_MLP1_FF_EFFECTS_MAX : 0;
+    if (ioctl(ufd, UI_DEV_SETUP, &desc.setup) < 0 ||
+        ioctl(ufd, UI_DEV_CREATE) < 0) {
+        close(ufd);
+        return -1;
+    }
+    return ufd;
+}
+#else
 static int jw__create_virtual_gamepad(int input_fd, const jw_stick_calibration *cal) {
     /* O_RDWR, not O_WRONLY: force-feedback upload requests and playback commands
        come back to us *through* this fd, so the write-only handle the pad used
@@ -540,6 +668,7 @@ static int jw__create_virtual_gamepad(int input_fd, const jw_stick_calibration *
 
     return ufd;
 }
+#endif
 
 static bool jw__same_rdev(const char *a, const char *b) {
     struct stat sa;
@@ -568,7 +697,7 @@ static int jw__find_virtual_event(const char *physical_path, char *out, size_t o
                 continue;
             }
 
-            bool match = jw__event_name_matches(fd, JW_MLP1_INPUT_NAME);
+            bool match = jw__event_name_matches(fd, JW_MLP1_VIRTUAL_NAME);
             close(fd);
             if (match) {
                 snprintf(out, out_size, "%s", path);
@@ -639,6 +768,19 @@ static void jw__sync_stick(jw_mlp1_input_proxy_data *data) {
                         jw_calibration_axis(&data->cal, code == ABS_X, info.value));
         wrote = true;
     }
+#ifdef JW_OS_XYLEM
+    for (int code = ABS_RX; code <= ABS_RY; code++) {
+        struct input_absinfo info;
+        if (!data->abs_present[code] ||
+            ioctl(data->input_fd, EVIOCGABS(code), &info) < 0) {
+            continue;
+        }
+        data->abs_value[code] = info.value;
+        jw__write_event(data, EV_ABS, (uint16_t)code,
+                        jw__xylem_stick_value(data, (uint16_t)code, info.value));
+        wrote = true;
+    }
+#endif
     if (wrote) {
         jw__emit_syn(data);
     }
@@ -652,7 +794,11 @@ static void jw__forward_stick_abs(jw_mlp1_input_proxy_data *data,
         return;   /* watch-only mode: there is nothing to forward */
     }
     struct input_event out = *ev;
+#ifdef JW_OS_XYLEM
+    out.value = jw__xylem_stick_value(data, ev->code, ev->value);
+#else
     out.value = jw_calibration_axis(&data->cal, ev->code == ABS_X, ev->value);
+#endif
     jw__forward_event(data, &out);
 }
 
@@ -768,8 +914,25 @@ static void jw__read_physical_state(jw_mlp1_input_proxy_data *data) {
     data->physical_state_valid =
         ioctl(data->input_fd, EVIOCGKEY(sizeof(data->physical_keys)),
               data->physical_keys) >= 0;
+#ifdef JW_OS_XYLEM
+    /* The board's key state in the Leaf Gamepad's shape: d-pad buttons
+       become the hat, and codes the pad does not carry are dropped. The
+       translator restarts from here too, after a flush or lost events. */
+    bool button_hat = data->board && data->board->dpad == JW_LEAF_DPAD_BUTTONS;
+    if (data->physical_state_valid) {
+        jw_leaf_pad_resync(&data->leaf, data->physical_keys,
+                           sizeof(data->physical_keys));
+        if (button_hat) {
+            data->abs_value[ABS_HAT0X] = jw_leaf_pad_hat(&data->leaf, ABS_HAT0X);
+            data->abs_value[ABS_HAT0Y] = jw_leaf_pad_hat(&data->leaf, ABS_HAT0Y);
+        }
+    }
+#endif
     for (int code = 0; code < ABS_CNT; code++) {
         if (!data->abs_present[code]) continue;
+#ifdef JW_OS_XYLEM
+        if (button_hat && (code == ABS_HAT0X || code == ABS_HAT0Y)) continue;
+#endif
         struct input_absinfo info;
         if (ioctl(data->input_fd, EVIOCGABS(code), &info) < 0) {
             data->physical_state_valid = false;
@@ -1280,6 +1443,29 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
        and let a stray stop for effect 0 through before anything was ever sent. */
     data->ff_playing_id = -1;
     data->last_activity_ms = jw__monotonic_ms();   /* don't count boot as idle */
+#ifdef JW_OS_XYLEM
+    /* The calibration belongs to the board's stick, so it waits for the pad
+       below. */
+    data->input_fd = jw__xylem_open_pad(data->physical_path,
+                                        sizeof(data->physical_path), &data->board);
+    if (data->input_fd < 0) {
+        jw_log_warn("input proxy: no known gamepad found (MLP1: \"%s\"; "
+                    "JAWAKA_XYLEM_PAD_NAME sets the name)",
+                    jw_leaf_pad_boards[0].pad_name);
+        free(data);
+        return 0;
+    }
+    jw_leaf_pad_state_init(&data->leaf, data->board);
+    if (!jw_calibration_load_board(&data->cal, &data->board->left_stick)) {
+        data->cal = data->board->left_stick;
+        jw_log_info("calibration: no profile; %s default X[%d..%d] Y[%d..%d] dz=%d",
+                    data->board->id, data->cal.x_min, data->cal.x_max,
+                    data->cal.y_min, data->cal.y_max, data->cal.deadzone);
+    }
+    jw_log_info("input proxy: %s pad %s becomes \"%s\" %04x:%04x",
+                data->board->id, data->physical_path, JW_LEAF_PAD_NAME,
+                JW_LEAF_PAD_VENDOR, JW_LEAF_PAD_PRODUCT);
+#else
     if (!jw_calibration_load(&data->cal)) {
         jw_calibration_default(&data->cal);
         jw_log_info("calibration: no profile; default X[%d..%d] Y[%d..%d] dz=%d",
@@ -1289,18 +1475,14 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
 
     data->input_fd = jw__open_loong_gamepad(data->physical_path, sizeof(data->physical_path));
     if (data->input_fd < 0) {
-#ifdef JW_OS_XYLEM
-        jw_log_warn("input proxy: gamepad \"%s\" not found (JAWAKA_XYLEM_PAD_NAME "
-                    "sets the name)", JW_MLP1_INPUT_NAME);
-#else
         jw_log_warn("input proxy: Loong Gamepad not found");
-#endif
         free(data);
         return 0;
     }
+#endif
     snprintf(proxy->physical_event_path, sizeof(proxy->physical_event_path),
              "%s", data->physical_path);
-    snprintf(proxy->device_name, sizeof(proxy->device_name), "%s", JW_MLP1_INPUT_NAME);
+    snprintf(proxy->device_name, sizeof(proxy->device_name), "%s", JW_MLP1_VIRTUAL_NAME);
 
     int input_clock = CLOCK_MONOTONIC;
     data->input_evdev_clock =
@@ -1319,7 +1501,11 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
             free(data);
             return -1;
         }
+#ifdef JW_OS_XYLEM
+        data->uinput_fd = jw__create_virtual_gamepad(data);
+#else
         data->uinput_fd = jw__create_virtual_gamepad(data->input_fd, &data->cal);
+#endif
         if (data->uinput_fd < 0) {
             jw_log_warn("input proxy: could not create virtual gamepad: %s", strerror(errno));
             close(data->input_fd);
@@ -1347,7 +1533,11 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
        and jawakad owns the whole sleep/wake story (power = sleep when the screen is
        on, wake when it's off — all through jawakad's own real-suspend path). The
        PMIC still hard-powers-off on a long hold regardless of this grab. */
+#ifdef JW_OS_XYLEM
+    data->power_fd = jw__xylem_open_named(data->board->power_key_name);
+#else
     data->power_fd = jw__open_power_key();
+#endif
     if (data->power_fd >= 0 && ioctl(data->power_fd, EVIOCGRAB, 1) == 0) {
         data->power_grabbed = true;
     }
@@ -1372,7 +1562,7 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
        keys (stock's are grabbed with the pad). Kernel event times in the
        pad's clock let jw__process merge the two streams in order, which is
        what keeps Menu+Volume a brightness chord. */
-    data->vol_fd = jw__xylem_open_volume_keys();
+    data->vol_fd = jw__xylem_open_named(data->board->volume_keys_name);
     if (data->vol_fd >= 0) {
         int vol_clock = CLOCK_MONOTONIC;
         bool vol_grabbed = ioctl(data->vol_fd, EVIOCGRAB, 1) == 0;
@@ -1382,10 +1572,10 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
         }
         jw_log_info("input proxy: volume keys %s (%s)",
                     vol_grabbed ? "grabbed" : "open (grab failed)",
-                    JW_MLP1_XYLEM_VOLKEYS_NAME);
-    } else {
+                    data->board->volume_keys_name);
+    } else if (data->board->volume_keys_name) {
         jw_log_warn("input proxy: volume keys (%s) not found",
-                    JW_MLP1_XYLEM_VOLKEYS_NAME);
+                    data->board->volume_keys_name);
     }
 #endif
 
@@ -1439,7 +1629,7 @@ int jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy) {
         return -1;
     }
 
-    const char *device_name = proxy->device_name[0] ? proxy->device_name : JW_MLP1_INPUT_NAME;
+    const char *device_name = proxy->device_name[0] ? proxy->device_name : JW_MLP1_VIRTUAL_NAME;
     int joypad_index = 0;
     for (int i = 0; i < 64; i++) {
         char path[64];
@@ -1526,6 +1716,10 @@ static void jw__handle_input(jw_input_proxy *proxy, const struct input_event *ev
     if (ev->type == EV_KEY) jw__handle_key(proxy, ev);
     else if (ev->type == EV_ABS && (ev->code == ABS_X || ev->code == ABS_Y))
         jw__forward_stick_abs(data, ev);
+#ifdef JW_OS_XYLEM
+    else if (ev->type == EV_ABS && (ev->code == ABS_RX || ev->code == ABS_RY))
+        jw__forward_stick_abs(data, ev);
+#endif
     else jw__forward_event(data, ev);
 }
 
@@ -1558,6 +1752,18 @@ static void jw__handle_power(jw_input_proxy *proxy, const struct input_event *ev
 }
 
 #ifdef JW_OS_XYLEM
+/* An event from the board's pad, in the Leaf Gamepad's shape, into the path
+   stock's pad events take. Everything past here (chords, the Menu tap and
+   escape, shortcuts, release and resync) sees a pad shaped like stock's:
+   the same button codes and a hat for the d-pad. */
+static void jw__xylem_handle_pad(jw_input_proxy *proxy, const struct input_event *ev) {
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    struct input_event out;
+    if (jw_leaf_pad_translate(&data->leaf, ev, &out)) {
+        jw__handle_input(proxy, &out);
+    }
+}
+
 /* A key from the volume device, into the path stock's in-pad volume keys take
    (jw__handle_key: Volume, or Menu+Volume for brightness). Autorepeat is
    dropped: gpio-keys-vol repeats a held key, stock's keys never repeat, and
@@ -1657,7 +1863,11 @@ static void jw__process(jw_input_proxy *proxy) {
             jw__handle_power(proxy, &power);
             have_power = false;
         } else {
+#ifdef JW_OS_XYLEM
+            jw__xylem_handle_pad(proxy, &input);
+#else
             jw__handle_input(proxy, &input);
+#endif
             have_input = false;
         }
     }

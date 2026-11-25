@@ -149,6 +149,8 @@ static void reset_proxy(bool watch_only) {
     g_data.power_fd = -1;
 #ifdef JW_OS_XYLEM
     g_data.vol_fd = -1;   /* not fd 0: the volume device is never under test */
+    g_data.board = &jw_leaf_pad_boards[0];   /* the MLP1 */
+    jw_leaf_pad_state_init(&g_data.leaf, g_data.board);
 #endif
     g_proxy.backend_data = &g_data;
     g_proxy.enabled = true;
@@ -200,6 +202,32 @@ static void queue_key(uint16_t code, int value, uint64_t ms) {
    Returns the count; SYN reports are skipped as framing. */
 typedef struct { uint16_t code; int32_t value; } emitted;
 
+#ifdef JW_OS_XYLEM
+/* xylem: one event from the board's pad, through the Leaf Gamepad's
+   translation, the way jw__process hands it on. */
+static void raw_event(uint16_t type, uint16_t code, int32_t value) {
+    struct input_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = type;
+    ev.code = code;
+    ev.value = value;
+    ev.input_event_sec = g_now / 1000;
+    ev.input_event_usec = (g_now % 1000) * 1000;
+    jw__xylem_handle_pad(&g_proxy, &ev);
+}
+static void raw_key(uint16_t code, int32_t value) { raw_event(EV_KEY, code, value); }
+
+/* The axes jw__capture_abs_neutrals gives the Leaf Gamepad on the MLP1. */
+static void xylem_axes(void) {
+    g_data.abs_present[ABS_X] = g_data.abs_present[ABS_Y] = true;
+    g_data.abs_present[ABS_HAT0X] = g_data.abs_present[ABS_HAT0Y] = true;
+}
+
+/* Like drain(), but EV_KEY and EV_ABS both, tagged by type. */
+typedef struct { uint16_t type; uint16_t code; int32_t value; } emitted_any;
+static int drain_any(emitted_any *out, int max);
+#endif
+
 static int drain(emitted *out, int max) {
     if (g_data.uinput_fd < 0) return 0;
     int fd = g_data.uinput_fd;
@@ -222,6 +250,33 @@ static int drain(emitted *out, int max) {
     }
     return n;
 }
+
+#ifdef JW_OS_XYLEM
+static int drain_any(emitted_any *out, int max) {
+    int fd = g_data.uinput_fd;
+    if (fd < 0 || lseek(fd, 0, SEEK_SET) != 0) exit(2);
+    int n = 0;
+    struct input_event ev;
+    while (n < max && read(fd, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
+        if (ev.type != EV_KEY && ev.type != EV_ABS) continue;
+        out[n].type = ev.type;
+        out[n].code = ev.code;
+        out[n].value = ev.value;
+        n++;
+    }
+    if (ftruncate(fd, 0) != 0 || lseek(fd, 0, SEEK_SET) != 0) exit(2);
+    return n;
+}
+
+static bool any_has(const emitted_any *got, int n, uint16_t type, uint16_t code,
+                    int32_t value) {
+    for (int i = 0; i < n; i++) {
+        if (got[i].type == type && got[i].code == code && got[i].value == value)
+            return true;
+    }
+    return false;
+}
+#endif
 
 /* Forwarding-thread helpers. The thread writes the sink on its own schedule,
    so read it only under the proxy lock, and give it real time to get there. */
@@ -711,6 +766,154 @@ int main(void) {
     feed(BTN_MODE, 0); advance(6000);
     expect("lost gesture cannot tap or re-arm", g_taps == 0 && g_thresholds == 1);
     expect("lost events retain session configuration", g_proxy.menu_config.tap_only);
+
+#ifdef JW_OS_XYLEM
+    /* ── xylem: the board's pad through the Leaf Gamepad ───────────────── */
+    {
+        emitted_any any[16];
+        int m;
+
+        /* The d-pad's buttons arrive as the hat. Both directions down: the
+           later press wins, and letting it go hands the hat back to the one
+           still held. */
+        reset_proxy(false);
+        xylem_axes();
+        raw_key(BTN_DPAD_UP, 1);
+        raw_key(BTN_DPAD_DOWN, 1);
+        raw_key(BTN_DPAD_DOWN, 0);
+        raw_key(BTN_DPAD_UP, 0);
+        m = drain_any(any, 16);
+        expect("xylem d-pad becomes the hat",
+               m == 4 && any[0].type == EV_ABS && any[0].code == ABS_HAT0Y &&
+               any[0].value == -1 && any[1].code == ABS_HAT0Y && any[1].value == 1 &&
+               any[2].code == ABS_HAT0Y && any[2].value == -1 &&
+               any[3].code == ABS_HAT0Y && any[3].value == 0);
+        raw_key(BTN_DPAD_LEFT, 1);
+        raw_key(BTN_DPAD_RIGHT, 1);
+        raw_key(BTN_DPAD_LEFT, 0);    /* right still down: no change */
+        raw_key(BTN_DPAD_RIGHT, 0);
+        m = drain_any(any, 16);
+        expect("xylem hat: releasing the loser changes nothing",
+               m == 3 && any[0].code == ABS_HAT0X && any[0].value == -1 &&
+               any[1].code == ABS_HAT0X && any[1].value == 1 &&
+               any[2].code == ABS_HAT0X && any[2].value == 0);
+        expect("xylem d-pad never reaches the key state",
+               !jw__bit_is_set(g_data.physical_keys, BTN_DPAD_LEFT) &&
+               !jw__bit_is_set(g_data.physical_keys, BTN_DPAD_RIGHT));
+
+        /* Buttons keep their codes; R3 (absent on the MLP1) and the RX/RY
+           noise axes reach nothing at all. */
+        raw_key(BTN_EAST, 1);
+        raw_key(BTN_EAST, 0);
+        raw_key(BTN_THUMBR, 1);
+        raw_key(BTN_THUMBR, 0);
+        raw_event(EV_ABS, ABS_RX, 900);
+        raw_event(EV_ABS, ABS_RY, -700);
+        raw_event(EV_SYN, SYN_REPORT, 0);
+        m = drain_any(any, 16);
+        expect("xylem buttons pass, R3 and RX/RY are dropped",
+               m == 2 && any[0].type == EV_KEY && any[0].code == BTN_EAST &&
+               any[0].value == 1 && any[1].code == BTN_EAST && any[1].value == 0);
+        expect("xylem RX/RY are never tracked",
+               g_data.abs_value[ABS_RX] == 0 && g_data.abs_value[ABS_RY] == 0);
+
+        /* A Menu tap rides out the RX/RY noise... */
+        tap_only(true);
+        xylem_axes();
+        raw_key(BTN_MODE, 1);
+        raw_event(EV_ABS, ABS_RX, 1500);
+        advance(150);
+        raw_key(BTN_MODE, 0);
+        advance(80);
+        n = drain(got, 16);
+        {
+            const emitted tap[] = {{BTN_MODE, 1}, {BTN_MODE, 0}};
+            expect_seq("xylem Menu tap ignores RX/RY", got, n, tap, 2);
+        }
+        expect("xylem Menu tap asked once", g_taps == 1);
+
+        /* ...but a d-pad press during Menu cancels it, as stock's hat does. */
+        tap_only(true);
+        xylem_axes();
+        raw_key(BTN_MODE, 1);
+        raw_key(BTN_DPAD_LEFT, 1);
+        raw_key(BTN_DPAD_LEFT, 0);
+        advance(6000);
+        raw_key(BTN_MODE, 0);
+        advance(80);
+        m = drain_any(any, 16);
+        expect("xylem d-pad cancels the Menu tap and escape",
+               g_taps == 0 && g_thresholds == 0 &&
+               !any_has(any, m, EV_KEY, BTN_MODE, 1) &&
+               any_has(any, m, EV_ABS, ABS_HAT0X, -1));
+
+        /* Menu + the board's A is the A shortcut, and nothing reaches the
+           game. */
+        reset_proxy(false);
+        xylem_axes();
+        g_claim[JW_INPUT_SHORTCUT_BUTTON_A] = true;
+        raw_key(BTN_MODE, 1);
+        raw_key(BTN_EAST, 1);
+        raw_key(BTN_EAST, 0);
+        raw_key(BTN_MODE, 0);
+        m = drain_any(any, 16);
+        expect("xylem Menu+A dispatches A and emits nothing",
+               m == 0 && g_dispatch_calls == 1 &&
+               g_last_button == JW_INPUT_SHORTCUT_BUTTON_A);
+
+        /* Menu + Volume on the volume device is still brightness. */
+        tap_only(true);
+        xylem_axes();
+        raw_key(BTN_MODE, 1);
+        {
+            struct input_event vol = {0};
+            vol.type = EV_KEY; vol.code = KEY_VOLUMEUP; vol.value = 1;
+            jw__xylem_handle_volume(&g_proxy, &vol);
+            vol.value = 0;
+            jw__xylem_handle_volume(&g_proxy, &vol);
+        }
+        raw_key(BTN_MODE, 0);
+        advance(80);
+        expect("xylem Menu+Volume is brightness, no tap",
+               g_brightness == 1 && g_taps == 0 && drain(got, 16) == 0);
+
+        /* A flush with the d-pad held lets the hat go, and the resync reads
+           the held button back as the hat without keeping its key bit. */
+        reset_proxy(false);
+        xylem_axes();
+        raw_key(BTN_DPAD_RIGHT, 1);
+        (void)drain_any(any, 16);
+        jw__bit_set(g_data.physical_keys, BTN_DPAD_RIGHT);   /* the kernel's view */
+        jw_input_proxy_flush(&g_proxy);
+        m = drain_any(any, 16);
+        expect("xylem flush centres the hat", any_has(any, m, EV_ABS, ABS_HAT0X, 0));
+        expect("xylem resync reads the held d-pad as the hat",
+               g_data.abs_value[ABS_HAT0X] == 1 &&
+               !jw__bit_is_set(g_data.physical_keys, BTN_DPAD_RIGHT));
+        jw__bit_clear(g_data.physical_keys, BTN_DPAD_RIGHT);
+        raw_key(BTN_DPAD_RIGHT, 0);
+        m = drain_any(any, 16);
+        expect("xylem release after resync centres the hat",
+               m == 1 && any[0].code == ABS_HAT0X && any[0].value == 0);
+
+        /* Lost events: everything up to the next report is ignored, and the
+           translator restarts from the key state. */
+        reset_proxy(false);
+        xylem_axes();
+        raw_event(EV_SYN, SYN_DROPPED, 0);
+        raw_key(BTN_DPAD_UP, 1);
+        jw__bit_set(g_data.physical_keys, BTN_DPAD_UP);
+        raw_event(EV_SYN, SYN_REPORT, 0);
+        m = drain_any(any, 16);
+        expect("xylem lost events emit no hat", !any_has(any, m, EV_ABS, ABS_HAT0Y, -1));
+        expect("xylem lost events resync the hat", g_data.abs_value[ABS_HAT0Y] == -1);
+        jw__bit_clear(g_data.physical_keys, BTN_DPAD_UP);
+        raw_key(BTN_DPAD_UP, 0);
+        m = drain_any(any, 16);
+        expect("xylem release after lost events centres the hat",
+               m == 1 && any[0].code == ABS_HAT0Y && any[0].value == 0);
+    }
+#endif
 
     /* ── forwarding thread ─────────────────────────────────────────────── */
 

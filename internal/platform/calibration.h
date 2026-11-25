@@ -18,6 +18,22 @@ typedef struct {
     bool    radial_clamp;    /* clamp combined magnitude to out_max after scale */
 } jw_stick_calibration;
 
+#ifdef JW_OS_XYLEM
+/* xylem: load the profile for one board's stick from
+   $JAWAKA_STICK_CAL_PROFILE, else $USERDATA_PATH/input/leaf-gamepad-calibration.json
+   (never stock's file, whose units are another driver's). `board` is that
+   stick's entry in the Leaf Gamepad's source table (leaf_gamepad.h), which is
+   also the default when this fails:
+     - a profile's deadzone never drops below the board's, the driver's flat;
+     - a profile off the board's scale, beyond twice its extents (stock's
+       loong1-joystick reads +/-32768, the MLP1's rocknix-joypad +/-1800), is
+       ignored;
+     - the output range is always the board's, the pad's stick range.
+   Returns true with loaded=true on success; false with loaded=false on any
+   failure. */
+bool jw_calibration_load_board(jw_stick_calibration *out,
+                               const jw_stick_calibration *board);
+#else
 /* Load the profile from $JAWAKA_STICK_CAL_PROFILE, else
    $USERDATA_PATH/input/loong-gamepad-calibration.json. On success fills *out
    with loaded=true and returns true. On any failure (missing, unreadable,
@@ -29,6 +45,7 @@ bool jw_calibration_load(jw_stick_calibration *out);
 /* The built-in Loong Gamepad calibration: a range every measured unit reaches,
    zero at the driver's center, and the driver's deadzone. loaded=true. */
 void jw_calibration_default(jw_stick_calibration *out);
+#endif
 
 /* Map one raw axis value to the normalized output range using deadzone-aware
    per-axis scaling. Pure; safe to call only when cal->loaded. is_x selects the
