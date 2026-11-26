@@ -16075,6 +16075,11 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         jw_platform_frontend_ready(&state->platform, role->valuestring, &result);
         jw_log_info("frontend-ready role=%s code=%s",
                     role->valuestring, jw_platform_result_code_name(result.code));
+#ifdef JW_OS_XYLEM
+        if (strcmp(role->valuestring, "launcher") == 0 && !state->led_configured) {
+            jw__apply_persisted_led(state);
+        }
+#endif
         if (state->startup_maintenance_pending) {
             long long accel = jw__monotonic_ms() + JW_STARTUP_MAINT_GRACE_MS;
             if (accel < state->startup_maintenance_next_ms) {
@@ -18671,7 +18676,11 @@ int main(int argc, char *argv[]) {
     jw__apply_persisted_brightness(&state);
     jw__apply_persisted_volume(&state);
     (void)jw__apply_color_temp(&state, false);
+#ifndef JW_OS_XYLEM
     jw__apply_persisted_led(&state);
+#endif
+    /* xylem: the ring is dark until the launcher is up, then shows the saved
+       lighting (the frontend-ready handler), so a lit ring means ready. */
 
     /* 5-Game Mode boot check: decide whether to enter the locked focus screen
        (active + SD recovery lock file present) or boot normally. A missing lock

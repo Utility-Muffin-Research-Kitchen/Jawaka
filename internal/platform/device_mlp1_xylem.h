@@ -71,6 +71,12 @@ bool jw_mlp1_xylem_secondary_block(char *out, size_t out_size);
    `path` or one of its parents); false when /proc/mounts can't be read. */
 bool jw_mlp1_xylem_containing_mount(const char *path, char *device, size_t device_size);
 
+/* The launcher is up (its first frame on screen, input open): tell the OS by
+   creating the file named in $LEAF_XYLEM_READY_FILE, when it names one. The
+   OS's boot hook waits for it to count the boot as good. Once per jawakad;
+   a failure is logged and changes nothing else. */
+void jw_mlp1_xylem_launcher_ready(void);
+
 /* Suspend to RAM: blank the backlight, write `mem`, unblank and put
    `restore_brightness_raw` back (when > 0). Blocks until resume. 0 when the
    kernel suspended and resumed. The caller suspends and resumes the

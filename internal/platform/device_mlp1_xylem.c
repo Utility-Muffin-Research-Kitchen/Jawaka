@@ -416,6 +416,22 @@ int jw_mlp1_xylem_suspend(int restore_brightness_raw) {
     "/sys/bus/platform/devices/" JW_XYLEM_SECONDARY_MMC \
     "/mmc_host/mmc*/mmc*:*/block/mmcblk*/mmcblk*p1"
 
+/* ── Launcher ready ─────────────────────────────────────────────────────── */
+
+void jw_mlp1_xylem_launcher_ready(void) {
+    const char *path = getenv("LEAF_XYLEM_READY_FILE");
+    if (!path || path[0] != '/') {
+        return;
+    }
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        jw_log_warn("launcher ready: cannot create %s: %s", path, strerror(errno));
+        return;
+    }
+    close(fd);
+    jw_log_info("launcher ready: told the OS (%s)", path);
+}
+
 const char *jw_mlp1_xylem_secondary_mount(void) {
     const char *path = getenv("UMRK_SECONDARY_SDCARD_PATH");
     return path && path[0] == '/' ? path : JW_XYLEM_SECONDARY_MOUNT;

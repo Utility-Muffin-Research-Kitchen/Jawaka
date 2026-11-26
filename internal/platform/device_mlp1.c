@@ -3543,8 +3543,12 @@ static void jw__mlp1_get_audio_status(jw_platform_context *ctx, jw_platform_stat
 static void jw__mlp1_frontend_ready(jw_platform_context *ctx, const char *role,
                                     jw_platform_result *out) {
 #ifdef JW_OS_XYLEM
-    /* No loong_transition boot screen to dismiss, and no libloong_sdk. */
+    /* No loong_transition boot screen to dismiss, and no libloong_sdk. The
+       OS is told instead, the first time the launcher is up. */
     if (strcmp(role, "launcher") == 0) {
+        if (!ctx->home_ready_sent) {
+            jw_mlp1_xylem_launcher_ready();
+        }
         ctx->home_ready_sent = true;
     }
     jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "frontend ready noted");
